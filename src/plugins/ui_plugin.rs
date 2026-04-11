@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::constants::{HUD_PANEL_WIDTH, HUD_Z_LAYER};
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
+use crate::gameplay::skill_flow::{player_skill_state, SkillRoster};
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
 use crate::states::{AppState, GamePhase};
 
@@ -87,6 +88,7 @@ fn update_hud(
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
     match_result: Res<MatchResult>,
+    skill_roster: Res<SkillRoster>,
     input_state: Res<TurnInputState>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
@@ -108,6 +110,20 @@ fn update_hud(
         .last_action
         .as_deref()
         .unwrap_or("waiting for first action");
+    let skill_text = player_skill_state(&skill_roster, turn_state.current_player)
+        .map(|skills| {
+            format!(
+                "Shield: {}  |  DoubleDice: {}{}",
+                skills.shield_charges,
+                skills.double_dice_charges,
+                if skills.double_dice_armed { " (armed)" } else { "" }
+            )
+        })
+        .unwrap_or_else(|| "Shield: -  |  DoubleDice: -".to_string());
+    let skill_action_text = skill_roster
+        .last_skill_action
+        .as_deref()
+        .unwrap_or("none");
     let current_control = player_roster
         .players
         .iter()
@@ -136,10 +152,10 @@ fn update_hud(
     let prompt_text = input_state
         .prompt
         .as_deref()
-        .unwrap_or("Space rolls. Click a highlighted piece when multiple actions exist.");
+        .unwrap_or("Space rolls. Q uses Shield. W arms DoubleDice.");
 
     *primary_text = Text::new(format!(
-        "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\n{}\nLast Action: {}",
+        "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\nSkills: {}\nLast Skill: {}\n{}\nLast Action: {}",
         match_config.mode,
         match_config.ai_difficulty,
         turn_state.current_player,
@@ -149,6 +165,8 @@ fn update_hud(
         roll_text,
         player_roster.players.len(),
         team_roster.teams.len(),
+        skill_text,
+        skill_action_text,
         result_text,
         action_text,
     ));

@@ -6,10 +6,11 @@ use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{
     BoardLayout, MatchConfig, MatchResult, PlayerRoster, TeamRoster,
 };
+use crate::gameplay::skill_flow::{resolve_roll_value, SkillRoster};
 use crate::gameplay::turn_flow::{
     choose_action, collect_actions, current_player_control, execute_action,
     find_pending_action_by_piece_id, finish_turn_without_action, get_pending_action,
-    pressed_selection_key, roll_die, set_pending_actions, set_roll, TurnInputState, TurnState,
+    pressed_selection_key, set_pending_actions, set_roll, TurnInputState, TurnState,
 };
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
@@ -61,6 +62,7 @@ fn drive_ai_turn_loop(
     match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
+    mut skill_roster: ResMut<SkillRoster>,
     mut match_result: ResMut<MatchResult>,
     mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
@@ -77,9 +79,16 @@ fn drive_ai_turn_loop(
         return;
     }
 
-    let roll_value = roll_die();
+    let roll_resolution = resolve_roll_value(&mut skill_roster, turn_state.current_player);
+    let roll_value = roll_resolution.value;
     let roll = DiceRoll(roll_value);
     set_roll(&mut turn_state, roll_value);
+    if roll_resolution.used_double_dice {
+        skill_roster.last_skill_action = Some(format!(
+            "P{} resolved DoubleDice into {}",
+            turn_state.current_player, roll_value
+        ));
+    }
 
     let current_player = turn_state.current_player;
     let Some(action) =
@@ -121,6 +130,7 @@ fn handle_human_roll_input(
     match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
+    mut skill_roster: ResMut<SkillRoster>,
     mut match_result: ResMut<MatchResult>,
     mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
@@ -140,9 +150,16 @@ fn handle_human_roll_input(
         return;
     }
 
-    let roll_value = roll_die();
+    let roll_resolution = resolve_roll_value(&mut skill_roster, turn_state.current_player);
+    let roll_value = roll_resolution.value;
     let roll = DiceRoll(roll_value);
     set_roll(&mut turn_state, roll_value);
+    if roll_resolution.used_double_dice {
+        skill_roster.last_skill_action = Some(format!(
+            "P{} resolved DoubleDice into {}",
+            turn_state.current_player, roll_value
+        ));
+    }
 
     let actions = collect_actions(turn_state.current_player, roll, &player_roster, &piece_query);
 
