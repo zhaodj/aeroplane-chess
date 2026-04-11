@@ -5,6 +5,7 @@ use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
 use crate::gameplay::skill_flow::{player_skill_state, SkillRoster};
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
+use crate::plugins::skill_plugin::SkillTargetState;
 use crate::states::{AppState, GamePhase};
 
 pub struct UiPlugin;
@@ -89,6 +90,7 @@ fn update_hud(
     team_roster: Res<TeamRoster>,
     match_result: Res<MatchResult>,
     skill_roster: Res<SkillRoster>,
+    skill_target_state: Res<SkillTargetState>,
     input_state: Res<TurnInputState>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
@@ -113,15 +115,16 @@ fn update_hud(
     let skill_text = player_skill_state(&skill_roster, turn_state.current_player)
         .map(|skills| {
             format!(
-                "Dash: {}{}  |  Shield: {}  |  DoubleDice: {}{}",
+                "Dash: {}{}  |  Snipe: {}  |  Shield: {}  |  DoubleDice: {}{}",
                 skills.dash_charges,
                 if skills.dash_armed { " (armed)" } else { "" },
+                skills.snipe_charges,
                 skills.shield_charges,
                 skills.double_dice_charges,
                 if skills.double_dice_armed { " (armed)" } else { "" }
             )
         })
-        .unwrap_or_else(|| "Dash: -  |  Shield: -  |  DoubleDice: -".to_string());
+        .unwrap_or_else(|| "Dash: -  |  Snipe: -  |  Shield: -  |  DoubleDice: -".to_string());
     let skill_action_text = skill_roster
         .last_skill_action
         .as_deref()
@@ -151,10 +154,11 @@ fn update_hud(
     } else {
         String::new()
     };
-    let prompt_text = input_state
+    let prompt_text = skill_target_state
         .prompt
         .as_deref()
-        .unwrap_or("Space rolls. Q uses Shield. W arms DoubleDice. E arms Dash after rolling.");
+        .or(input_state.prompt.as_deref())
+        .unwrap_or("Space rolls. Q uses Shield. S uses Snipe. W arms DoubleDice. E arms Dash after rolling.");
 
     *primary_text = Text::new(format!(
         "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\nSkills: {}\nLast Skill: {}\n{}\nLast Action: {}",

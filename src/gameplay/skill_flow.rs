@@ -19,6 +19,7 @@ pub struct PlayerSkillState {
     pub player_id: u8,
     pub dash_charges: u8,
     pub dash_armed: bool,
+    pub snipe_charges: u8,
     pub shield_charges: u8,
     pub double_dice_charges: u8,
     pub double_dice_armed: bool,
@@ -39,6 +40,7 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
                 player_id: player.state.player_id,
                 dash_charges: 1,
                 dash_armed: false,
+                snipe_charges: 1,
                 shield_charges: 1,
                 double_dice_charges: 1,
                 double_dice_armed: false,
@@ -108,6 +110,52 @@ pub fn clear_dash_arm(skill_roster: &mut SkillRoster, player_id: u8) {
     {
         player_state.dash_armed = false;
     }
+}
+
+pub fn spend_snipe_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
+    let Some(player_state) = skill_roster
+        .players
+        .iter_mut()
+        .find(|player| player.player_id == player_id)
+    else {
+        return false;
+    };
+
+    if player_state.snipe_charges == 0 {
+        return false;
+    }
+
+    player_state.snipe_charges -= 1;
+    true
+}
+
+pub fn collect_snipe_targets(
+    current_player: u8,
+    current_team: u8,
+    piece_query: &Query<(&PieceId, &mut PieceState)>,
+) -> Vec<u8> {
+    let mut unshielded = Vec::new();
+    let mut shielded = Vec::new();
+
+    for (piece_id, piece_state) in piece_query.iter() {
+        if piece_state.owner_player_id == current_player
+            || piece_state.team_id == current_team
+            || piece_state.status != PieceStatus::Active
+        {
+            continue;
+        }
+
+        if piece_state.shield == 0 && piece_state.stack_shield == 0 {
+            unshielded.push(piece_id.0);
+        } else {
+            shielded.push(piece_id.0);
+        }
+    }
+
+    unshielded.sort_unstable();
+    shielded.sort_unstable();
+    unshielded.extend(shielded);
+    unshielded
 }
 
 pub fn preferred_shield_target(
@@ -320,6 +368,7 @@ mod tests {
 
         assert_eq!(skill_roster.players.len(), 2);
         assert_eq!(skill_roster.players[0].dash_charges, 1);
+        assert_eq!(skill_roster.players[0].snipe_charges, 1);
         assert_eq!(skill_roster.players[0].shield_charges, 1);
         assert_eq!(skill_roster.players[0].double_dice_charges, 1);
         assert!(!skill_roster.players[0].dash_armed);
@@ -349,6 +398,14 @@ mod tests {
 
         sync_turn_skill_usage(&mut skill_roster, 2);
         assert!(can_use_skill_this_turn(&skill_roster, 2));
+    }
+
+    #[test]
+    fn spend_snipe_charge_only_succeeds_when_charge_exists() {
+        let mut skill_roster = build_skill_roster(&sample_roster());
+
+        assert!(spend_snipe_charge(&mut skill_roster, 1));
+        assert!(!spend_snipe_charge(&mut skill_roster, 1));
     }
 
     #[test]
@@ -432,5 +489,49 @@ mod tests {
 
         assert!(should_ai_use_shield(2, &skill_roster, &query));
         assert_eq!(preferred_shield_target(2, &query), Some(1));
+    }
+
+    #[test]
+    fn collect_snipe_targets_prioritizes_unshielded_enemies() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 0,
+                shield: 0,
+                stack_shield: 0,
+            },
+        ));
+        world.spawn((
+            PieceId(2),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 0,
+                shield: 1,
+                stack_shield: 0,
+            },
+        ));
+        world.spawn((
+            PieceId(3),
+            PieceState {
+                owner_player_id: 4,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 0,
+                shield: 0,
+                stack_shield: 0,
+            },
+        ));
+
+        let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
+            SystemState::new(&mut world);
+        let query = system_state.get(&world);
+
+        assert_eq!(collect_snipe_targets(1, 1, &query), vec![3, 2]);
     }
 }

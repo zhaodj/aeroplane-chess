@@ -5,6 +5,7 @@ use crate::domain::player::PlayerControl;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::gameplay::match_flow::PlayerRoster;
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
+use crate::plugins::skill_plugin::SkillTargetState;
 use crate::states::GamePhase;
 use crate::states::AppState;
 
@@ -71,12 +72,14 @@ fn cleanup_pieces(mut commands: Commands, query: Query<Entity, With<PieceEntity>
 
 fn update_piece_highlight(
     input_state: Res<TurnInputState>,
+    skill_target_state: Res<SkillTargetState>,
     player_roster: Res<PlayerRoster>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
     mut query: Query<(&PieceId, &PieceState, &PieceBaseColor, &mut Sprite, &mut Transform), With<PieceEntity>>,
 ) {
     let selectable = matches!(game_phase.get(), GamePhase::AwaitPieceSelect);
+    let skill_selectable = matches!(game_phase.get(), GamePhase::ResolveSkillEffect);
     let current_player_control = player_roster
         .players
         .iter()
@@ -87,8 +90,12 @@ fn update_piece_highlight(
         if selectable && input_state.candidate_piece_ids().contains(&piece_id.0) {
             sprite.color = base_color.0.mix(&Color::WHITE, 0.35);
             transform.scale = Vec3::splat(1.18);
+        } else if skill_selectable && skill_target_state.candidate_piece_ids().contains(&piece_id.0) {
+            sprite.color = base_color.0.mix(&Color::srgb(1.0, 0.88, 0.60), 0.45);
+            transform.scale = Vec3::splat(1.18);
         } else if matches!(current_player_control, Some(PlayerControl::Human))
             && input_state.candidate_piece_ids().is_empty()
+            && skill_target_state.candidate_piece_ids().is_empty()
             && piece_state.owner_player_id == turn_state.current_player
         {
             sprite.color = base_color.0.mix(&Color::WHITE, 0.18);
