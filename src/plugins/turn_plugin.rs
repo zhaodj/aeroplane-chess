@@ -1230,7 +1230,10 @@ fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
 mod tests {
     use super::*;
     use crate::data::game_mode::GameMode;
-    use crate::plugins::game_plugin::build_match_rosters;
+    use crate::domain::player::{PlayerControl, PlayerState};
+    use crate::plugins::game_plugin::{build_match_rosters, BoardLayout, PlayerRoster};
+    use crate::plugins::piece_plugin::{HangarSlot, PieceId};
+    use bevy::ecs::system::SystemState;
 
     #[test]
     fn compute_target_distance_blocks_overshoot() {
@@ -1282,5 +1285,122 @@ mod tests {
         advance_turn(&mut turn_state, 4);
         assert_eq!(turn_state.current_player, 2);
         assert_eq!(turn_state.turn_index, 4);
+    }
+
+    #[test]
+    fn world_position_for_piece_uses_home_lane_and_goal_positions() {
+        let (players, _) = build_match_rosters(GameMode::TwoVsTwo);
+        let player_roster = PlayerRoster { players };
+        let board_layout = BoardLayout {
+            tiles: crate::data::board_config::default_board_tiles(),
+        };
+
+        assert_eq!(
+            world_position_for_piece(1, 0, PieceStatus::Active, &board_layout, &player_roster),
+            board_layout.world_pos_for_route_index(30)
+        );
+        assert_eq!(
+            world_position_for_piece(
+                1,
+                MAIN_ROUTE_STEPS,
+                PieceStatus::Active,
+                &board_layout,
+                &player_roster
+            ),
+            Some(Vec2::new(-128.0, 192.0))
+        );
+        assert_eq!(
+            world_position_for_piece(
+                1,
+                FINISH_DISTANCE,
+                PieceStatus::Finished,
+                &board_layout,
+                &player_roster
+            ),
+            Some(Vec2::new(-64.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn collect_actions_returns_launch_and_move_options_for_human_player() {
+        let (players, _) = build_match_rosters(GameMode::OneVsOne);
+        let player_roster = PlayerRoster { players };
+        let board_layout = BoardLayout {
+            tiles: crate::data::board_config::default_board_tiles(),
+        };
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::InHangar,
+                progress: 0,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::new(-260.0, 280.0)),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 3,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world);
+
+        let actions = collect_actions(1, DiceRoll(6), &board_layout, &player_roster, &query);
+        assert_eq!(actions.len(), 2);
+        assert!(actions.iter().any(|action| matches!(action, PlannedAction::Launch { piece_id: 1, .. })));
+        assert!(actions.iter().any(|action| matches!(action, PlannedAction::Move { piece_id: 2, target_progress: 9 })));
+    }
+
+    #[test]
+    fn current_player_control_reads_player_roster() {
+        let player_roster = PlayerRoster {
+            players: vec![
+                PlayerProfile {
+                    state: PlayerState {
+                        player_id: 1,
+                        team_id: 1,
+                        control: PlayerControl::Human,
+                    },
+                    color: Color::srgb(1.0, 0.0, 0.0),
+                    hangar_slots: vec![],
+                    launch_tile_index: 0,
+                    home_lane_positions: vec![],
+                    goal_position: Vec2::ZERO,
+                },
+                PlayerProfile {
+                    state: PlayerState {
+                        player_id: 2,
+                        team_id: 2,
+                        control: PlayerControl::Ai,
+                    },
+                    color: Color::srgb(0.0, 0.0, 1.0),
+                    hangar_slots: vec![],
+                    launch_tile_index: 0,
+                    home_lane_positions: vec![],
+                    goal_position: Vec2::ZERO,
+                },
+            ],
+        };
+
+        assert_eq!(current_player_control(1, &player_roster), Some(PlayerControl::Human));
+        assert_eq!(current_player_control(2, &player_roster), Some(PlayerControl::Ai));
+        assert_eq!(current_player_control(9, &player_roster), None);
     }
 }

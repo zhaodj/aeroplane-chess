@@ -299,4 +299,15 @@ mod tests {
         assert_eq!(team_one_finished.winner_team_id, Some(1));
         assert_eq!(team_one_finished.winner_player_ids, vec![1, 3]);
     }
+
+    #[test]
+    fn one_vs_one_victory_requires_the_single_player_to_finish_all_pieces() {
+        let (_, teams) = build_match_rosters(GameMode::OneVsOne);
+        let team_roster = TeamRoster { teams };
+
+        let player_one_finished = evaluate_match_result(&team_roster, &[1]);
+        assert!(player_one_finished.finished);
+        assert_eq!(player_one_finished.winner_team_id, Some(1));
+        assert_eq!(player_one_finished.winner_player_ids, vec![1]);
+    }
 }
