@@ -8,7 +8,8 @@ use crate::gameplay::match_flow::{
 };
 use crate::gameplay::skill_flow::{
     arm_dash, arm_double_dice, can_use_skill_this_turn, clear_dash_arm, dash_bonus,
-    mark_skill_used, player_skill_state, resolve_roll_value, spend_shield_charge, SkillRoster,
+    mark_skill_used, player_skill_state, resolve_roll_value, spend_shield_charge,
+    spend_snipe_charge, SkillRoster,
 };
 use crate::gameplay::turn_flow::{
     choose_action, collect_actions, current_player_control, execute_action,
@@ -139,6 +140,21 @@ fn maybe_use_ai_skills(
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
+    if can_use_skill_this_turn(skill_roster, current_player)
+        && let Some(target_piece_id) = preferred_ai_snipe_target(current_player, piece_query)
+    {
+        let can_use_snipe = player_skill_state(skill_roster, current_player)
+            .map(|skills| skills.snipe_charges > 0)
+            .unwrap_or(false);
+
+        if can_use_snipe && spend_snipe_charge(skill_roster, current_player) {
+            mark_skill_used(skill_roster, current_player);
+            skill_roster.last_skill_action =
+                Some(execute_snipe_on_turn_query(target_piece_id, piece_query, true));
+            return;
+        }
+    }
+
     if let Some(target_piece_id) = preferred_ai_shield_target(current_player, piece_query) {
         let can_use_shield = player_skill_state(skill_roster, current_player)
             .map(|skills| skills.shield_charges > 0)
@@ -171,6 +187,43 @@ fn maybe_use_ai_skills(
             current_player
         ));
     }
+}
+
+fn preferred_ai_snipe_target(
+    current_player: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    let mut attacker_team = None;
+    for (_, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_state.owner_player_id == current_player {
+            attacker_team = Some(piece_state.team_id);
+            break;
+        }
+    }
+    let Some(attacker_team) = attacker_team else {
+        return None;
+    };
+
+    let mut unshielded = Vec::new();
+    let mut shielded = Vec::new();
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_state.owner_player_id == current_player
+            || piece_state.team_id == attacker_team
+            || piece_state.status != crate::domain::piece::PieceStatus::Active
+        {
+            continue;
+        }
+
+        if piece_state.shield == 0 && piece_state.stack_shield == 0 {
+            unshielded.push(piece_id.0);
+        } else {
+            shielded.push(piece_id.0);
+        }
+    }
+
+    unshielded.sort_unstable();
+    shielded.sort_unstable();
+    unshielded.into_iter().next().or_else(|| shielded.into_iter().next())
 }
 
 fn preferred_ai_shield_target(
@@ -260,6 +313,42 @@ fn apply_shield_to_piece_to_turn_query(
     }
 
     None
+}
+
+fn execute_snipe_on_turn_query(
+    piece_id: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    ai_actor: bool,
+) -> String {
+    for (query_piece_id, hangar_slot, mut piece_state, mut transform) in piece_query.iter_mut() {
+        if query_piece_id.0 != piece_id {
+            continue;
+        }
+
+        let prefix = if ai_actor { "AI Snipe" } else { "Snipe" };
+        if piece_state.shield > 0 {
+            piece_state.shield -= 1;
+            return format!("{prefix} hit piece #{piece_id} and removed a shield");
+        }
+        if piece_state.stack_shield > 0 {
+            piece_state.stack_shield = 0;
+            return format!("{prefix} hit piece #{piece_id} and broke the shared shield");
+        }
+
+        piece_state.status = crate::domain::piece::PieceStatus::InHangar;
+        piece_state.progress = 0;
+        piece_state.shield = 0;
+        piece_state.stack_shield = 0;
+        transform.translation.x = hangar_slot.0.x;
+        transform.translation.y = hangar_slot.0.y;
+        return format!("{prefix} sent piece #{piece_id} back to hangar");
+    }
+
+    if ai_actor {
+        "AI Snipe failed to resolve".to_string()
+    } else {
+        "Snipe failed to resolve".to_string()
+    }
 }
 
 fn handle_human_roll_input(
