@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::plugins::AeroplaneChessPlugins;
 use crate::states::{AppState, GamePhase};
 
@@ -11,7 +12,7 @@ pub fn run() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Aeroplane Chess".into(),
-                resolution: (1280, 720).into(),
+                resolution: (WINDOW_WIDTH, WINDOW_HEIGHT).into(),
                 resizable: true,
                 ..default()
             }),

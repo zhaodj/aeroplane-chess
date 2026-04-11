@@ -1,3 +1,5 @@
+use bevy::prelude::*;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PieceStatus {
     InHangar,
@@ -5,7 +7,7 @@ pub enum PieceStatus {
     Finished,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Component, Eq, PartialEq)]
 pub struct PieceState {
     pub owner_player_id: u8,
     pub team_id: u8,
