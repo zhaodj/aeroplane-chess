@@ -6,9 +6,13 @@ use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::rules::can_launch;
 use crate::domain::tile::TileKind;
 use crate::gameplay::turn_flow::TurnState;
-use crate::plugins::game_plugin::{BoardLayout, PlayerRoster};
+use crate::plugins::game_plugin::{BoardLayout, PlayerProfile, PlayerRoster};
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
+
+const MAIN_ROUTE_STEPS: u8 = 32;
+const HOME_LANE_STEPS: u8 = 4;
+const FINISH_DISTANCE: u8 = MAIN_ROUTE_STEPS + HOME_LANE_STEPS;
 
 pub struct TurnPlugin;
 
@@ -75,11 +79,23 @@ fn drive_turn_loop(
         return;
     };
 
-    let initial_progress = apply_action(&action, &board_layout, &mut piece_query);
+    let initial_progress = apply_action(&action, &board_layout, &player_roster, &mut piece_query);
     let mut notes = Vec::new();
-    let final_progress =
-        apply_tile_effects(&action, initial_progress, &board_layout, &mut piece_query, &mut notes);
-    resolve_collision(&action, final_progress, &mut piece_query, &mut notes);
+    let final_progress = apply_tile_effects(
+        &action,
+        initial_progress,
+        &board_layout,
+        &player_roster,
+        &mut piece_query,
+        &mut notes,
+    );
+    resolve_collision(
+        &action,
+        final_progress,
+        &player_roster,
+        &mut piece_query,
+        &mut notes,
+    );
     turn_state.last_action = Some(describe_action(&action, roll_value, &notes));
 
     advance_turn(&mut turn_state, player_roster.players.len() as u8);
@@ -98,7 +114,9 @@ struct PieceSnapshot {
     owner_player_id: u8,
     team_id: u8,
     status: PieceStatus,
-    progress: u8,
+    distance: u8,
+    shield: u8,
+    board_position: Option<BoardPosition>,
 }
 
 fn choose_action(
@@ -108,19 +126,29 @@ fn choose_action(
     player_roster: &PlayerRoster,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<PlannedAction> {
-    let route_len = board_layout.route_len() as u8;
-    if route_len == 0 {
+    if board_layout.route_len() == 0 {
         return None;
     }
 
     let snapshots = piece_query
         .iter()
-        .map(|(piece_id, _, piece_state, _)| PieceSnapshot {
-            piece_id: piece_id.0,
-            owner_player_id: piece_state.owner_player_id,
-            team_id: piece_state.team_id,
-            status: piece_state.status,
-            progress: piece_state.progress,
+        .map(|(piece_id, _, piece_state, _)| {
+            let player_profile = player_roster
+                .players
+                .iter()
+                .find(|player| player.state.player_id == piece_state.owner_player_id);
+
+            PieceSnapshot {
+                piece_id: piece_id.0,
+                owner_player_id: piece_state.owner_player_id,
+                team_id: piece_state.team_id,
+                status: piece_state.status,
+                distance: piece_state.progress,
+                shield: piece_state.shield,
+                board_position: player_profile.and_then(|profile| {
+                    board_position_for_distance(profile, piece_state.progress, piece_state.status)
+                }),
+            }
         })
         .collect::<Vec<_>>();
 
@@ -141,11 +169,11 @@ fn choose_action(
                 &snapshots,
                 current_player,
                 player_profile.state.team_id,
-                player_profile.launch_tile_index,
+                board_position_for_distance(player_profile, 0, PieceStatus::Active),
             ) {
                 return Some(PlannedAction::Launch {
                     piece_id: piece.piece_id,
-                    target_progress: player_profile.launch_tile_index,
+                    target_progress: 0,
                 });
             }
 
@@ -154,14 +182,14 @@ fn choose_action(
                     owner_player_id: piece.owner_player_id,
                     team_id: piece.team_id,
                     status: piece.status,
-                    progress: piece.progress,
-                    shield: 0,
+                    progress: piece.distance,
+                    shield: piece.shield,
                 },
                 roll,
             ) {
                 return Some(PlannedAction::Launch {
                     piece_id: piece.piece_id,
-                    target_progress: player_profile.launch_tile_index,
+                    target_progress: 0,
                 });
             }
         }
@@ -172,12 +200,15 @@ fn choose_action(
             continue;
         }
 
-        let target_progress = (piece.progress + roll.0) % route_len;
+        let Some(target_progress) = compute_target_distance(piece.distance, roll.0) else {
+            continue;
+        };
+
         if is_enemy_on_progress(
             &snapshots,
             current_player,
             piece.team_id,
-            target_progress,
+            board_position_for_distance(player_profile, target_progress, PieceStatus::Active),
         ) {
             return Some(PlannedAction::Move {
                 piece_id: piece.piece_id,
@@ -191,7 +222,7 @@ fn choose_action(
             if piece.status == PieceStatus::InHangar {
                 return Some(PlannedAction::Launch {
                     piece_id: piece.piece_id,
-                    target_progress: player_profile.launch_tile_index,
+                    target_progress: 0,
                 });
             }
         }
@@ -199,9 +230,13 @@ fn choose_action(
 
     for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
         if piece.status == PieceStatus::Active {
+            let Some(target_progress) = compute_target_distance(piece.distance, roll.0) else {
+                continue;
+            };
+
             return Some(PlannedAction::Move {
                 piece_id: piece.piece_id,
-                target_progress: (piece.progress + roll.0) % route_len,
+                target_progress,
             });
         }
     }
@@ -213,19 +248,21 @@ fn is_enemy_on_progress(
     snapshots: &[PieceSnapshot],
     current_player: u8,
     current_team: u8,
-    target_progress: u8,
+    target_position: Option<BoardPosition>,
 ) -> bool {
     snapshots.iter().any(|piece| {
         piece.owner_player_id != current_player
             && piece.team_id != current_team
             && piece.status == PieceStatus::Active
-            && piece.progress == target_progress
+            && target_position.is_some()
+            && piece.board_position == target_position
     })
 }
 
 fn apply_action(
     action: &PlannedAction,
     board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> u8 {
     for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
@@ -237,7 +274,15 @@ fn apply_action(
             PlannedAction::Move {
                 piece_id,
                 target_progress,
-            } => (piece_id, target_progress, PieceStatus::Active),
+            } => (
+                piece_id,
+                target_progress,
+                if target_progress == FINISH_DISTANCE {
+                    PieceStatus::Finished
+                } else {
+                    PieceStatus::Active
+                },
+            ),
         };
 
         if piece_id.0 != target_piece_id {
@@ -246,7 +291,13 @@ fn apply_action(
 
         piece_state.status = next_status;
         piece_state.progress = target_progress;
-        if let Some(world_pos) = board_layout.world_pos_for_route_index(target_progress) {
+        if let Some(world_pos) = world_position_for_piece(
+            piece_state.owner_player_id,
+            target_progress,
+            next_status,
+            board_layout,
+            player_roster,
+        ) {
             transform.translation.x = world_pos.x;
             transform.translation.y = world_pos.y;
         }
@@ -260,22 +311,33 @@ fn apply_tile_effects(
     action: &PlannedAction,
     mut final_progress: u8,
     board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     notes: &mut Vec<String>,
 ) -> u8 {
-    let route_len = board_layout.route_len() as u8;
-    if route_len == 0 {
+    if board_layout.route_len() == 0 || final_progress >= MAIN_ROUTE_STEPS {
         return final_progress;
     }
 
-    let Some(tile_kind) = board_layout.tile_kind_for_route_index(final_progress) else {
+    let Some(BoardPosition::Main(tile_index)) =
+        attacker_position(action, player_roster, piece_query) else {
+        return final_progress;
+    };
+
+    let Some(tile_kind) = board_layout.tile_kind_for_route_index(tile_index) else {
         return final_progress;
     };
 
     match tile_kind {
         TileKind::Jump => {
-            final_progress = (final_progress + 4) % route_len;
-            update_piece_progress(action, final_progress, board_layout, piece_query);
+            final_progress = (final_progress + 4).min(FINISH_DISTANCE);
+            update_piece_progress(
+                action,
+                final_progress,
+                board_layout,
+                player_roster,
+                piece_query,
+            );
             notes.push(format!("jumped to tile {final_progress}"));
         }
         TileKind::Defense => {
@@ -291,10 +353,18 @@ fn apply_tile_effects(
 
 fn resolve_collision(
     action: &PlannedAction,
-    target_progress: u8,
+    _target_progress: u8,
+    player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     notes: &mut Vec<String>,
 ) {
+    let Some(attacker_board_position) = attacker_position(action, player_roster, piece_query) else {
+        return;
+    };
+    let BoardPosition::Main(target_tile_index) = attacker_board_position else {
+        return;
+    };
+
     let attacker_piece_id = match *action {
         PlannedAction::Launch {
             piece_id,
@@ -325,7 +395,7 @@ fn resolve_collision(
 
         if piece_state.status != PieceStatus::Active
             || piece_state.team_id == attacker_team
-            || piece_state.progress != target_progress
+            || piece_board_position(*piece_state, player_roster) != Some(BoardPosition::Main(target_tile_index))
         {
             continue;
         }
@@ -338,6 +408,7 @@ fn resolve_collision(
 
         piece_state.status = PieceStatus::InHangar;
         piece_state.progress = 0;
+        piece_state.shield = 0;
         transform.translation.x = hangar_slot.0.x;
         transform.translation.y = hangar_slot.0.y;
         notes.push(format!("sent piece #{} back to hangar", piece_id.0));
@@ -348,6 +419,7 @@ fn update_piece_progress(
     action: &PlannedAction,
     target_progress: u8,
     board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
     let target_piece_id = match *action {
@@ -360,7 +432,18 @@ fn update_piece_progress(
         }
 
         piece_state.progress = target_progress;
-        if let Some(world_pos) = board_layout.world_pos_for_route_index(target_progress) {
+        piece_state.status = if target_progress == FINISH_DISTANCE {
+            PieceStatus::Finished
+        } else {
+            PieceStatus::Active
+        };
+        if let Some(world_pos) = world_position_for_piece(
+            piece_state.owner_player_id,
+            target_progress,
+            piece_state.status,
+            board_layout,
+            player_roster,
+        ) {
             transform.translation.x = world_pos.x;
             transform.translation.y = world_pos.y;
         }
@@ -387,6 +470,86 @@ fn modify_piece_shield(
     }
 
     None
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoardPosition {
+    Main(u8),
+    Home(u8),
+    Goal,
+}
+
+fn compute_target_distance(current_distance: u8, roll_value: u8) -> Option<u8> {
+    current_distance
+        .checked_add(roll_value)
+        .filter(|next_distance| *next_distance <= FINISH_DISTANCE)
+}
+
+fn board_position_for_distance(
+    player_profile: &PlayerProfile,
+    distance: u8,
+    status: PieceStatus,
+) -> Option<BoardPosition> {
+    match status {
+        PieceStatus::InHangar => None,
+        PieceStatus::Finished => Some(BoardPosition::Goal),
+        PieceStatus::Active if distance < MAIN_ROUTE_STEPS => Some(BoardPosition::Main(
+            (player_profile.launch_tile_index + distance) % MAIN_ROUTE_STEPS,
+        )),
+        PieceStatus::Active if distance < FINISH_DISTANCE => {
+            Some(BoardPosition::Home(distance - MAIN_ROUTE_STEPS))
+        }
+        PieceStatus::Active if distance == FINISH_DISTANCE => Some(BoardPosition::Goal),
+        _ => None,
+    }
+}
+
+fn piece_board_position(piece_state: PieceState, player_roster: &PlayerRoster) -> Option<BoardPosition> {
+    let player_profile = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == piece_state.owner_player_id)?;
+    board_position_for_distance(player_profile, piece_state.progress, piece_state.status)
+}
+
+fn attacker_position(
+    action: &PlannedAction,
+    player_roster: &PlayerRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<BoardPosition> {
+    let attacker_piece_id = match *action {
+        PlannedAction::Launch { piece_id, .. } | PlannedAction::Move { piece_id, .. } => piece_id,
+    };
+
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == attacker_piece_id {
+            return piece_board_position(*piece_state, player_roster);
+        }
+    }
+
+    None
+}
+
+fn world_position_for_piece(
+    owner_player_id: u8,
+    distance: u8,
+    status: PieceStatus,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<Vec2> {
+    let player_profile = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == owner_player_id)?;
+
+    match board_position_for_distance(player_profile, distance, status)? {
+        BoardPosition::Main(tile_index) => board_layout.world_pos_for_route_index(tile_index),
+        BoardPosition::Home(home_index) => player_profile
+            .home_lane_positions
+            .get(home_index as usize)
+            .copied(),
+        BoardPosition::Goal => Some(player_profile.goal_position),
+    }
 }
 
 fn describe_action(action: &PlannedAction, roll_value: u8, notes: &[String]) -> String {

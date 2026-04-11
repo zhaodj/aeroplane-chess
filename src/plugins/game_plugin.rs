@@ -66,6 +66,8 @@ pub struct PlayerProfile {
     pub color: Color,
     pub hangar_slots: Vec<Vec2>,
     pub launch_tile_index: u8,
+    pub home_lane_positions: Vec<Vec2>,
+    pub goal_position: Vec2,
 }
 
 #[derive(Clone, Debug, Resource)]
@@ -108,6 +110,13 @@ fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
                     color: Color::srgb(0.88, 0.30, 0.26),
                     hangar_slots: vec![Vec2::new(-320.0, 280.0), Vec2::new(-260.0, 280.0)],
                     launch_tile_index: 30,
+                    home_lane_positions: vec![
+                        Vec2::new(-128.0, 192.0),
+                        Vec2::new(-128.0, 128.0),
+                        Vec2::new(-128.0, 64.0),
+                        Vec2::new(-128.0, 0.0),
+                    ],
+                    goal_position: Vec2::new(-64.0, 0.0),
                 },
                 PlayerProfile {
                     state: PlayerState {
@@ -118,6 +127,13 @@ fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
                     color: Color::srgb(0.28, 0.50, 0.90),
                     hangar_slots: vec![Vec2::new(260.0, -280.0), Vec2::new(320.0, -280.0)],
                     launch_tile_index: 6,
+                    home_lane_positions: vec![
+                        Vec2::new(192.0, 128.0),
+                        Vec2::new(128.0, 128.0),
+                        Vec2::new(64.0, 128.0),
+                        Vec2::new(0.0, 128.0),
+                    ],
+                    goal_position: Vec2::new(0.0, 64.0),
                 },
             ],
             vec![
@@ -142,6 +158,13 @@ fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
                     color: Color::srgb(0.88, 0.30, 0.26),
                     hangar_slots: vec![Vec2::new(-320.0, 280.0)],
                     launch_tile_index: 30,
+                    home_lane_positions: vec![
+                        Vec2::new(-128.0, 192.0),
+                        Vec2::new(-128.0, 128.0),
+                        Vec2::new(-128.0, 64.0),
+                        Vec2::new(-128.0, 0.0),
+                    ],
+                    goal_position: Vec2::new(-64.0, 0.0),
                 },
                 PlayerProfile {
                     state: PlayerState {
@@ -152,6 +175,13 @@ fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
                     color: Color::srgb(0.28, 0.50, 0.90),
                     hangar_slots: vec![Vec2::new(320.0, 280.0)],
                     launch_tile_index: 6,
+                    home_lane_positions: vec![
+                        Vec2::new(192.0, 128.0),
+                        Vec2::new(128.0, 128.0),
+                        Vec2::new(64.0, 128.0),
+                        Vec2::new(0.0, 128.0),
+                    ],
+                    goal_position: Vec2::new(0.0, 64.0),
                 },
                 PlayerProfile {
                     state: PlayerState {
@@ -162,6 +192,13 @@ fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
                     color: Color::srgb(0.97, 0.78, 0.25),
                     hangar_slots: vec![Vec2::new(-320.0, -280.0)],
                     launch_tile_index: 22,
+                    home_lane_positions: vec![
+                        Vec2::new(-192.0, -128.0),
+                        Vec2::new(-128.0, -128.0),
+                        Vec2::new(-64.0, -128.0),
+                        Vec2::new(0.0, -128.0),
+                    ],
+                    goal_position: Vec2::new(0.0, -64.0),
                 },
                 PlayerProfile {
                     state: PlayerState {
@@ -172,6 +209,13 @@ fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
                     color: Color::srgb(0.26, 0.74, 0.47),
                     hangar_slots: vec![Vec2::new(320.0, -280.0)],
                     launch_tile_index: 14,
+                    home_lane_positions: vec![
+                        Vec2::new(128.0, -192.0),
+                        Vec2::new(128.0, -128.0),
+                        Vec2::new(128.0, -64.0),
+                        Vec2::new(128.0, 0.0),
+                    ],
+                    goal_position: Vec2::new(64.0, 0.0),
                 },
             ],
             vec![
