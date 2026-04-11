@@ -3,9 +3,8 @@ use bevy::prelude::*;
 use crate::constants::BOARD_Z_LAYER;
 use crate::domain::player::PlayerControl;
 use crate::domain::piece::{PieceState, PieceStatus};
+use crate::gameplay::turn_flow::{TurnInputState, TurnState};
 use crate::plugins::game_plugin::PlayerRoster;
-use crate::plugins::turn_plugin::TurnInputState;
-use crate::gameplay::turn_flow::TurnState;
 use crate::states::GamePhase;
 use crate::states::AppState;
 
