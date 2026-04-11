@@ -1,0 +1,296 @@
+use bevy::prelude::*;
+
+use crate::data::board_config::{default_board_tiles, TileConfig};
+use crate::data::game_mode::GameMode;
+use crate::domain::player::{PlayerControl, PlayerState};
+use crate::domain::team::TeamState;
+use crate::domain::tile::TileKind;
+use crate::domain::victory::all_pieces_finished;
+use crate::gameplay::ai::AiDifficulty;
+
+#[derive(Clone, Debug, Resource)]
+pub struct MatchConfig {
+    pub mode: GameMode,
+    pub ai_difficulty: AiDifficulty,
+    pub fast_mode: bool,
+}
+
+#[derive(Clone, Debug, Resource)]
+pub struct MatchSetup {
+    pub mode: GameMode,
+    pub ai_difficulty: AiDifficulty,
+    pub fast_mode: bool,
+}
+
+#[derive(Clone, Debug, Resource)]
+pub struct BoardLayout {
+    pub tiles: Vec<TileConfig>,
+}
+
+impl BoardLayout {
+    pub fn default() -> Self {
+        Self {
+            tiles: default_board_tiles(),
+        }
+    }
+
+    pub fn route_len(&self) -> usize {
+        self.tiles.len()
+    }
+
+    pub fn world_pos_for_route_index(&self, route_index: u8) -> Option<Vec2> {
+        self.tiles
+            .iter()
+            .find(|tile| tile.route_index == Some(route_index))
+            .map(|tile| tile.world_pos)
+    }
+
+    pub fn tile_kind_for_route_index(&self, route_index: u8) -> Option<TileKind> {
+        self.tiles
+            .iter()
+            .find(|tile| tile.route_index == Some(route_index))
+            .map(|tile| tile.kind)
+    }
+}
+
+#[derive(Clone, Debug, Resource)]
+pub struct PlayerRoster {
+    pub players: Vec<PlayerProfile>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlayerProfile {
+    pub state: PlayerState,
+    pub color: Color,
+    pub hangar_slots: Vec<Vec2>,
+    pub launch_tile_index: u8,
+    pub home_lane_positions: Vec<Vec2>,
+    pub goal_position: Vec2,
+}
+
+#[derive(Clone, Debug, Resource)]
+pub struct TeamRoster {
+    pub teams: Vec<TeamState>,
+}
+
+#[derive(Clone, Debug, Default, Resource)]
+pub struct MatchResult {
+    pub winner_team_id: Option<u8>,
+    pub winner_player_ids: Vec<u8>,
+    pub finished: bool,
+}
+
+pub fn build_match_resources(mode: GameMode) -> (BoardLayout, PlayerRoster, TeamRoster) {
+    let (players, teams) = build_match_rosters(mode);
+    (
+        BoardLayout::default(),
+        PlayerRoster { players },
+        TeamRoster { teams },
+    )
+}
+
+pub fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
+    match mode {
+        GameMode::OneVsOne => (
+            vec![
+                PlayerProfile {
+                    state: PlayerState {
+                        player_id: 1,
+                        team_id: 1,
+                        control: PlayerControl::Human,
+                    },
+                    color: Color::srgb(0.88, 0.30, 0.26),
+                    hangar_slots: vec![Vec2::new(-320.0, 280.0), Vec2::new(-260.0, 280.0)],
+                    launch_tile_index: 30,
+                    home_lane_positions: vec![
+                        Vec2::new(-128.0, 192.0),
+                        Vec2::new(-128.0, 128.0),
+                        Vec2::new(-128.0, 64.0),
+                        Vec2::new(-128.0, 0.0),
+                    ],
+                    goal_position: Vec2::new(-64.0, 0.0),
+                },
+                PlayerProfile {
+                    state: PlayerState {
+                        player_id: 2,
+                        team_id: 2,
+                        control: PlayerControl::Ai,
+                    },
+                    color: Color::srgb(0.28, 0.50, 0.90),
+                    hangar_slots: vec![Vec2::new(260.0, -280.0), Vec2::new(320.0, -280.0)],
+                    launch_tile_index: 6,
+                    home_lane_positions: vec![
+                        Vec2::new(192.0, 128.0),
+                        Vec2::new(128.0, 128.0),
+                        Vec2::new(64.0, 128.0),
+                        Vec2::new(0.0, 128.0),
+                    ],
+                    goal_position: Vec2::new(0.0, 64.0),
+                },
+            ],
+            vec![
+                TeamState {
+                    team_id: 1,
+                    player_ids: vec![1],
+                },
+                TeamState {
+                    team_id: 2,
+                    player_ids: vec![2],
+                },
+            ],
+        ),
+        GameMode::TwoVsTwo => (
+            vec![
+                PlayerProfile {
+                    state: PlayerState {
+                        player_id: 1,
+                        team_id: 1,
+                        control: PlayerControl::Human,
+                    },
+                    color: Color::srgb(0.88, 0.30, 0.26),
+                    hangar_slots: vec![Vec2::new(-320.0, 280.0)],
+                    launch_tile_index: 30,
+                    home_lane_positions: vec![
+                        Vec2::new(-128.0, 192.0),
+                        Vec2::new(-128.0, 128.0),
+                        Vec2::new(-128.0, 64.0),
+                        Vec2::new(-128.0, 0.0),
+                    ],
+                    goal_position: Vec2::new(-64.0, 0.0),
+                },
+                PlayerProfile {
+                    state: PlayerState {
+                        player_id: 2,
+                        team_id: 2,
+                        control: PlayerControl::Ai,
+                    },
+                    color: Color::srgb(0.28, 0.50, 0.90),
+                    hangar_slots: vec![Vec2::new(320.0, 280.0)],
+                    launch_tile_index: 6,
+                    home_lane_positions: vec![
+                        Vec2::new(192.0, 128.0),
+                        Vec2::new(128.0, 128.0),
+                        Vec2::new(64.0, 128.0),
+                        Vec2::new(0.0, 128.0),
+                    ],
+                    goal_position: Vec2::new(0.0, 64.0),
+                },
+                PlayerProfile {
+                    state: PlayerState {
+                        player_id: 3,
+                        team_id: 1,
+                        control: PlayerControl::Human,
+                    },
+                    color: Color::srgb(0.97, 0.78, 0.25),
+                    hangar_slots: vec![Vec2::new(-320.0, -280.0)],
+                    launch_tile_index: 22,
+                    home_lane_positions: vec![
+                        Vec2::new(-192.0, -128.0),
+                        Vec2::new(-128.0, -128.0),
+                        Vec2::new(-64.0, -128.0),
+                        Vec2::new(0.0, -128.0),
+                    ],
+                    goal_position: Vec2::new(0.0, -64.0),
+                },
+                PlayerProfile {
+                    state: PlayerState {
+                        player_id: 4,
+                        team_id: 2,
+                        control: PlayerControl::Ai,
+                    },
+                    color: Color::srgb(0.26, 0.74, 0.47),
+                    hangar_slots: vec![Vec2::new(320.0, -280.0)],
+                    launch_tile_index: 14,
+                    home_lane_positions: vec![
+                        Vec2::new(128.0, -192.0),
+                        Vec2::new(128.0, -128.0),
+                        Vec2::new(128.0, -64.0),
+                        Vec2::new(128.0, 0.0),
+                    ],
+                    goal_position: Vec2::new(64.0, 0.0),
+                },
+            ],
+            vec![
+                TeamState {
+                    team_id: 1,
+                    player_ids: vec![1, 3],
+                },
+                TeamState {
+                    team_id: 2,
+                    player_ids: vec![2, 4],
+                },
+            ],
+        ),
+    }
+}
+
+pub fn evaluate_match_result(team_roster: &TeamRoster, finished_player_ids: &[u8]) -> MatchResult {
+    for team in &team_roster.teams {
+        let team_finished = team
+            .player_ids
+            .iter()
+            .map(|player_id| finished_player_ids.contains(player_id))
+            .collect::<Vec<_>>();
+
+        if all_pieces_finished(&team_finished) {
+            return MatchResult {
+                winner_team_id: Some(team.team_id),
+                winner_player_ids: team.player_ids.clone(),
+                finished: true,
+            };
+        }
+    }
+
+    MatchResult::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_vs_one_roster_has_two_players_and_two_pieces() {
+        let (players, teams) = build_match_rosters(GameMode::OneVsOne);
+
+        assert_eq!(players.len(), 2);
+        assert_eq!(teams.len(), 2);
+        assert_eq!(players[0].hangar_slots.len(), 2);
+        assert_eq!(players[1].hangar_slots.len(), 2);
+    }
+
+    #[test]
+    fn two_vs_two_roster_has_four_players_and_shared_teams() {
+        let (players, teams) = build_match_rosters(GameMode::TwoVsTwo);
+
+        assert_eq!(players.len(), 4);
+        assert_eq!(teams.len(), 2);
+        assert_eq!(teams[0].player_ids, vec![1, 3]);
+        assert_eq!(teams[1].player_ids, vec![2, 4]);
+        assert!(players.iter().all(|player| player.hangar_slots.len() == 1));
+    }
+
+    #[test]
+    fn victory_requires_all_team_players_finished() {
+        let (_, teams) = build_match_rosters(GameMode::TwoVsTwo);
+        let team_roster = TeamRoster { teams };
+
+        let not_finished = evaluate_match_result(&team_roster, &[1]);
+        assert!(!not_finished.finished);
+
+        let team_one_finished = evaluate_match_result(&team_roster, &[1, 3]);
+        assert!(team_one_finished.finished);
+        assert_eq!(team_one_finished.winner_team_id, Some(1));
+        assert_eq!(team_one_finished.winner_player_ids, vec![1, 3]);
+    }
+
+    #[test]
+    fn one_vs_one_victory_requires_the_single_player_to_finish_all_pieces() {
+        let (_, teams) = build_match_rosters(GameMode::OneVsOne);
+        let team_roster = TeamRoster { teams };
+
+        let player_one_finished = evaluate_match_result(&team_roster, &[1]);
+        assert!(player_one_finished.finished);
+        assert_eq!(player_one_finished.winner_team_id, Some(1));
+        assert_eq!(player_one_finished.winner_player_ids, vec![1]);
+    }
+}

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
-use crate::plugins::game_plugin::MatchSetup;
+use crate::gameplay::match_flow::MatchSetup;
 use crate::states::AppState;
 
 pub struct MenuPlugin;

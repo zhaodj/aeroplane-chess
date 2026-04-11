@@ -2,8 +2,8 @@ use bevy::prelude::*;
 
 use crate::constants::{HUD_PANEL_WIDTH, HUD_Z_LAYER};
 use crate::domain::player::PlayerControl;
+use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
-use crate::plugins::game_plugin::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
 use crate::states::{AppState, GamePhase};
 
 pub struct UiPlugin;

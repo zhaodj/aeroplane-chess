@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::constants::{BOARD_TILE_SIZE, BOARD_Z_LAYER};
 use crate::domain::tile::TileKind;
-use crate::plugins::game_plugin::{BoardLayout, PlayerRoster};
+use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
 use crate::states::AppState;
 
 pub struct BoardPlugin;

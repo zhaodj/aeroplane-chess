@@ -8,7 +8,7 @@ use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::can_launch;
 use crate::domain::tile::TileKind;
-use crate::plugins::game_plugin::{
+use crate::gameplay::match_flow::{
     evaluate_match_result, BoardLayout, MatchConfig, MatchResult, PlayerProfile, PlayerRoster,
     TeamRoster,
 };
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn board_position_uses_player_launch_offset_on_main_route() {
-        let (players, _) = crate::plugins::game_plugin::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
         let player_one = &players[0];
         let player_two = &players[1];
 
@@ -1012,7 +1012,7 @@ mod tests {
 
     #[test]
     fn world_position_for_piece_uses_home_lane_and_goal_positions() {
-        let (players, _) = crate::plugins::game_plugin::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
         let player_roster = PlayerRoster { players };
         let board_layout = BoardLayout {
             tiles: crate::data::board_config::default_board_tiles(),
@@ -1046,7 +1046,7 @@ mod tests {
 
     #[test]
     fn collect_actions_returns_launch_and_move_options_for_human_player() {
-        let (players, _) = crate::plugins::game_plugin::build_match_rosters(GameMode::OneVsOne);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::OneVsOne);
         let player_roster = PlayerRoster { players };
 
         let mut world = World::new();
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn apply_team_stack_grants_shared_shield_in_two_vs_two() {
-        let (players, _) = crate::plugins::game_plugin::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
         let player_roster = PlayerRoster { players };
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
@@ -1189,7 +1189,7 @@ mod tests {
 
     #[test]
     fn clear_stack_from_origin_removes_shared_shield_from_remaining_stack() {
-        let (players, _) = crate::plugins::game_plugin::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
         let player_roster = PlayerRoster { players };
 
         let mut world = World::new();
@@ -1243,7 +1243,7 @@ mod tests {
 
     #[test]
     fn resolve_collision_consumes_shared_stack_shield_before_returning_to_hangar() {
-        let (players, _) = crate::plugins::game_plugin::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
         let player_roster = PlayerRoster { players };
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
