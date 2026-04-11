@@ -32,6 +32,13 @@ pub struct MatchConfig {
 }
 
 #[derive(Clone, Debug, Resource)]
+pub struct MatchSetup {
+    pub mode: GameMode,
+    pub ai_difficulty: AiDifficulty,
+    pub fast_mode: bool,
+}
+
+#[derive(Clone, Debug, Resource)]
 pub struct BoardLayout {
     pub tiles: Vec<TileConfig>,
 }
@@ -85,18 +92,19 @@ pub struct MatchResult {
 
 fn prepare_match(
     mut commands: Commands,
+    match_setup: Res<MatchSetup>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_phase: ResMut<NextState<GamePhase>>,
 ) {
     commands.insert_resource(MatchConfig {
-        mode: GameMode::TwoVsTwo,
-        ai_difficulty: AiDifficulty::Normal,
-        fast_mode: false,
+        mode: match_setup.mode,
+        ai_difficulty: match_setup.ai_difficulty,
+        fast_mode: match_setup.fast_mode,
     });
     commands.insert_resource(BoardLayout {
         tiles: default_board_tiles(),
     });
-    let (players, teams) = build_match_rosters(GameMode::TwoVsTwo);
+    let (players, teams) = build_match_rosters(match_setup.mode);
     commands.insert_resource(PlayerRoster { players });
     commands.insert_resource(TeamRoster { teams });
     commands.insert_resource(MatchResult::default());

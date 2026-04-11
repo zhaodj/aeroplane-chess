@@ -1,5 +1,8 @@
 use bevy::prelude::*;
 
+use crate::data::game_mode::GameMode;
+use crate::gameplay::ai::AiDifficulty;
+use crate::plugins::game_plugin::MatchSetup;
 use crate::states::AppState;
 
 pub struct BootPlugin;
@@ -13,6 +16,11 @@ impl Plugin for BootPlugin {
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
+    commands.insert_resource(MatchSetup {
+        mode: GameMode::TwoVsTwo,
+        ai_difficulty: AiDifficulty::Normal,
+        fast_mode: false,
+    });
 }
 
 fn advance_to_main_menu(mut next_state: ResMut<NextState<AppState>>) {
