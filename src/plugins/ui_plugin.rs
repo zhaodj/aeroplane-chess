@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::constants::HUD_Z_LAYER;
+use crate::domain::player::PlayerControl;
 use crate::plugins::turn_plugin::TurnInputState;
 use crate::plugins::game_plugin::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
 use crate::gameplay::turn_flow::TurnState;
@@ -63,6 +64,15 @@ fn update_hud(
         .last_action
         .as_deref()
         .unwrap_or("waiting for first action");
+    let current_control = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == turn_state.current_player)
+        .map(|player| match player.state.control {
+            PlayerControl::Human => "Human",
+            PlayerControl::Ai => "AI",
+        })
+        .unwrap_or("-");
     let result_text = if match_result.finished {
         format!(
             " | Result: Team {} wins",
@@ -78,12 +88,13 @@ fn update_hud(
         .unwrap_or_default();
 
     *text = Text::new(format!(
-        "Mode: {:?} | AI: {:?} | Players: {} | Teams: {} | Turn: P{} / {} | Phase: {:?} | Last Roll: {} | Last Action: {}{}{}",
+        "Mode: {:?} | AI: {:?} | Players: {} | Teams: {} | Turn: P{} ({}) / {} | Phase: {:?} | Last Roll: {} | Last Action: {}{}{}",
         match_config.mode,
         match_config.ai_difficulty,
         player_roster.players.len(),
         team_roster.teams.len(),
         turn_state.current_player,
+        current_control,
         turn_state.turn_index,
         game_phase.get(),
         roll_text,

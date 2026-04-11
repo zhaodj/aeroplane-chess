@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use rand::random_range;
 
 use crate::domain::dice::DiceRoll;
+use crate::domain::event::TileEventKind;
 use crate::domain::player::PlayerControl;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::rules::can_launch;
@@ -736,12 +737,26 @@ fn apply_tile_effects(
             );
             notes.push(format!("jumped to tile {final_progress}"));
         }
+        TileKind::Attack => {
+            notes.push("attack tile primed".to_string());
+        }
         TileKind::Defense => {
             if let Some(shield) = modify_piece_shield(action, piece_query, 1) {
                 notes.push(format!("gained shield ({shield})"));
             }
         }
-        TileKind::Attack | TileKind::Event | TileKind::Goal | TileKind::Normal => {}
+        TileKind::Event => {
+            if let Some(event_note) = apply_event_effect(
+                action,
+                &mut final_progress,
+                board_layout,
+                player_roster,
+                piece_query,
+            ) {
+                notes.push(event_note);
+            }
+        }
+        TileKind::Goal | TileKind::Normal => {}
     }
 
     final_progress
@@ -866,6 +881,62 @@ fn modify_piece_shield(
     }
 
     None
+}
+
+fn apply_event_effect(
+    action: &PlannedAction,
+    final_progress: &mut u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<String> {
+    match random_range(0..=2) {
+        0 => {
+            let shield = modify_piece_shield(action, piece_query, 1)?;
+            Some(format!(
+                "event {:?}: gained shield ({shield})",
+                TileEventKind::GainShield
+            ))
+        }
+        1 => {
+            let next_progress = (*final_progress + 2).min(FINISH_DISTANCE);
+            *final_progress = next_progress;
+            update_piece_progress(action, next_progress, board_layout, player_roster, piece_query);
+            Some(format!(
+                "event {:?}: advanced to tile {next_progress}",
+                TileEventKind::AdvanceTwo
+            ))
+        }
+        _ => {
+            let target_piece_id = action.piece_id();
+            let mut attacker_team = None;
+            for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+                if piece_id.0 == target_piece_id {
+                    attacker_team = Some(piece_state.team_id);
+                    break;
+                }
+            }
+
+            let attacker_team = attacker_team?;
+            for (piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
+                if piece_id.0 == target_piece_id
+                    || piece_state.team_id == attacker_team
+                    || piece_state.shield == 0
+                {
+                    continue;
+                }
+
+                piece_state.shield -= 1;
+                return Some(format!(
+                    "event {:?}: removed shield from piece #{}",
+                    TileEventKind::RemoveEnemyShield,
+                    piece_id.0
+                ));
+            }
+
+            Some("event fizzled: no enemy shield to remove".to_string())
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
