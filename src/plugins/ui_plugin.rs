@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::constants::HUD_Z_LAYER;
+use crate::plugins::turn_plugin::TurnInputState;
 use crate::plugins::game_plugin::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
 use crate::gameplay::turn_flow::TurnState;
 use crate::states::{AppState, GamePhase};
@@ -45,6 +46,7 @@ fn update_hud(
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
     match_result: Res<MatchResult>,
+    input_state: Res<TurnInputState>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
     mut query: Query<&mut Text, With<HudEntity>>,
@@ -69,9 +71,14 @@ fn update_hud(
     } else {
         String::new()
     };
+    let prompt_text = input_state
+        .prompt
+        .as_deref()
+        .map(|prompt| format!(" | Prompt: {prompt}"))
+        .unwrap_or_default();
 
     *text = Text::new(format!(
-        "Mode: {:?} | AI: {:?} | Players: {} | Teams: {} | Turn: P{} / {} | Phase: {:?} | Last Roll: {} | Last Action: {}{}",
+        "Mode: {:?} | AI: {:?} | Players: {} | Teams: {} | Turn: P{} / {} | Phase: {:?} | Last Roll: {} | Last Action: {}{}{}",
         match_config.mode,
         match_config.ai_difficulty,
         player_roster.players.len(),
@@ -82,6 +89,7 @@ fn update_hud(
         roll_text,
         action_text,
         result_text,
+        prompt_text,
     ));
 }
 

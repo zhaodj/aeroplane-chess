@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use rand::random_range;
 
 use crate::domain::dice::DiceRoll;
+use crate::domain::player::PlayerControl;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::rules::can_launch;
 use crate::domain::tile::TileKind;
@@ -23,7 +24,12 @@ impl Plugin for TurnPlugin {
         app.add_systems(OnEnter(AppState::InGame), setup_turn_automation)
             .add_systems(
                 Update,
-                drive_turn_loop.run_if(in_state(AppState::InGame)),
+                (
+                    drive_ai_turn_loop,
+                    handle_human_roll_input,
+                    handle_human_action_input,
+                )
+                    .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnExit(AppState::InGame), cleanup_turn_automation);
     }
@@ -34,19 +40,28 @@ struct TurnAutomation {
     timer: Timer,
 }
 
+#[derive(Resource, Default)]
+pub struct TurnInputState {
+    pending_actions: Vec<PlannedAction>,
+    pub prompt: Option<String>,
+}
+
 fn setup_turn_automation(mut commands: Commands) {
     commands.insert_resource(TurnAutomation {
         timer: Timer::from_seconds(0.9, TimerMode::Repeating),
     });
+    commands.insert_resource(TurnInputState::default());
 }
 
 fn cleanup_turn_automation(mut commands: Commands) {
     commands.remove_resource::<TurnAutomation>();
+    commands.remove_resource::<TurnInputState>();
 }
 
-fn drive_turn_loop(
+fn drive_ai_turn_loop(
     time: Res<Time>,
     mut automation: ResMut<TurnAutomation>,
+    mut input_state: ResMut<TurnInputState>,
     mut turn_state: ResMut<TurnState>,
     mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
@@ -57,6 +72,10 @@ fn drive_turn_loop(
     mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
     if !matches!(game_phase.get(), GamePhase::AwaitDice) || match_result.finished {
+        return;
+    }
+
+    if current_player_control(turn_state.current_player, &player_roster) != Some(PlayerControl::Ai) {
         return;
     }
 
@@ -78,56 +97,148 @@ fn drive_turn_loop(
 
     let Some(action) = choose_action(current_player, roll, &board_layout, &player_roster, &piece_query) else {
         turn_state.last_action = Some(format!("P{current_player} rolled {roll_value} but had no legal action"));
-        advance_turn(&mut turn_state, player_roster.players.len() as u8);
-        next_phase.set(GamePhase::AwaitDice);
+        finish_turn_without_action(
+            &mut turn_state,
+            &mut input_state,
+            &player_roster,
+            &mut next_phase,
+        );
         return;
     };
 
-    let initial_progress = apply_action(&action, &board_layout, &player_roster, &mut piece_query);
-    let mut notes = Vec::new();
-    let final_progress = apply_tile_effects(
-        &action,
-        initial_progress,
+    execute_action(
+        action,
+        roll_value,
+        &player_roster,
+        &team_roster,
         &board_layout,
-        &player_roster,
         &mut piece_query,
-        &mut notes,
+        &mut match_result,
+        &mut turn_state,
+        &mut input_state,
+        &mut next_phase,
     );
-    resolve_collision(
-        &action,
-        final_progress,
-        &player_roster,
-        &mut piece_query,
-        &mut notes,
-    );
+}
 
-    let finished_player_ids = piece_query
-        .iter()
-        .filter_map(|(_, _, piece_state, _)| {
-            (piece_state.status == PieceStatus::Finished).then_some(piece_state.owner_player_id)
-        })
-        .collect::<Vec<_>>();
-
-    let evaluated_result = evaluate_match_result(&team_roster, &finished_player_ids);
-    if evaluated_result.finished {
-        match_result.winner_team_id = evaluated_result.winner_team_id;
-        match_result.winner_player_ids = evaluated_result.winner_player_ids.clone();
-        match_result.finished = true;
-        notes.push(format!(
-            "team {} wins",
-            evaluated_result.winner_team_id.unwrap_or_default()
-        ));
-    }
-
-    turn_state.last_action = Some(describe_action(&action, roll_value, &notes));
-
-    if match_result.finished {
-        next_phase.set(GamePhase::CheckVictory);
+fn handle_human_roll_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut input_state: ResMut<TurnInputState>,
+    mut turn_state: ResMut<TurnState>,
+    mut next_phase: ResMut<NextState<GamePhase>>,
+    game_phase: Res<State<GamePhase>>,
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+    team_roster: Res<TeamRoster>,
+    mut match_result: ResMut<MatchResult>,
+    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    if !matches!(game_phase.get(), GamePhase::AwaitDice) || match_result.finished {
         return;
     }
 
-    advance_turn(&mut turn_state, player_roster.players.len() as u8);
-    next_phase.set(GamePhase::AwaitDice);
+    if current_player_control(turn_state.current_player, &player_roster) != Some(PlayerControl::Human) {
+        return;
+    }
+
+    input_state.prompt = Some("Press Space to roll".to_string());
+
+    if !keyboard.just_pressed(KeyCode::Space) {
+        return;
+    }
+
+    let roll_value = random_range(1..=6);
+    let roll = DiceRoll(roll_value);
+    turn_state.current_roll = Some(roll_value);
+    turn_state.last_roll = Some(roll_value);
+
+    if roll_value == 6 {
+        turn_state.extra_rolls_remaining = turn_state.extra_rolls_remaining.saturating_add(1);
+    }
+
+    let actions = collect_actions(
+        turn_state.current_player,
+        roll,
+        &board_layout,
+        &player_roster,
+        &piece_query,
+    );
+
+    if actions.is_empty() {
+        turn_state.last_action = Some(format!(
+            "P{} rolled {} but had no legal action",
+            turn_state.current_player, roll_value
+        ));
+        finish_turn_without_action(
+            &mut turn_state,
+            &mut input_state,
+            &player_roster,
+            &mut next_phase,
+        );
+        return;
+    }
+
+    if actions.len() == 1 {
+        execute_action(
+            actions[0],
+            roll_value,
+            &player_roster,
+            &team_roster,
+            &board_layout,
+            &mut piece_query,
+            &mut match_result,
+            &mut turn_state,
+            &mut input_state,
+            &mut next_phase,
+        );
+        return;
+    }
+
+    input_state.prompt = Some(format!(
+        "Rolled {}. Press {} to choose",
+        roll_value,
+        (1..=actions.len())
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join("/")
+    ));
+    input_state.pending_actions = actions;
+    next_phase.set(GamePhase::AwaitPieceSelect);
+}
+
+fn handle_human_action_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut input_state: ResMut<TurnInputState>,
+    mut turn_state: ResMut<TurnState>,
+    mut next_phase: ResMut<NextState<GamePhase>>,
+    game_phase: Res<State<GamePhase>>,
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+    team_roster: Res<TeamRoster>,
+    mut match_result: ResMut<MatchResult>,
+    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || match_result.finished {
+        return;
+    }
+
+    let Some(selection) = pressed_selection_key(&keyboard, input_state.pending_actions.len()) else {
+        return;
+    };
+
+    let action = input_state.pending_actions[selection];
+    let roll_value = turn_state.last_roll.unwrap_or_default();
+    execute_action(
+        action,
+        roll_value,
+        &player_roster,
+        &team_roster,
+        &board_layout,
+        &mut piece_query,
+        &mut match_result,
+        &mut turn_state,
+        &mut input_state,
+        &mut next_phase,
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -270,6 +381,169 @@ fn choose_action(
     }
 
     None
+}
+
+fn collect_actions(
+    current_player: u8,
+    roll: DiceRoll,
+    _board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+    piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Vec<PlannedAction> {
+    let snapshots = piece_query
+        .iter()
+        .map(|(piece_id, _, piece_state, _)| {
+            let player_profile = player_roster
+                .players
+                .iter()
+                .find(|player| player.state.player_id == piece_state.owner_player_id);
+
+            PieceSnapshot {
+                piece_id: piece_id.0,
+                owner_player_id: piece_state.owner_player_id,
+                team_id: piece_state.team_id,
+                status: piece_state.status,
+                distance: piece_state.progress,
+                shield: piece_state.shield,
+                board_position: player_profile.and_then(|profile| {
+                    board_position_for_distance(profile, piece_state.progress, piece_state.status)
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let Some(_player_profile) = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == current_player) else {
+        return Vec::new();
+    };
+
+    let mut actions = Vec::new();
+
+    if roll.0 == 6 {
+        for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
+            if piece.status == PieceStatus::InHangar
+                && can_launch(
+                    &PieceState {
+                        owner_player_id: piece.owner_player_id,
+                        team_id: piece.team_id,
+                        status: piece.status,
+                        progress: piece.distance,
+                        shield: piece.shield,
+                    },
+                    roll,
+                )
+            {
+                actions.push(PlannedAction::Launch {
+                    piece_id: piece.piece_id,
+                    target_progress: 0,
+                });
+            }
+        }
+    }
+
+    for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
+        if piece.status != PieceStatus::Active {
+            continue;
+        }
+
+        if let Some(target_progress) = compute_target_distance(piece.distance, roll.0) {
+            actions.push(PlannedAction::Move {
+                piece_id: piece.piece_id,
+                target_progress,
+            });
+        }
+    }
+
+    actions
+}
+
+fn execute_action(
+    action: PlannedAction,
+    roll_value: u8,
+    player_roster: &PlayerRoster,
+    team_roster: &TeamRoster,
+    board_layout: &BoardLayout,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    match_result: &mut MatchResult,
+    turn_state: &mut TurnState,
+    input_state: &mut TurnInputState,
+    next_phase: &mut ResMut<NextState<GamePhase>>,
+) {
+    let initial_progress = apply_action(&action, board_layout, player_roster, piece_query);
+    let mut notes = Vec::new();
+    let final_progress = apply_tile_effects(
+        &action,
+        initial_progress,
+        board_layout,
+        player_roster,
+        piece_query,
+        &mut notes,
+    );
+    resolve_collision(&action, final_progress, player_roster, piece_query, &mut notes);
+
+    let finished_player_ids = piece_query
+        .iter()
+        .filter_map(|(_, _, piece_state, _)| {
+            (piece_state.status == PieceStatus::Finished).then_some(piece_state.owner_player_id)
+        })
+        .collect::<Vec<_>>();
+
+    let evaluated_result = evaluate_match_result(team_roster, &finished_player_ids);
+    if evaluated_result.finished {
+        match_result.winner_team_id = evaluated_result.winner_team_id;
+        match_result.winner_player_ids = evaluated_result.winner_player_ids.clone();
+        match_result.finished = true;
+        notes.push(format!(
+            "team {} wins",
+            evaluated_result.winner_team_id.unwrap_or_default()
+        ));
+    }
+
+    turn_state.last_action = Some(describe_action(&action, roll_value, &notes));
+    input_state.pending_actions.clear();
+    input_state.prompt = None;
+
+    if match_result.finished {
+        next_phase.set(GamePhase::CheckVictory);
+        return;
+    }
+
+    advance_turn(turn_state, player_roster.players.len() as u8);
+    next_phase.set(GamePhase::AwaitDice);
+}
+
+fn finish_turn_without_action(
+    turn_state: &mut TurnState,
+    input_state: &mut TurnInputState,
+    player_roster: &PlayerRoster,
+    next_phase: &mut ResMut<NextState<GamePhase>>,
+) {
+    input_state.pending_actions.clear();
+    input_state.prompt = None;
+    advance_turn(turn_state, player_roster.players.len() as u8);
+    next_phase.set(GamePhase::AwaitDice);
+}
+
+fn current_player_control(current_player: u8, player_roster: &PlayerRoster) -> Option<PlayerControl> {
+    player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == current_player)
+        .map(|player| player.state.control)
+}
+
+fn pressed_selection_key(
+    keyboard: &ButtonInput<KeyCode>,
+    max_actions: usize,
+) -> Option<usize> {
+    let keys = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4];
+    keys.iter()
+        .enumerate()
+        .find_map(|(index, key)| {
+            (index < max_actions && keyboard.just_pressed(*key)).then_some(index)
+        })
 }
 
 fn is_enemy_on_progress(
