@@ -2,8 +2,8 @@ use bevy::prelude::*;
 
 use crate::constants::HUD_Z_LAYER;
 use crate::domain::player::PlayerControl;
-use crate::plugins::turn_plugin::TurnInputState;
 use crate::plugins::game_plugin::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
+use crate::plugins::turn_plugin::TurnInputState;
 use crate::gameplay::turn_flow::TurnState;
 use crate::states::{AppState, GamePhase};
 
@@ -13,12 +13,21 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::InGame), spawn_hud)
             .add_systems(Update, update_hud.run_if(in_state(AppState::InGame)))
-            .add_systems(OnExit(AppState::InGame), cleanup_hud);
+            .add_systems(OnEnter(AppState::Result), spawn_result_screen)
+            .add_systems(
+                Update,
+                handle_result_input.run_if(in_state(AppState::Result)),
+            )
+            .add_systems(OnExit(AppState::InGame), cleanup_hud)
+            .add_systems(OnExit(AppState::Result), cleanup_result);
     }
 }
 
 #[derive(Component)]
 struct HudEntity;
+
+#[derive(Component)]
+struct ResultEntity;
 
 fn spawn_hud(
     mut commands: Commands,
@@ -111,6 +120,49 @@ fn update_hud(
 }
 
 fn cleanup_hud(mut commands: Commands, query: Query<Entity, With<HudEntity>>) {
+    for entity in &query {
+        commands.entity(entity).despawn();
+    }
+}
+
+fn spawn_result_screen(
+    mut commands: Commands,
+    match_result: Res<MatchResult>,
+) {
+    let winner = match_result.winner_team_id.unwrap_or_default();
+    commands.spawn((
+        Text::new(format!(
+            "Match Result\n\nTeam {} wins\n\nR: Restart\nEsc: Main Menu",
+            winner
+        )),
+        TextFont {
+            font_size: 40.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Percent(28.0),
+            left: Val::Percent(22.0),
+            ..default()
+        },
+        Name::new("ResultText"),
+        ResultEntity,
+    ));
+}
+
+fn handle_result_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut next_app_state: ResMut<NextState<AppState>>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        next_app_state.set(AppState::LoadingGame);
+    } else if keyboard.just_pressed(KeyCode::Escape) {
+        next_app_state.set(AppState::MainMenu);
+    }
+}
+
+fn cleanup_result(mut commands: Commands, query: Query<Entity, With<ResultEntity>>) {
     for entity in &query {
         commands.entity(entity).despawn();
     }

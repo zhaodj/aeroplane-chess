@@ -15,7 +15,11 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::LoadingGame), prepare_match);
+        app.add_systems(OnEnter(AppState::LoadingGame), prepare_match)
+            .add_systems(
+                Update,
+                transition_to_result.run_if(in_state(AppState::InGame)),
+            );
     }
 }
 
@@ -267,6 +271,16 @@ pub fn evaluate_match_result(team_roster: &TeamRoster, finished_player_ids: &[u8
     }
 
     MatchResult::default()
+}
+
+fn transition_to_result(
+    game_phase: Res<State<GamePhase>>,
+    match_result: Res<MatchResult>,
+    mut next_app_state: ResMut<NextState<AppState>>,
+) {
+    if match_result.finished && matches!(game_phase.get(), GamePhase::CheckVictory) {
+        next_app_state.set(AppState::Result);
+    }
 }
 
 #[cfg(test)]
