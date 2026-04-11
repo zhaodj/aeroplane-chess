@@ -1,11 +1,12 @@
 use bevy::prelude::*;
 
+use crate::data::game_mode::GameMode;
 use crate::domain::piece::PieceState;
-use crate::gameplay::match_flow::{MatchResult, PlayerRoster};
+use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster};
 use crate::gameplay::skill_flow::{
     arm_dash, arm_double_dice, build_skill_roster, can_use_skill_this_turn, current_player_type,
     dash_bonus, mark_skill_used, player_skill_state, spend_shield_charge, spend_snipe_charge,
-    sync_turn_skill_usage, SkillRoster,
+    spend_swap_charge, sync_turn_skill_usage, SkillRoster,
 };
 use crate::gameplay::turn_flow::TurnState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
@@ -70,6 +71,7 @@ fn sync_skill_turn_state(
 
 fn handle_human_skill_input(
     keyboard: Res<ButtonInput<KeyCode>>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     match_result: Res<MatchResult>,
     game_phase: Res<State<GamePhase>>,
@@ -210,6 +212,52 @@ fn handle_human_skill_input(
                 turn_state.current_player
             ));
         }
+    } else if keyboard.just_pressed(KeyCode::KeyA) && matches!(game_phase.get(), GamePhase::AwaitDice) {
+        if match_config.mode != GameMode::TwoVsTwo {
+            skill_roster.last_skill_action = Some("Swap is only available in 2v2".to_string());
+            return;
+        }
+
+        let Some(current_player_profile) = player_roster
+            .players
+            .iter()
+            .find(|player| player.state.player_id == turn_state.current_player)
+        else {
+            return;
+        };
+
+        let Some(teammate_piece_id) = find_active_teammate_piece_for_swap(
+            turn_state.current_player,
+            current_player_profile.state.team_id,
+            &piece_query,
+        ) else {
+            skill_roster.last_skill_action = Some(format!(
+                "P{} found no teammate piece to Swap with",
+                turn_state.current_player
+            ));
+            return;
+        };
+        if !current_player_has_active_piece(turn_state.current_player, &piece_query) {
+            skill_roster.last_skill_action = Some(format!(
+                "P{} needs an active piece to use Swap",
+                turn_state.current_player
+            ));
+            return;
+        }
+        if !spend_swap_charge(&mut skill_roster, turn_state.current_player) {
+            skill_roster.last_skill_action = Some(format!(
+                "P{} has no Swap charges left",
+                turn_state.current_player
+            ));
+            return;
+        }
+
+        mark_skill_used(&mut skill_roster, turn_state.current_player);
+        skill_roster.last_skill_action = Some(execute_swap(
+            turn_state.current_player,
+            teammate_piece_id,
+            &mut piece_query,
+        ));
     }
 }
 
@@ -411,4 +459,79 @@ fn execute_snipe(
     }
 
     "Snipe failed to resolve".to_string()
+}
+
+fn current_player_has_active_piece(
+    current_player: u8,
+    piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    piece_query.iter().any(|(_, _, piece_state, _)| {
+        piece_state.owner_player_id == current_player
+            && piece_state.status == crate::domain::piece::PieceStatus::Active
+    })
+}
+
+fn find_active_teammate_piece_for_swap(
+    current_player: u8,
+    current_team: u8,
+    piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    let mut candidates = piece_query
+        .iter()
+        .filter(|(_, _, piece_state, _)| {
+            piece_state.owner_player_id != current_player
+                && piece_state.team_id == current_team
+                && piece_state.status == crate::domain::piece::PieceStatus::Active
+        })
+        .map(|(piece_id, _, _, _)| piece_id.0)
+        .collect::<Vec<_>>();
+    candidates.sort_unstable();
+    candidates.into_iter().next()
+}
+
+fn execute_swap(
+    current_player: u8,
+    teammate_piece_id: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> String {
+    let Some((current_piece_id, current_state, current_translation)) = piece_query
+        .iter()
+        .find_map(|(piece_id, _, piece_state, transform)| {
+            (piece_state.owner_player_id == current_player
+                && piece_state.status == crate::domain::piece::PieceStatus::Active)
+                .then_some((piece_id.0, *piece_state, transform.translation))
+        })
+    else {
+        return "Swap failed: current player's active piece not found".to_string();
+    };
+
+    let Some((teammate_state, teammate_translation)) = piece_query
+        .iter()
+        .find_map(|(piece_id, _, piece_state, transform)| {
+            (piece_id.0 == teammate_piece_id).then_some((*piece_state, transform.translation))
+        })
+    else {
+        return "Swap failed: teammate piece not found".to_string();
+    };
+
+    for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
+        if piece_id.0 == current_piece_id {
+            piece_state.status = teammate_state.status;
+            piece_state.progress = teammate_state.progress;
+            piece_state.shield = teammate_state.shield;
+            piece_state.stack_shield = teammate_state.stack_shield;
+            transform.translation = teammate_translation;
+        } else if piece_id.0 == teammate_piece_id {
+            piece_state.status = current_state.status;
+            piece_state.progress = current_state.progress;
+            piece_state.shield = current_state.shield;
+            piece_state.stack_shield = current_state.stack_shield;
+            transform.translation = current_translation;
+        }
+    }
+
+    format!(
+        "Swap exchanged piece #{} with teammate piece #{}",
+        current_piece_id, teammate_piece_id
+    )
 }

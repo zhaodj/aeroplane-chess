@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::data::game_mode::GameMode;
 use crate::domain::dice::DiceRoll;
 use crate::domain::piece::PieceState;
 use crate::domain::player::PlayerControl;
@@ -9,7 +10,7 @@ use crate::gameplay::match_flow::{
 use crate::gameplay::skill_flow::{
     arm_dash, arm_double_dice, can_use_skill_this_turn, clear_dash_arm, dash_bonus,
     mark_skill_used, player_skill_state, resolve_roll_value, spend_shield_charge,
-    spend_snipe_charge, SkillRoster,
+    spend_snipe_charge, spend_swap_charge, SkillRoster,
 };
 use crate::gameplay::turn_flow::{
     choose_action, collect_actions, current_player_control, execute_action,
@@ -84,7 +85,12 @@ fn drive_ai_turn_loop(
         return;
     }
 
-    maybe_use_ai_skills(turn_state.current_player, &mut skill_roster, &mut piece_query);
+    maybe_use_ai_skills(
+        turn_state.current_player,
+        &match_config,
+        &mut skill_roster,
+        &mut piece_query,
+    );
 
     let roll_resolution = resolve_roll_value(&mut skill_roster, turn_state.current_player);
     let roll_value = roll_resolution.value;
@@ -137,6 +143,7 @@ fn drive_ai_turn_loop(
 
 fn maybe_use_ai_skills(
     current_player: u8,
+    match_config: &MatchConfig,
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
@@ -170,6 +177,21 @@ fn maybe_use_ai_skills(
                 "P{} (AI) used Shield on piece #{} ({})",
                 current_player, target_piece_id, shield_value
             ));
+            return;
+        }
+    }
+
+    if match_config.mode == GameMode::TwoVsTwo
+        && can_use_skill_this_turn(skill_roster, current_player)
+        && let Some(teammate_piece_id) = preferred_ai_swap_target(current_player, piece_query)
+    {
+        let can_use_swap = player_skill_state(skill_roster, current_player)
+            .map(|skills| skills.swap_charges > 0)
+            .unwrap_or(false);
+        if can_use_swap && spend_swap_charge(skill_roster, current_player) {
+            mark_skill_used(skill_roster, current_player);
+            skill_roster.last_skill_action =
+                Some(execute_swap_on_turn_query(current_player, teammate_piece_id, piece_query));
             return;
         }
     }
@@ -239,6 +261,41 @@ fn preferred_ai_shield_target(
         })
         .map(|(piece_id, _, _, _)| piece_id.0)
         .min()
+}
+
+fn preferred_ai_swap_target(
+    current_player: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    let mut own_progress = None;
+    let mut own_team = None;
+
+    for (_, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_state.owner_player_id == current_player
+            && piece_state.status == crate::domain::piece::PieceStatus::Active
+        {
+            own_progress = Some(piece_state.progress);
+            own_team = Some(piece_state.team_id);
+            break;
+        }
+    }
+
+    let (Some(own_progress), Some(own_team)) = (own_progress, own_team) else {
+        return None;
+    };
+
+    let mut candidates = piece_query
+        .iter_mut()
+        .filter(|(_, _, piece_state, _)| {
+            piece_state.owner_player_id != current_player
+                && piece_state.team_id == own_team
+                && piece_state.status == crate::domain::piece::PieceStatus::Active
+                && piece_state.progress >= own_progress.saturating_add(6)
+        })
+        .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.progress))
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(_, progress)| std::cmp::Reverse(*progress));
+    candidates.into_iter().map(|(piece_id, _)| piece_id).next()
 }
 
 fn should_ai_arm_double_dice(
@@ -349,6 +406,53 @@ fn execute_snipe_on_turn_query(
     } else {
         "Snipe failed to resolve".to_string()
     }
+}
+
+fn execute_swap_on_turn_query(
+    current_player: u8,
+    teammate_piece_id: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> String {
+    let Some((current_piece_id, current_state, current_translation)) = piece_query
+        .iter()
+        .find_map(|(piece_id, _, piece_state, transform)| {
+            (piece_state.owner_player_id == current_player
+                && piece_state.status == crate::domain::piece::PieceStatus::Active)
+                .then_some((piece_id.0, *piece_state, transform.translation))
+        })
+    else {
+        return "AI Swap failed: current active piece not found".to_string();
+    };
+
+    let Some((teammate_state, teammate_translation)) = piece_query
+        .iter()
+        .find_map(|(piece_id, _, piece_state, transform)| {
+            (piece_id.0 == teammate_piece_id).then_some((*piece_state, transform.translation))
+        })
+    else {
+        return "AI Swap failed: teammate piece not found".to_string();
+    };
+
+    for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
+        if piece_id.0 == current_piece_id {
+            piece_state.status = teammate_state.status;
+            piece_state.progress = teammate_state.progress;
+            piece_state.shield = teammate_state.shield;
+            piece_state.stack_shield = teammate_state.stack_shield;
+            transform.translation = teammate_translation;
+        } else if piece_id.0 == teammate_piece_id {
+            piece_state.status = current_state.status;
+            piece_state.progress = current_state.progress;
+            piece_state.shield = current_state.shield;
+            piece_state.stack_shield = current_state.stack_shield;
+            transform.translation = current_translation;
+        }
+    }
+
+    format!(
+        "AI Swap exchanged piece #{} with teammate piece #{}",
+        current_piece_id, teammate_piece_id
+    )
 }
 
 fn handle_human_roll_input(

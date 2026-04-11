@@ -20,6 +20,7 @@ pub struct PlayerSkillState {
     pub dash_charges: u8,
     pub dash_armed: bool,
     pub snipe_charges: u8,
+    pub swap_charges: u8,
     pub shield_charges: u8,
     pub double_dice_charges: u8,
     pub double_dice_armed: bool,
@@ -41,6 +42,7 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
                 dash_charges: 1,
                 dash_armed: false,
                 snipe_charges: 1,
+                swap_charges: 1,
                 shield_charges: 1,
                 double_dice_charges: 1,
                 double_dice_armed: false,
@@ -126,6 +128,23 @@ pub fn spend_snipe_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool
     }
 
     player_state.snipe_charges -= 1;
+    true
+}
+
+pub fn spend_swap_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
+    let Some(player_state) = skill_roster
+        .players
+        .iter_mut()
+        .find(|player| player.player_id == player_id)
+    else {
+        return false;
+    };
+
+    if player_state.swap_charges == 0 {
+        return false;
+    }
+
+    player_state.swap_charges -= 1;
     true
 }
 
@@ -369,6 +388,7 @@ mod tests {
         assert_eq!(skill_roster.players.len(), 2);
         assert_eq!(skill_roster.players[0].dash_charges, 1);
         assert_eq!(skill_roster.players[0].snipe_charges, 1);
+        assert_eq!(skill_roster.players[0].swap_charges, 1);
         assert_eq!(skill_roster.players[0].shield_charges, 1);
         assert_eq!(skill_roster.players[0].double_dice_charges, 1);
         assert!(!skill_roster.players[0].dash_armed);
@@ -406,6 +426,14 @@ mod tests {
 
         assert!(spend_snipe_charge(&mut skill_roster, 1));
         assert!(!spend_snipe_charge(&mut skill_roster, 1));
+    }
+
+    #[test]
+    fn spend_swap_charge_only_succeeds_when_charge_exists() {
+        let mut skill_roster = build_skill_roster(&sample_roster());
+
+        assert!(spend_swap_charge(&mut skill_roster, 1));
+        assert!(!spend_swap_charge(&mut skill_roster, 1));
     }
 
     #[test]
