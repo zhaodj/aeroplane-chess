@@ -6,7 +6,9 @@ use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{
     BoardLayout, MatchConfig, MatchResult, PlayerRoster, TeamRoster,
 };
-use crate::gameplay::skill_flow::{resolve_roll_value, SkillRoster};
+use crate::gameplay::skill_flow::{
+    arm_double_dice, player_skill_state, resolve_roll_value, spend_shield_charge, SkillRoster,
+};
 use crate::gameplay::turn_flow::{
     choose_action, collect_actions, current_player_control, execute_action,
     find_pending_action_by_piece_id, finish_turn_without_action, get_pending_action,
@@ -79,6 +81,8 @@ fn drive_ai_turn_loop(
         return;
     }
 
+    maybe_use_ai_skills(turn_state.current_player, &mut skill_roster, &mut piece_query);
+
     let roll_resolution = resolve_roll_value(&mut skill_roster, turn_state.current_player);
     let roll_value = roll_resolution.value;
     let roll = DiceRoll(roll_value);
@@ -118,6 +122,99 @@ fn drive_ai_turn_loop(
         &mut input_state,
         &mut next_phase,
     );
+}
+
+fn maybe_use_ai_skills(
+    current_player: u8,
+    skill_roster: &mut SkillRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    if let Some(target_piece_id) = preferred_ai_shield_target(current_player, piece_query) {
+        let can_use_shield = player_skill_state(skill_roster, current_player)
+            .map(|skills| skills.shield_charges > 0)
+            .unwrap_or(false);
+
+        if can_use_shield
+            && spend_shield_charge(skill_roster, current_player)
+            && let Some(shield_value) =
+                apply_shield_to_piece_to_turn_query(target_piece_id, piece_query)
+        {
+            skill_roster.last_skill_action = Some(format!(
+                "P{} (AI) used Shield on piece #{} ({})",
+                current_player, target_piece_id, shield_value
+            ));
+            return;
+        }
+    }
+
+    if should_ai_arm_double_dice(current_player, skill_roster, piece_query)
+        && arm_double_dice(skill_roster, current_player)
+    {
+        skill_roster.last_skill_action = Some(format!(
+            "P{} (AI) armed DoubleDice for launch pressure",
+            current_player
+        ));
+    }
+}
+
+fn preferred_ai_shield_target(
+    current_player: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    piece_query
+        .iter_mut()
+        .filter(|(_, _, piece_state, _)| {
+            piece_state.owner_player_id == current_player
+                && piece_state.status == crate::domain::piece::PieceStatus::Active
+                && piece_state.shield == 0
+        })
+        .map(|(piece_id, _, _, _)| piece_id.0)
+        .min()
+}
+
+fn should_ai_arm_double_dice(
+    current_player: u8,
+    skill_roster: &SkillRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    let Some(skill_state) = player_skill_state(skill_roster, current_player) else {
+        return false;
+    };
+    if skill_state.double_dice_charges == 0 || skill_state.double_dice_armed {
+        return false;
+    }
+
+    let mut has_active_piece = false;
+    let mut has_hangar_piece = false;
+    for (_, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_state.owner_player_id != current_player {
+            continue;
+        }
+
+        match piece_state.status {
+            crate::domain::piece::PieceStatus::Active => has_active_piece = true,
+            crate::domain::piece::PieceStatus::InHangar => has_hangar_piece = true,
+            _ => {}
+        }
+    }
+
+    !has_active_piece && has_hangar_piece
+}
+
+fn apply_shield_to_piece_to_turn_query(
+    piece_id: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    for (query_piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
+        if query_piece_id.0 != piece_id {
+            continue;
+        }
+
+        piece_state.shield = piece_state.shield.saturating_add(1);
+        return Some(piece_state.shield);
+    }
+
+    None
 }
 
 fn handle_human_roll_input(

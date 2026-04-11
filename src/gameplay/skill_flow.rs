@@ -1,7 +1,10 @@
 use bevy::prelude::*;
 use rand::random_range;
 
+use crate::domain::piece::{PieceState, PieceStatus};
+use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::PlayerRoster;
+use crate::plugins::piece_plugin::PieceId;
 
 #[derive(Clone, Debug, Default, Resource)]
 pub struct SkillRoster {
@@ -47,6 +50,103 @@ pub fn player_skill_state(
         .players
         .iter()
         .find(|player| player.player_id == player_id)
+}
+
+pub fn preferred_shield_target(
+    player_id: u8,
+    piece_query: &Query<(&PieceId, &mut PieceState)>,
+) -> Option<u8> {
+    piece_query
+        .iter()
+        .filter(|(_, piece_state)| {
+            piece_state.owner_player_id == player_id
+                && piece_state.status == PieceStatus::Active
+                && piece_state.shield == 0
+        })
+        .map(|(piece_id, _)| piece_id.0)
+        .min()
+        .or_else(|| {
+            piece_query
+                .iter()
+                .filter(|(_, piece_state)| {
+                    piece_state.owner_player_id == player_id
+                        && piece_state.status == PieceStatus::Active
+                })
+                .map(|(piece_id, _)| piece_id.0)
+                .min()
+        })
+        .or_else(|| {
+            piece_query
+                .iter()
+                .filter(|(_, piece_state)| piece_state.owner_player_id == player_id)
+                .map(|(piece_id, _)| piece_id.0)
+                .min()
+        })
+}
+
+pub fn should_ai_use_shield(
+    player_id: u8,
+    skill_roster: &SkillRoster,
+    piece_query: &Query<(&PieceId, &mut PieceState)>,
+) -> bool {
+    let Some(skill_state) = player_skill_state(skill_roster, player_id) else {
+        return false;
+    };
+    if skill_state.shield_charges == 0 {
+        return false;
+    }
+
+    piece_query.iter().any(|(_, piece_state)| {
+        piece_state.owner_player_id == player_id
+            && piece_state.status == PieceStatus::Active
+            && piece_state.shield == 0
+    })
+}
+
+pub fn should_ai_arm_double_dice(
+    player_id: u8,
+    skill_roster: &SkillRoster,
+    piece_query: &Query<(&PieceId, &mut PieceState)>,
+) -> bool {
+    let Some(skill_state) = player_skill_state(skill_roster, player_id) else {
+        return false;
+    };
+    if skill_state.double_dice_charges == 0 || skill_state.double_dice_armed {
+        return false;
+    }
+
+    let has_active_piece = piece_query.iter().any(|(_, piece_state)| {
+        piece_state.owner_player_id == player_id && piece_state.status == PieceStatus::Active
+    });
+    let has_hangar_piece = piece_query.iter().any(|(_, piece_state)| {
+        piece_state.owner_player_id == player_id && piece_state.status == PieceStatus::InHangar
+    });
+
+    !has_active_piece && has_hangar_piece
+}
+
+pub fn apply_shield_to_piece(
+    piece_id: u8,
+    piece_query: &mut Query<(&PieceId, &mut PieceState)>,
+) -> Option<u8> {
+    for (query_piece_id, mut piece_state) in piece_query.iter_mut() {
+        if query_piece_id.0 != piece_id {
+            continue;
+        }
+
+        piece_state.shield = piece_state.shield.saturating_add(1);
+        return Some(piece_state.shield);
+    }
+
+    None
+}
+
+pub fn current_player_type(player_roster: &PlayerRoster, player_id: u8) -> Option<PlayerControl> {
+    player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == player_id)
+        .map(|player| player.state.control)
 }
 
 pub fn spend_shield_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
@@ -121,8 +221,9 @@ pub fn resolve_roll_from_values(first: u8, second: u8, use_double_dice: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::player::{PlayerControl, PlayerState};
+    use crate::domain::player::PlayerState;
     use crate::gameplay::match_flow::{PlayerProfile, PlayerRoster};
+    use bevy::ecs::system::SystemState;
 
     fn sample_roster() -> PlayerRoster {
         PlayerRoster {
@@ -199,5 +300,52 @@ mod tests {
                 used_double_dice: false,
             }
         );
+    }
+
+    #[test]
+    fn ai_arms_double_dice_when_all_pieces_are_in_hangar() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::InHangar,
+                progress: 0,
+                shield: 0,
+                stack_shield: 0,
+            },
+        ));
+
+        let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
+            SystemState::new(&mut world);
+        let query = system_state.get(&world);
+        let skill_roster = build_skill_roster(&sample_roster());
+
+        assert!(should_ai_arm_double_dice(2, &skill_roster, &query));
+    }
+
+    #[test]
+    fn ai_uses_shield_when_active_piece_has_no_shield() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 4,
+                shield: 0,
+                stack_shield: 0,
+            },
+        ));
+
+        let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
+            SystemState::new(&mut world);
+        let query = system_state.get(&world);
+        let skill_roster = build_skill_roster(&sample_roster());
+
+        assert!(should_ai_use_shield(2, &skill_roster, &query));
+        assert_eq!(preferred_shield_target(2, &query), Some(1));
     }
 }

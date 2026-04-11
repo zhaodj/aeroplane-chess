@@ -1,10 +1,10 @@
 use bevy::prelude::*;
 
-use crate::domain::piece::{PieceState, PieceStatus};
-use crate::domain::player::PlayerControl;
+use crate::domain::piece::PieceState;
 use crate::gameplay::match_flow::{MatchResult, PlayerRoster};
 use crate::gameplay::skill_flow::{
-    arm_double_dice, build_skill_roster, player_skill_state, spend_shield_charge, SkillRoster,
+    apply_shield_to_piece, arm_double_dice, build_skill_roster, current_player_type,
+    player_skill_state, preferred_shield_target, spend_shield_charge, SkillRoster,
 };
 use crate::gameplay::turn_flow::TurnState;
 use crate::plugins::piece_plugin::PieceId;
@@ -44,92 +44,60 @@ fn handle_human_skill_input(
         return;
     }
 
-    let Some(current_player) = player_roster
-        .players
-        .iter()
-        .find(|player| player.state.player_id == turn_state.current_player)
-    else {
-        return;
-    };
-
-    if current_player.state.control != PlayerControl::Human {
+    if current_player_type(&player_roster, turn_state.current_player)
+        != Some(crate::domain::player::PlayerControl::Human)
+    {
         return;
     }
 
     if keyboard.just_pressed(KeyCode::KeyQ) {
-        let Some(target_piece_id) = preferred_shield_target(current_player.state.player_id, &piece_query)
+        let Some(target_piece_id) = preferred_shield_target(turn_state.current_player, &piece_query)
         else {
             skill_roster.last_skill_action = Some(format!(
                 "P{} could not find a piece for Shield",
-                current_player.state.player_id
+                turn_state.current_player
             ));
             return;
         };
 
-        if !spend_shield_charge(&mut skill_roster, current_player.state.player_id) {
+        if !spend_shield_charge(&mut skill_roster, turn_state.current_player) {
             skill_roster.last_skill_action = Some(format!(
                 "P{} has no Shield charges left",
-                current_player.state.player_id
+                turn_state.current_player
             ));
             return;
         }
 
-        for (piece_id, mut piece_state) in &mut piece_query {
-            if piece_id.0 != target_piece_id {
-                continue;
-            }
-
-            piece_state.shield = piece_state.shield.saturating_add(1);
+        if let Some(shield_value) = apply_shield_to_piece(target_piece_id, &mut piece_query) {
             skill_roster.last_skill_action = Some(format!(
                 "P{} used Shield on piece #{} ({})",
-                current_player.state.player_id,
+                turn_state.current_player,
                 target_piece_id,
-                piece_state.shield
+                shield_value
             ));
-            break;
         }
     } else if keyboard.just_pressed(KeyCode::KeyW) {
-        if arm_double_dice(&mut skill_roster, current_player.state.player_id) {
+        if arm_double_dice(&mut skill_roster, turn_state.current_player) {
             skill_roster.last_skill_action = Some(format!(
                 "P{} armed DoubleDice for the next roll",
-                current_player.state.player_id
+                turn_state.current_player
             ));
         } else {
-            let armed = player_skill_state(&skill_roster, current_player.state.player_id)
+            let armed = player_skill_state(&skill_roster, turn_state.current_player)
                 .map(|state| state.double_dice_armed)
                 .unwrap_or(false);
             let message = if armed {
                 format!(
                     "P{} already has DoubleDice armed",
-                    current_player.state.player_id
+                    turn_state.current_player
                 )
             } else {
                 format!(
                     "P{} has no DoubleDice charges left",
-                    current_player.state.player_id
+                    turn_state.current_player
                 )
             };
             skill_roster.last_skill_action = Some(message);
         }
     }
-}
-
-fn preferred_shield_target(
-    player_id: u8,
-    piece_query: &Query<(&PieceId, &mut PieceState)>,
-) -> Option<u8> {
-    piece_query
-        .iter()
-        .filter(|(_, piece_state)| {
-            piece_state.owner_player_id == player_id && piece_state.status == PieceStatus::Active
-        })
-        .map(|(piece_id, _)| piece_id.0)
-        .min()
-        .or_else(|| {
-            piece_query
-                .iter()
-                .filter(|(_, piece_state)| piece_state.owner_player_id == player_id)
-                .map(|(piece_id, _)| piece_id.0)
-                .min()
-        })
 }
