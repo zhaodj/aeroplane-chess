@@ -535,3 +535,197 @@ fn execute_swap(
         current_piece_id, teammate_piece_id
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::system::SystemState;
+
+    #[test]
+    fn execute_snipe_consumes_normal_shield_before_hangar() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::new(-10.0, 20.0)),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 7,
+                shield: 1,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        let note = execute_snipe(1, &mut query);
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.status, piece_state.shield))
+            .collect::<Vec<_>>();
+
+        assert!(note.contains("removed a shield"));
+        assert_eq!(states, vec![(1, crate::domain::piece::PieceStatus::Active, 0)]);
+    }
+
+    #[test]
+    fn execute_snipe_sends_unshielded_piece_to_hangar() {
+        let hangar = Vec2::new(30.0, -40.0);
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(hangar),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 7,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::from_xyz(100.0, 200.0, 0.0),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        let note = execute_snipe(1, &mut query);
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, transform)| {
+                (
+                    piece_id.0,
+                    piece_state.status,
+                    piece_state.progress,
+                    transform.translation.x,
+                    transform.translation.y,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(note.contains("back to hangar"));
+        assert_eq!(
+            states,
+            vec![(1, crate::domain::piece::PieceStatus::InHangar, 0, hangar.x, hangar.y)]
+        );
+    }
+
+    #[test]
+    fn find_active_teammate_piece_for_swap_returns_smallest_matching_piece_id() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(9),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 3,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(4),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 1,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 10,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(7),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 5,
+                team_id: 1,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 12,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world);
+
+        assert_eq!(find_active_teammate_piece_for_swap(1, 1, &query), Some(4));
+    }
+
+    #[test]
+    fn execute_swap_exchanges_progress_and_positions_between_teammates() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 3,
+                shield: 1,
+                stack_shield: 0,
+            },
+            Transform::from_xyz(-100.0, 0.0, 0.0),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 1,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 18,
+                shield: 0,
+                stack_shield: 1,
+            },
+            Transform::from_xyz(100.0, 50.0, 0.0),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        let note = execute_swap(1, 2, &mut query);
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, transform)| {
+                (
+                    piece_id.0,
+                    piece_state.owner_player_id,
+                    piece_state.progress,
+                    piece_state.shield,
+                    piece_state.stack_shield,
+                    transform.translation.x,
+                    transform.translation.y,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(note.contains("exchanged"));
+        assert_eq!(
+            states,
+            vec![
+                (1, 1, 18, 0, 1, 100.0, 50.0),
+                (2, 3, 3, 1, 0, -100.0, 0.0),
+            ]
+        );
+    }
+}

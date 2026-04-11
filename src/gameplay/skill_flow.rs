@@ -489,7 +489,7 @@ mod tests {
 
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
-        let query = system_state.get(&world);
+        let query = system_state.get_mut(&mut world);
         let skill_roster = build_skill_roster(&sample_roster());
 
         assert!(should_ai_arm_double_dice(2, &skill_roster, &query));
@@ -512,7 +512,7 @@ mod tests {
 
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
-        let query = system_state.get(&world);
+        let query = system_state.get_mut(&mut world);
         let skill_roster = build_skill_roster(&sample_roster());
 
         assert!(should_ai_use_shield(2, &skill_roster, &query));
@@ -558,7 +558,7 @@ mod tests {
 
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
-        let query = system_state.get(&world);
+        let query = system_state.get_mut(&mut world);
 
         assert_eq!(collect_snipe_targets(1, 1, &query), vec![3, 2]);
     }
