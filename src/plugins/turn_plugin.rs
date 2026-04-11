@@ -6,7 +6,9 @@ use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::rules::can_launch;
 use crate::domain::tile::TileKind;
 use crate::gameplay::turn_flow::TurnState;
-use crate::plugins::game_plugin::{BoardLayout, PlayerProfile, PlayerRoster};
+use crate::plugins::game_plugin::{
+    evaluate_match_result, BoardLayout, MatchResult, PlayerProfile, PlayerRoster, TeamRoster,
+};
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
 
@@ -50,9 +52,11 @@ fn drive_turn_loop(
     game_phase: Res<State<GamePhase>>,
     board_layout: Res<BoardLayout>,
     player_roster: Res<PlayerRoster>,
+    team_roster: Res<TeamRoster>,
+    mut match_result: ResMut<MatchResult>,
     mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
-    if !matches!(game_phase.get(), GamePhase::AwaitDice) {
+    if !matches!(game_phase.get(), GamePhase::AwaitDice) || match_result.finished {
         return;
     }
 
@@ -96,7 +100,31 @@ fn drive_turn_loop(
         &mut piece_query,
         &mut notes,
     );
+
+    let finished_player_ids = piece_query
+        .iter()
+        .filter_map(|(_, _, piece_state, _)| {
+            (piece_state.status == PieceStatus::Finished).then_some(piece_state.owner_player_id)
+        })
+        .collect::<Vec<_>>();
+
+    let evaluated_result = evaluate_match_result(&team_roster, &finished_player_ids);
+    if evaluated_result.finished {
+        match_result.winner_team_id = evaluated_result.winner_team_id;
+        match_result.winner_player_ids = evaluated_result.winner_player_ids.clone();
+        match_result.finished = true;
+        notes.push(format!(
+            "team {} wins",
+            evaluated_result.winner_team_id.unwrap_or_default()
+        ));
+    }
+
     turn_state.last_action = Some(describe_action(&action, roll_value, &notes));
+
+    if match_result.finished {
+        next_phase.set(GamePhase::CheckVictory);
+        return;
+    }
 
     advance_turn(&mut turn_state, player_roster.players.len() as u8);
     next_phase.set(GamePhase::AwaitDice);

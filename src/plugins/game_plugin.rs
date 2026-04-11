@@ -5,6 +5,7 @@ use crate::data::game_mode::GameMode;
 use crate::domain::player::{PlayerControl, PlayerState};
 use crate::domain::team::TeamState;
 use crate::domain::tile::TileKind;
+use crate::domain::victory::all_pieces_finished;
 use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::turn_flow::TurnState;
 use crate::states::AppState;
@@ -75,6 +76,13 @@ pub struct TeamRoster {
     pub teams: Vec<TeamState>,
 }
 
+#[derive(Clone, Debug, Default, Resource)]
+pub struct MatchResult {
+    pub winner_team_id: Option<u8>,
+    pub winner_player_ids: Vec<u8>,
+    pub finished: bool,
+}
+
 fn prepare_match(
     mut commands: Commands,
     mut next_app_state: ResMut<NextState<AppState>>,
@@ -91,6 +99,7 @@ fn prepare_match(
     let (players, teams) = build_match_rosters(GameMode::TwoVsTwo);
     commands.insert_resource(PlayerRoster { players });
     commands.insert_resource(TeamRoster { teams });
+    commands.insert_resource(MatchResult::default());
     commands.insert_resource(TurnState::opening_turn());
 
     next_game_phase.set(GamePhase::AwaitDice);
@@ -230,4 +239,24 @@ fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
             ],
         ),
     }
+}
+
+pub fn evaluate_match_result(team_roster: &TeamRoster, finished_player_ids: &[u8]) -> MatchResult {
+    for team in &team_roster.teams {
+        let team_finished = team
+            .player_ids
+            .iter()
+            .map(|player_id| finished_player_ids.contains(player_id))
+            .collect::<Vec<_>>();
+
+        if all_pieces_finished(&team_finished) {
+            return MatchResult {
+                winner_team_id: Some(team.team_id),
+                winner_player_ids: team.player_ids.clone(),
+                finished: true,
+            };
+        }
+    }
+
+    MatchResult::default()
 }
