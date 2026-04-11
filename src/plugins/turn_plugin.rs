@@ -1225,3 +1225,62 @@ fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
 
     turn_state.current_roll = None;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::game_mode::GameMode;
+    use crate::plugins::game_plugin::build_match_rosters;
+
+    #[test]
+    fn compute_target_distance_blocks_overshoot() {
+        assert_eq!(compute_target_distance(FINISH_DISTANCE - 2, 2), Some(FINISH_DISTANCE));
+        assert_eq!(compute_target_distance(FINISH_DISTANCE - 2, 3), None);
+    }
+
+    #[test]
+    fn board_position_uses_player_launch_offset_on_main_route() {
+        let (players, _) = build_match_rosters(GameMode::TwoVsTwo);
+        let player_one = &players[0];
+        let player_two = &players[1];
+
+        assert_eq!(
+            board_position_for_distance(player_one, 0, PieceStatus::Active),
+            Some(BoardPosition::Main(30))
+        );
+        assert_eq!(
+            board_position_for_distance(player_two, 0, PieceStatus::Active),
+            Some(BoardPosition::Main(6))
+        );
+        assert_eq!(
+            board_position_for_distance(player_one, MAIN_ROUTE_STEPS, PieceStatus::Active),
+            Some(BoardPosition::Home(0))
+        );
+        assert_eq!(
+            board_position_for_distance(player_one, FINISH_DISTANCE, PieceStatus::Finished),
+            Some(BoardPosition::Goal)
+        );
+    }
+
+    #[test]
+    fn advance_turn_consumes_extra_roll_before_switching_player() {
+        let mut turn_state = TurnState {
+            current_player: 1,
+            extra_rolls_remaining: 1,
+            turn_index: 3,
+            current_roll: Some(6),
+            last_roll: Some(6),
+            last_action: None,
+        };
+
+        advance_turn(&mut turn_state, 4);
+        assert_eq!(turn_state.current_player, 1);
+        assert_eq!(turn_state.extra_rolls_remaining, 0);
+        assert_eq!(turn_state.turn_index, 3);
+        assert_eq!(turn_state.current_roll, None);
+
+        advance_turn(&mut turn_state, 4);
+        assert_eq!(turn_state.current_player, 2);
+        assert_eq!(turn_state.turn_index, 4);
+    }
+}

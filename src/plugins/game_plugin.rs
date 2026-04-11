@@ -106,7 +106,7 @@ fn prepare_match(
     next_app_state.set(AppState::InGame);
 }
 
-fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
+pub(crate) fn build_match_rosters(mode: GameMode) -> (Vec<PlayerProfile>, Vec<TeamState>) {
     match mode {
         GameMode::OneVsOne => (
             vec![
@@ -259,4 +259,44 @@ pub fn evaluate_match_result(team_roster: &TeamRoster, finished_player_ids: &[u8
     }
 
     MatchResult::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_vs_one_roster_has_two_players_and_two_pieces() {
+        let (players, teams) = build_match_rosters(GameMode::OneVsOne);
+
+        assert_eq!(players.len(), 2);
+        assert_eq!(teams.len(), 2);
+        assert_eq!(players[0].hangar_slots.len(), 2);
+        assert_eq!(players[1].hangar_slots.len(), 2);
+    }
+
+    #[test]
+    fn two_vs_two_roster_has_four_players_and_shared_teams() {
+        let (players, teams) = build_match_rosters(GameMode::TwoVsTwo);
+
+        assert_eq!(players.len(), 4);
+        assert_eq!(teams.len(), 2);
+        assert_eq!(teams[0].player_ids, vec![1, 3]);
+        assert_eq!(teams[1].player_ids, vec![2, 4]);
+        assert!(players.iter().all(|player| player.hangar_slots.len() == 1));
+    }
+
+    #[test]
+    fn victory_requires_all_team_players_finished() {
+        let (_, teams) = build_match_rosters(GameMode::TwoVsTwo);
+        let team_roster = TeamRoster { teams };
+
+        let not_finished = evaluate_match_result(&team_roster, &[1]);
+        assert!(!not_finished.finished);
+
+        let team_one_finished = evaluate_match_result(&team_roster, &[1, 3]);
+        assert!(team_one_finished.finished);
+        assert_eq!(team_one_finished.winner_team_id, Some(1));
+        assert_eq!(team_one_finished.winner_player_ids, vec![1, 3]);
+    }
 }
