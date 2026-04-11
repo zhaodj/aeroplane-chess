@@ -28,6 +28,7 @@ impl Plugin for TurnPlugin {
                     drive_ai_turn_loop,
                     handle_human_roll_input,
                     handle_human_action_input,
+                    handle_human_action_click,
                 )
                     .run_if(in_state(AppState::InGame)),
             )
@@ -43,7 +44,14 @@ struct TurnAutomation {
 #[derive(Resource, Default)]
 pub struct TurnInputState {
     pending_actions: Vec<PlannedAction>,
+    candidate_piece_ids: Vec<u8>,
     pub prompt: Option<String>,
+}
+
+impl TurnInputState {
+    pub fn candidate_piece_ids(&self) -> &[u8] {
+        &self.candidate_piece_ids
+    }
 }
 
 fn setup_turn_automation(mut commands: Commands) {
@@ -194,13 +202,14 @@ fn handle_human_roll_input(
     }
 
     input_state.prompt = Some(format!(
-        "Rolled {}. Press {} to choose",
+        "Rolled {}. Click a highlighted piece or press {}",
         roll_value,
         (1..=actions.len())
             .map(|index| index.to_string())
             .collect::<Vec<_>>()
             .join("/")
     ));
+    input_state.candidate_piece_ids = actions.iter().map(|action| action.piece_id()).collect();
     input_state.pending_actions = actions;
     next_phase.set(GamePhase::AwaitPieceSelect);
 }
@@ -241,10 +250,93 @@ fn handle_human_action_input(
     );
 }
 
+fn handle_human_action_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera_query: Query<(&Camera, &GlobalTransform)>,
+    mut input_state: ResMut<TurnInputState>,
+    mut turn_state: ResMut<TurnState>,
+    mut next_phase: ResMut<NextState<GamePhase>>,
+    game_phase: Res<State<GamePhase>>,
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+    team_roster: Res<TeamRoster>,
+    mut match_result: ResMut<MatchResult>,
+    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || match_result.finished {
+        return;
+    }
+
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_position) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        return;
+    };
+    let Ok(cursor_world) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
+        return;
+    };
+
+    let mut selected_piece_id = None;
+    let mut best_distance_sq = f32::MAX;
+    for (piece_id, _, _, transform) in &mut piece_query {
+        if !input_state.candidate_piece_ids.contains(&piece_id.0) {
+            continue;
+        }
+
+        let distance_sq = transform.translation.truncate().distance_squared(cursor_world);
+        if distance_sq <= 28.0 * 28.0 && distance_sq < best_distance_sq {
+            best_distance_sq = distance_sq;
+            selected_piece_id = Some(piece_id.0);
+        }
+    }
+
+    let Some(selected_piece_id) = selected_piece_id else {
+        return;
+    };
+    let Some(action) = input_state
+        .pending_actions
+        .iter()
+        .copied()
+        .find(|action| action.piece_id() == selected_piece_id) else {
+        return;
+    };
+
+    let roll_value = turn_state.last_roll.unwrap_or_default();
+    execute_action(
+        action,
+        roll_value,
+        &player_roster,
+        &team_roster,
+        &board_layout,
+        &mut piece_query,
+        &mut match_result,
+        &mut turn_state,
+        &mut input_state,
+        &mut next_phase,
+    );
+}
+
 #[derive(Clone, Copy, Debug)]
 enum PlannedAction {
     Launch { piece_id: u8, target_progress: u8 },
     Move { piece_id: u8, target_progress: u8 },
+}
+
+impl PlannedAction {
+    fn piece_id(&self) -> u8 {
+        match *self {
+            Self::Launch { piece_id, .. } | Self::Move { piece_id, .. } => piece_id,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -503,6 +595,7 @@ fn execute_action(
 
     turn_state.last_action = Some(describe_action(&action, roll_value, &notes));
     input_state.pending_actions.clear();
+    input_state.candidate_piece_ids.clear();
     input_state.prompt = None;
 
     if match_result.finished {
@@ -521,6 +614,7 @@ fn finish_turn_without_action(
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
     input_state.pending_actions.clear();
+    input_state.candidate_piece_ids.clear();
     input_state.prompt = None;
     advance_turn(turn_state, player_roster.players.len() as u8);
     next_phase.set(GamePhase::AwaitDice);
