@@ -34,6 +34,9 @@ struct ResultEntity;
 struct HudPrimaryText;
 
 #[derive(Component)]
+struct HudSkillsText;
+
+#[derive(Component)]
 struct HudPromptText;
 
 fn spawn_hud(
@@ -42,9 +45,9 @@ fn spawn_hud(
     commands.spawn((
         Sprite::from_color(
             Color::srgba(0.98, 0.99, 1.0, 0.90),
-            Vec2::new(HUD_PANEL_WIDTH, 148.0),
+            Vec2::new(HUD_PANEL_WIDTH, 242.0),
         ),
-        Transform::from_xyz(-365.0, 280.0, HUD_Z_LAYER),
+        Transform::from_xyz(-365.0, 232.0, HUD_Z_LAYER),
         Name::new("HudPanelBackdrop"),
         HudEntity,
     ));
@@ -57,7 +60,7 @@ fn spawn_hud(
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(28.0),
+            top: Val::Px(22.0),
             left: Val::Px(28.0),
             ..default()
         },
@@ -71,10 +74,27 @@ fn spawn_hud(
             font_size: 18.0,
             ..default()
         },
+        TextColor(Color::srgb(0.20, 0.28, 0.40)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(116.0),
+            left: Val::Px(28.0),
+            ..default()
+        },
+        Name::new("HudSkillsText"),
+        HudSkillsText,
+        HudEntity,
+    ));
+    commands.spawn((
+        Text::new(""),
+        TextFont {
+            font_size: 18.0,
+            ..default()
+        },
         TextColor(Color::srgb(0.28, 0.35, 0.46)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(122.0),
+            top: Val::Px(188.0),
             left: Val::Px(28.0),
             ..default()
         },
@@ -94,10 +114,14 @@ fn update_hud(
     input_state: Res<TurnInputState>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
-    mut primary_query: Query<&mut Text, (With<HudPrimaryText>, Without<HudPromptText>)>,
-    mut prompt_query: Query<&mut Text, (With<HudPromptText>, Without<HudPrimaryText>)>,
+    mut primary_query: Query<&mut Text, (With<HudPrimaryText>, Without<HudSkillsText>, Without<HudPromptText>)>,
+    mut skills_query: Query<&mut Text, (With<HudSkillsText>, Without<HudPrimaryText>, Without<HudPromptText>)>,
+    mut prompt_query: Query<&mut Text, (With<HudPromptText>, Without<HudPrimaryText>, Without<HudSkillsText>)>,
 ) {
     let Ok(mut primary_text) = primary_query.single_mut() else {
+        return;
+    };
+    let Ok(mut skills_text_node) = skills_query.single_mut() else {
         return;
     };
     let Ok(mut prompt_text_node) = prompt_query.single_mut() else {
@@ -112,20 +136,6 @@ fn update_hud(
         .last_action
         .as_deref()
         .unwrap_or("waiting for first action");
-    let skill_text = player_skill_state(&skill_roster, turn_state.current_player)
-        .map(|skills| {
-            format!(
-                "Dash: {}{}  |  Snipe: {}  |  Swap: {}  |  Shield: {}  |  DoubleDice: {}{}",
-                skills.dash_charges,
-                if skills.dash_armed { " (armed)" } else { "" },
-                skills.snipe_charges,
-                skills.swap_charges,
-                skills.shield_charges,
-                skills.double_dice_charges,
-                if skills.double_dice_armed { " (armed)" } else { "" }
-            )
-        })
-        .unwrap_or_else(|| "Dash: -  |  Snipe: -  |  Swap: -  |  Shield: -  |  DoubleDice: -".to_string());
     let skill_action_text = skill_roster
         .last_skill_action
         .as_deref()
@@ -150,6 +160,10 @@ fn update_hud(
     } else {
         "Result: in progress".to_string()
     };
+    let is_human_turn = matches!(current_control, "Human");
+    let can_use_skill = skill_roster.active_turn_player == Some(turn_state.current_player)
+        && !skill_roster.skill_used_this_turn
+        && is_human_turn;
     let stacked_hint = if matches!(game_phase.get(), GamePhase::AwaitPieceSelect) {
         "Highlighted teammate stacks share one shield.".to_string()
     } else {
@@ -160,9 +174,14 @@ fn update_hud(
         .as_deref()
         .or(input_state.prompt.as_deref())
         .unwrap_or("Space rolls. Q uses Shield. S uses Snipe. A uses Swap. W arms DoubleDice. E arms Dash after rolling.");
+    let skill_text = player_skill_state(&skill_roster, turn_state.current_player)
+        .map(|skills| format_skill_panel(skills, is_human_turn, can_use_skill, match_config.mode, game_phase.get()))
+        .unwrap_or_else(|| {
+            "Skills\nDash [E]: -\nSnipe [S]: -\nSwap [A]: -\nShield [Q]: -\nDoubleDice [W]: -".to_string()
+        });
 
     *primary_text = Text::new(format!(
-        "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\nSkills: {}\nLast Skill: {}\n{}\nLast Action: {}",
+        "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\n{}\nLast Skill: {}\nLast Action: {}",
         match_config.mode,
         match_config.ai_difficulty,
         turn_state.current_player,
@@ -172,16 +191,59 @@ fn update_hud(
         roll_text,
         player_roster.players.len(),
         team_roster.teams.len(),
-        skill_text,
         skill_action_text,
         result_text,
         action_text,
     ));
+    *skills_text_node = Text::new(skill_text);
     *prompt_text_node = Text::new(if stacked_hint.is_empty() {
         format!("Prompt: {prompt_text}")
     } else {
         format!("Prompt: {prompt_text}\n{stacked_hint}")
     });
+}
+
+fn format_skill_panel(
+    skills: &crate::gameplay::skill_flow::PlayerSkillState,
+    is_human_turn: bool,
+    can_use_skill: bool,
+    mode: crate::data::game_mode::GameMode,
+    phase: &GamePhase,
+) -> String {
+    let header = if is_human_turn {
+        if can_use_skill {
+            "Skills: ready"
+        } else {
+            "Skills: spent this turn"
+        }
+    } else {
+        "Skills: AI auto"
+    };
+    let dash_state = if skills.dash_armed { "armed +3" } else { "idle" };
+    let snipe_state = if matches!(phase, GamePhase::ResolveSkillEffect) {
+        "selecting target"
+    } else {
+        "idle"
+    };
+    let swap_state = if mode == crate::data::game_mode::GameMode::TwoVsTwo {
+        "team-only"
+    } else {
+        "2v2 only"
+    };
+    let dice_state = if skills.double_dice_armed {
+        "armed"
+    } else {
+        "idle"
+    };
+
+    format!(
+        "{header}\n[E] Dash: {} ({dash_state})  |  [S] Snipe: {} ({snipe_state})\n[A] Swap: {} ({swap_state})  |  [Q] Shield: {}\n[W] DoubleDice: {} ({dice_state})",
+        skills.dash_charges,
+        skills.snipe_charges,
+        skills.swap_charges,
+        skills.shield_charges,
+        skills.double_dice_charges,
+    )
 }
 
 fn cleanup_hud(mut commands: Commands, query: Query<Entity, With<HudEntity>>) {
