@@ -1231,7 +1231,7 @@ mod tests {
     use super::*;
     use crate::data::game_mode::GameMode;
     use crate::domain::player::{PlayerControl, PlayerState};
-    use crate::plugins::game_plugin::{build_match_rosters, BoardLayout, PlayerRoster};
+    use crate::plugins::game_plugin::{build_match_rosters, BoardLayout, MatchConfig, PlayerRoster};
     use crate::plugins::piece_plugin::{HangarSlot, PieceId};
     use bevy::ecs::system::SystemState;
 
@@ -1402,5 +1402,208 @@ mod tests {
         assert_eq!(current_player_control(1, &player_roster), Some(PlayerControl::Human));
         assert_eq!(current_player_control(2, &player_roster), Some(PlayerControl::Ai));
         assert_eq!(current_player_control(9, &player_roster), None);
+    }
+
+    #[test]
+    fn apply_team_stack_grants_shared_shield_in_two_vs_two() {
+        let (players, _) = build_match_rosters(GameMode::TwoVsTwo);
+        let player_roster = PlayerRoster { players };
+        let match_config = MatchConfig {
+            mode: GameMode::TwoVsTwo,
+            ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
+            fast_mode: false,
+        };
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 2,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 10,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        apply_team_stack(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 2,
+            },
+            &player_roster,
+            &match_config,
+            &mut query,
+            &mut notes,
+        );
+
+        let shields = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.stack_shield))
+            .collect::<Vec<_>>();
+        assert_eq!(shields, vec![(1, 1), (2, 1)]);
+        assert!(notes.iter().any(|note| note.contains("stacked with teammate")));
+    }
+
+    #[test]
+    fn clear_stack_from_origin_removes_shared_shield_from_remaining_stack() {
+        let (players, _) = build_match_rosters(GameMode::TwoVsTwo);
+        let player_roster = PlayerRoster { players };
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 2,
+                shield: 0,
+                stack_shield: 1,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 10,
+                shield: 0,
+                stack_shield: 1,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        clear_stack_from_origin(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 4,
+            },
+            &player_roster,
+            &mut query,
+        );
+
+        let shields = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.stack_shield))
+            .collect::<Vec<_>>();
+        assert_eq!(shields, vec![(1, 0), (2, 0)]);
+    }
+
+    #[test]
+    fn resolve_collision_consumes_shared_stack_shield_before_returning_to_hangar() {
+        let (players, _) = build_match_rosters(GameMode::TwoVsTwo);
+        let player_roster = PlayerRoster { players };
+        let match_config = MatchConfig {
+            mode: GameMode::TwoVsTwo,
+            ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
+            fast_mode: false,
+        };
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 2,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 10,
+                shield: 0,
+                stack_shield: 1,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(3),
+            HangarSlot(Vec2::new(-320.0, -280.0)),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 18,
+                shield: 0,
+                stack_shield: 1,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        resolve_collision(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 2,
+            },
+            2,
+            &player_roster,
+            &match_config,
+            &mut query,
+            &mut notes,
+        );
+
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, _)| {
+                (piece_id.0, piece_state.status, piece_state.stack_shield)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            vec![
+                (1, PieceStatus::Active, 0),
+                (2, PieceStatus::Active, 0),
+                (3, PieceStatus::Active, 0),
+            ]
+        );
+        assert!(notes.iter().any(|note| note.contains("shared stack shield blocked collision")));
     }
 }
