@@ -10,11 +10,15 @@ use crate::plugins::piece_plugin::PieceId;
 pub struct SkillRoster {
     pub players: Vec<PlayerSkillState>,
     pub last_skill_action: Option<String>,
+    pub active_turn_player: Option<u8>,
+    pub skill_used_this_turn: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct PlayerSkillState {
     pub player_id: u8,
+    pub dash_charges: u8,
+    pub dash_armed: bool,
     pub shield_charges: u8,
     pub double_dice_charges: u8,
     pub double_dice_armed: bool,
@@ -33,12 +37,16 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
             .iter()
             .map(|player| PlayerSkillState {
                 player_id: player.state.player_id,
+                dash_charges: 1,
+                dash_armed: false,
                 shield_charges: 1,
                 double_dice_charges: 1,
                 double_dice_armed: false,
             })
             .collect(),
         last_skill_action: None,
+        active_turn_player: None,
+        skill_used_this_turn: false,
     }
 }
 
@@ -50,6 +58,56 @@ pub fn player_skill_state(
         .players
         .iter()
         .find(|player| player.player_id == player_id)
+}
+
+pub fn sync_turn_skill_usage(skill_roster: &mut SkillRoster, current_player: u8) {
+    if skill_roster.active_turn_player != Some(current_player) {
+        skill_roster.active_turn_player = Some(current_player);
+        skill_roster.skill_used_this_turn = false;
+    }
+}
+
+pub fn can_use_skill_this_turn(skill_roster: &SkillRoster, current_player: u8) -> bool {
+    skill_roster.active_turn_player == Some(current_player) && !skill_roster.skill_used_this_turn
+}
+
+pub fn mark_skill_used(skill_roster: &mut SkillRoster, current_player: u8) {
+    skill_roster.active_turn_player = Some(current_player);
+    skill_roster.skill_used_this_turn = true;
+}
+
+pub fn arm_dash(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
+    let Some(player_state) = skill_roster
+        .players
+        .iter_mut()
+        .find(|player| player.player_id == player_id)
+    else {
+        return false;
+    };
+
+    if player_state.dash_charges == 0 || player_state.dash_armed {
+        return false;
+    }
+
+    player_state.dash_charges -= 1;
+    player_state.dash_armed = true;
+    true
+}
+
+pub fn dash_bonus(skill_roster: &SkillRoster, player_id: u8) -> u8 {
+    player_skill_state(skill_roster, player_id)
+        .map(|player| if player.dash_armed { 3 } else { 0 })
+        .unwrap_or(0)
+}
+
+pub fn clear_dash_arm(skill_roster: &mut SkillRoster, player_id: u8) {
+    if let Some(player_state) = skill_roster
+        .players
+        .iter_mut()
+        .find(|player| player.player_id == player_id)
+    {
+        player_state.dash_armed = false;
+    }
 }
 
 pub fn preferred_shield_target(
@@ -261,9 +319,36 @@ mod tests {
         let skill_roster = build_skill_roster(&sample_roster());
 
         assert_eq!(skill_roster.players.len(), 2);
+        assert_eq!(skill_roster.players[0].dash_charges, 1);
         assert_eq!(skill_roster.players[0].shield_charges, 1);
         assert_eq!(skill_roster.players[0].double_dice_charges, 1);
+        assert!(!skill_roster.players[0].dash_armed);
         assert!(!skill_roster.players[0].double_dice_armed);
+    }
+
+    #[test]
+    fn arm_dash_consumes_charge_and_sets_flag() {
+        let mut skill_roster = build_skill_roster(&sample_roster());
+
+        assert!(arm_dash(&mut skill_roster, 1));
+        assert_eq!(dash_bonus(&skill_roster, 1), 3);
+        assert_eq!(player_skill_state(&skill_roster, 1).unwrap().dash_charges, 0);
+
+        clear_dash_arm(&mut skill_roster, 1);
+        assert_eq!(dash_bonus(&skill_roster, 1), 0);
+    }
+
+    #[test]
+    fn turn_skill_usage_resets_when_player_changes() {
+        let mut skill_roster = build_skill_roster(&sample_roster());
+
+        sync_turn_skill_usage(&mut skill_roster, 1);
+        assert!(can_use_skill_this_turn(&skill_roster, 1));
+        mark_skill_used(&mut skill_roster, 1);
+        assert!(!can_use_skill_this_turn(&skill_roster, 1));
+
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        assert!(can_use_skill_this_turn(&skill_roster, 2));
     }
 
     #[test]

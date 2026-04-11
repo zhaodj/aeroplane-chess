@@ -113,13 +113,15 @@ fn update_hud(
     let skill_text = player_skill_state(&skill_roster, turn_state.current_player)
         .map(|skills| {
             format!(
-                "Shield: {}  |  DoubleDice: {}{}",
+                "Dash: {}{}  |  Shield: {}  |  DoubleDice: {}{}",
+                skills.dash_charges,
+                if skills.dash_armed { " (armed)" } else { "" },
                 skills.shield_charges,
                 skills.double_dice_charges,
                 if skills.double_dice_armed { " (armed)" } else { "" }
             )
         })
-        .unwrap_or_else(|| "Shield: -  |  DoubleDice: -".to_string());
+        .unwrap_or_else(|| "Dash: -  |  Shield: -  |  DoubleDice: -".to_string());
     let skill_action_text = skill_roster
         .last_skill_action
         .as_deref()
@@ -152,7 +154,7 @@ fn update_hud(
     let prompt_text = input_state
         .prompt
         .as_deref()
-        .unwrap_or("Space rolls. Q uses Shield. W arms DoubleDice.");
+        .unwrap_or("Space rolls. Q uses Shield. W arms DoubleDice. E arms Dash after rolling.");
 
     *primary_text = Text::new(format!(
         "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\nSkills: {}\nLast Skill: {}\n{}\nLast Action: {}",

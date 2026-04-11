@@ -7,12 +7,14 @@ use crate::gameplay::match_flow::{
     BoardLayout, MatchConfig, MatchResult, PlayerRoster, TeamRoster,
 };
 use crate::gameplay::skill_flow::{
-    arm_double_dice, player_skill_state, resolve_roll_value, spend_shield_charge, SkillRoster,
+    arm_dash, arm_double_dice, can_use_skill_this_turn, clear_dash_arm, dash_bonus,
+    mark_skill_used, player_skill_state, resolve_roll_value, spend_shield_charge, SkillRoster,
 };
 use crate::gameplay::turn_flow::{
     choose_action, collect_actions, current_player_control, execute_action,
     find_pending_action_by_piece_id, finish_turn_without_action, get_pending_action,
-    pressed_selection_key, set_pending_actions, set_roll, TurnInputState, TurnState,
+    pressed_selection_key, set_pending_actions, set_roll, PlannedAction, TurnInputState,
+    TurnState,
 };
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
@@ -96,7 +98,14 @@ fn drive_ai_turn_loop(
 
     let current_player = turn_state.current_player;
     let Some(action) =
-        choose_action(current_player, roll, &board_layout, &player_roster, &piece_query)
+        choose_action(
+            current_player,
+            roll,
+            dash_bonus(&skill_roster, current_player),
+            &board_layout,
+            &player_roster,
+            &piece_query,
+        )
     else {
         turn_state.last_action =
             Some(format!("P{current_player} rolled {roll_value} but had no legal action"));
@@ -122,6 +131,7 @@ fn drive_ai_turn_loop(
         &mut input_state,
         &mut next_phase,
     );
+    clear_dash_arm(&mut skill_roster, current_player);
 }
 
 fn maybe_use_ai_skills(
@@ -139,6 +149,7 @@ fn maybe_use_ai_skills(
             && let Some(shield_value) =
                 apply_shield_to_piece_to_turn_query(target_piece_id, piece_query)
         {
+            mark_skill_used(skill_roster, current_player);
             skill_roster.last_skill_action = Some(format!(
                 "P{} (AI) used Shield on piece #{} ({})",
                 current_player, target_piece_id, shield_value
@@ -147,9 +158,14 @@ fn maybe_use_ai_skills(
         }
     }
 
+    if arm_dash_for_ai(current_player, skill_roster, piece_query) {
+        return;
+    }
+
     if should_ai_arm_double_dice(current_player, skill_roster, piece_query)
         && arm_double_dice(skill_roster, current_player)
     {
+        mark_skill_used(skill_roster, current_player);
         skill_roster.last_skill_action = Some(format!(
             "P{} (AI) armed DoubleDice for launch pressure",
             current_player
@@ -199,6 +215,35 @@ fn should_ai_arm_double_dice(
     }
 
     !has_active_piece && has_hangar_piece
+}
+
+fn arm_dash_for_ai(
+    current_player: u8,
+    skill_roster: &mut SkillRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    if !can_use_skill_this_turn(skill_roster, current_player) {
+        return false;
+    }
+
+    let has_movable_piece = piece_query.iter_mut().any(|(_, _, piece_state, _)| {
+        piece_state.owner_player_id == current_player
+            && piece_state.status == crate::domain::piece::PieceStatus::Active
+    });
+    if !has_movable_piece {
+        return false;
+    }
+
+    if arm_dash(skill_roster, current_player) {
+        mark_skill_used(skill_roster, current_player);
+        skill_roster.last_skill_action = Some(format!(
+            "P{} (AI) armed Dash for +3 movement",
+            current_player
+        ));
+        return true;
+    }
+
+    false
 }
 
 fn apply_shield_to_piece_to_turn_query(
@@ -258,7 +303,8 @@ fn handle_human_roll_input(
         ));
     }
 
-    let actions = collect_actions(turn_state.current_player, roll, &player_roster, &piece_query);
+    let current_player = turn_state.current_player;
+    let actions = collect_actions(current_player, roll, 0, &player_roster, &piece_query);
 
     if actions.is_empty() {
         turn_state.last_action = Some(format!(
@@ -274,7 +320,14 @@ fn handle_human_roll_input(
         return;
     }
 
-    if actions.len() == 1 {
+    let can_offer_dash = can_use_skill_this_turn(&skill_roster, current_player)
+        && dash_bonus(&skill_roster, current_player) == 0
+        && player_skill_state(&skill_roster, current_player)
+            .map(|skills| skills.dash_charges > 0)
+            .unwrap_or(false)
+        && actions.iter().any(PlannedAction::is_move);
+
+    if actions.len() == 1 && !can_offer_dash {
         execute_action(
             actions[0],
             roll_value,
@@ -292,6 +345,16 @@ fn handle_human_roll_input(
     }
 
     set_pending_actions(&mut input_state, roll_value, actions, &mut next_phase);
+    if can_offer_dash {
+        input_state.prompt = Some(format!(
+            "Rolled {}. Press E for Dash (+3), then click a highlighted piece or press {}",
+            roll_value,
+            (1..=input_state.candidate_piece_ids().len())
+                .map(|index| index.to_string())
+                .collect::<Vec<_>>()
+                .join("/")
+        ));
+    }
 }
 
 fn handle_human_action_input(
@@ -304,12 +367,22 @@ fn handle_human_action_input(
     match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
+    mut skill_roster: ResMut<SkillRoster>,
     mut match_result: ResMut<MatchResult>,
     mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
     if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || match_result.finished {
         return;
     }
+
+    refresh_pending_actions_for_dash(
+        &mut input_state,
+        &turn_state,
+        &player_roster,
+        &mut piece_query,
+        &skill_roster,
+        &mut next_phase,
+    );
 
     let Some(selection) = pressed_selection_key(&keyboard, input_state.candidate_piece_ids().len())
     else {
@@ -333,6 +406,7 @@ fn handle_human_action_input(
         &mut input_state,
         &mut next_phase,
     );
+    clear_dash_arm(&mut skill_roster, turn_state.current_player);
 }
 
 fn handle_human_action_click(
@@ -347,6 +421,7 @@ fn handle_human_action_click(
     match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
+    mut skill_roster: ResMut<SkillRoster>,
     mut match_result: ResMut<MatchResult>,
     mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
@@ -370,6 +445,15 @@ fn handle_human_action_click(
     let Ok(cursor_world) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
         return;
     };
+
+    refresh_pending_actions_for_dash(
+        &mut input_state,
+        &turn_state,
+        &player_roster,
+        &mut piece_query,
+        &skill_roster,
+        &mut next_phase,
+    );
 
     let mut selected_piece_id = None;
     let mut best_distance_sq = f32::MAX;
@@ -406,4 +490,45 @@ fn handle_human_action_click(
         &mut input_state,
         &mut next_phase,
     );
+    clear_dash_arm(&mut skill_roster, turn_state.current_player);
+}
+
+fn refresh_pending_actions_for_dash(
+    input_state: &mut TurnInputState,
+    turn_state: &TurnState,
+    player_roster: &PlayerRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    skill_roster: &SkillRoster,
+    next_phase: &mut ResMut<NextState<GamePhase>>,
+) {
+    let move_bonus = dash_bonus(skill_roster, turn_state.current_player);
+    if move_bonus == 0 || input_state.candidate_piece_ids().is_empty() {
+        return;
+    }
+
+    let refreshed_actions = collect_actions(
+        turn_state.current_player,
+        DiceRoll(turn_state.last_roll.unwrap_or_default()),
+        move_bonus,
+        player_roster,
+        piece_query,
+    );
+    if refreshed_actions.is_empty() {
+        return;
+    }
+
+    set_pending_actions(
+        input_state,
+        turn_state.last_roll.unwrap_or_default(),
+        refreshed_actions,
+        next_phase,
+    );
+    input_state.prompt = Some(format!(
+        "Dash active (+{}). Click a highlighted piece or press {}",
+        move_bonus,
+        (1..=input_state.candidate_piece_ids().len())
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join("/")
+    ));
 }

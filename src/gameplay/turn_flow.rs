@@ -67,6 +67,10 @@ impl PlannedAction {
             Self::Launch { piece_id, .. } | Self::Move { piece_id, .. } => piece_id,
         }
     }
+
+    pub fn is_move(&self) -> bool {
+        matches!(self, Self::Move { .. })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,6 +127,7 @@ pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
 pub fn choose_action(
     current_player: u8,
     roll: DiceRoll,
+    move_bonus: u8,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -179,7 +184,9 @@ pub fn choose_action(
             continue;
         }
 
-        let Some(target_progress) = compute_target_distance(piece.distance, roll.0) else {
+        let Some(target_progress) =
+            compute_target_distance(piece.distance, roll.0.saturating_add(move_bonus))
+        else {
             continue;
         };
 
@@ -209,7 +216,9 @@ pub fn choose_action(
 
     for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
         if piece.status == PieceStatus::Active {
-            let Some(target_progress) = compute_target_distance(piece.distance, roll.0) else {
+            let Some(target_progress) =
+                compute_target_distance(piece.distance, roll.0.saturating_add(move_bonus))
+            else {
                 continue;
             };
 
@@ -226,6 +235,7 @@ pub fn choose_action(
 pub fn collect_actions(
     current_player: u8,
     roll: DiceRoll,
+    move_bonus: u8,
     player_roster: &PlayerRoster,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Vec<PlannedAction> {
@@ -268,7 +278,9 @@ pub fn collect_actions(
             continue;
         }
 
-        if let Some(target_progress) = compute_target_distance(piece.distance, roll.0) {
+        if let Some(target_progress) =
+            compute_target_distance(piece.distance, roll.0.saturating_add(move_bonus))
+        {
             actions.push(PlannedAction::Move {
                 piece_id: piece.piece_id,
                 target_progress,
@@ -1082,7 +1094,7 @@ mod tests {
         > = SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world);
 
-        let actions = collect_actions(1, DiceRoll(6), &player_roster, &query);
+        let actions = collect_actions(1, DiceRoll(6), 0, &player_roster, &query);
         assert_eq!(actions.len(), 2);
         assert!(actions.iter().any(|action| matches!(action, PlannedAction::Launch { piece_id: 1, .. })));
         assert!(actions.iter().any(|action| matches!(action, PlannedAction::Move { piece_id: 2, target_progress: 9 })));
