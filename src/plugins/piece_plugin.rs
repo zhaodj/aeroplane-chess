@@ -47,6 +47,7 @@ fn spawn_pieces(mut commands: Commands, player_roster: Res<PlayerRoster>) {
                     status: PieceStatus::InHangar,
                     progress: 0,
                     shield: 0,
+                    stack_shield: 0,
                 },
                 Name::new(format!(
                     "Piece_P{}_{}",

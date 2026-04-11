@@ -9,7 +9,7 @@ use crate::domain::rules::can_launch;
 use crate::domain::tile::TileKind;
 use crate::gameplay::turn_flow::TurnState;
 use crate::plugins::game_plugin::{
-    evaluate_match_result, BoardLayout, MatchResult, PlayerProfile, PlayerRoster, TeamRoster,
+    evaluate_match_result, BoardLayout, MatchConfig, MatchResult, PlayerProfile, PlayerRoster, TeamRoster,
 };
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
@@ -75,6 +75,7 @@ fn drive_ai_turn_loop(
     mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
     board_layout: Res<BoardLayout>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
     mut match_result: ResMut<MatchResult>,
@@ -120,6 +121,7 @@ fn drive_ai_turn_loop(
         roll_value,
         &player_roster,
         &team_roster,
+        &match_config,
         &board_layout,
         &mut piece_query,
         &mut match_result,
@@ -136,6 +138,7 @@ fn handle_human_roll_input(
     mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
     board_layout: Res<BoardLayout>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
     mut match_result: ResMut<MatchResult>,
@@ -192,6 +195,7 @@ fn handle_human_roll_input(
             roll_value,
             &player_roster,
             &team_roster,
+            &match_config,
             &board_layout,
             &mut piece_query,
             &mut match_result,
@@ -222,6 +226,7 @@ fn handle_human_action_input(
     mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
     board_layout: Res<BoardLayout>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
     mut match_result: ResMut<MatchResult>,
@@ -242,6 +247,7 @@ fn handle_human_action_input(
         roll_value,
         &player_roster,
         &team_roster,
+        &match_config,
         &board_layout,
         &mut piece_query,
         &mut match_result,
@@ -260,6 +266,7 @@ fn handle_human_action_click(
     mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
     board_layout: Res<BoardLayout>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     team_roster: Res<TeamRoster>,
     mut match_result: ResMut<MatchResult>,
@@ -317,6 +324,7 @@ fn handle_human_action_click(
         roll_value,
         &player_roster,
         &team_roster,
+        &match_config,
         &board_layout,
         &mut piece_query,
         &mut match_result,
@@ -416,6 +424,7 @@ fn choose_action(
                     status: piece.status,
                     progress: piece.distance,
                     shield: piece.shield,
+                    stack_shield: 0,
                 },
                 roll,
             ) {
@@ -524,6 +533,7 @@ fn collect_actions(
                         status: piece.status,
                         progress: piece.distance,
                         shield: piece.shield,
+                        stack_shield: 0,
                     },
                     roll,
                 )
@@ -557,6 +567,7 @@ fn execute_action(
     roll_value: u8,
     player_roster: &PlayerRoster,
     team_roster: &TeamRoster,
+    match_config: &MatchConfig,
     board_layout: &BoardLayout,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     match_result: &mut MatchResult,
@@ -564,6 +575,7 @@ fn execute_action(
     input_state: &mut TurnInputState,
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
+    clear_stack_from_origin(&action, player_roster, piece_query);
     let initial_progress = apply_action(&action, board_layout, player_roster, piece_query);
     let mut notes = Vec::new();
     let final_progress = apply_tile_effects(
@@ -574,7 +586,21 @@ fn execute_action(
         piece_query,
         &mut notes,
     );
-    resolve_collision(&action, final_progress, player_roster, piece_query, &mut notes);
+    apply_team_stack(
+        &action,
+        player_roster,
+        match_config,
+        piece_query,
+        &mut notes,
+    );
+    resolve_collision(
+        &action,
+        final_progress,
+        player_roster,
+        match_config,
+        piece_query,
+        &mut notes,
+    );
 
     let finished_player_ids = piece_query
         .iter()
@@ -766,6 +792,7 @@ fn resolve_collision(
     action: &PlannedAction,
     _target_progress: u8,
     player_roster: &PlayerRoster,
+    match_config: &MatchConfig,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     notes: &mut Vec<String>,
 ) {
@@ -799,6 +826,33 @@ fn resolve_collision(
         return;
     };
 
+    let mut defenders_with_stack = Vec::new();
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == attacker_piece_id {
+            continue;
+        }
+
+        if piece_state.status != PieceStatus::Active
+            || piece_state.team_id == attacker_team
+            || piece_board_position(*piece_state, player_roster) != Some(BoardPosition::Main(target_tile_index))
+        {
+            continue;
+        }
+
+        if match_config.mode == crate::data::game_mode::GameMode::TwoVsTwo && piece_state.stack_shield > 0 {
+            defenders_with_stack.push(piece_id.0);
+        }
+    }
+
+    if !defenders_with_stack.is_empty() {
+        consume_stack_shield(
+            &defenders_with_stack,
+            piece_query,
+        );
+        notes.push("shared stack shield blocked collision".to_string());
+        return;
+    }
+
     for (piece_id, hangar_slot, mut piece_state, mut transform) in piece_query.iter_mut() {
         if piece_id.0 == attacker_piece_id {
             continue;
@@ -820,6 +874,7 @@ fn resolve_collision(
         piece_state.status = PieceStatus::InHangar;
         piece_state.progress = 0;
         piece_state.shield = 0;
+        piece_state.stack_shield = 0;
         transform.translation.x = hangar_slot.0.x;
         transform.translation.y = hangar_slot.0.y;
         notes.push(format!("sent piece #{} back to hangar", piece_id.0));
@@ -881,6 +936,123 @@ fn modify_piece_shield(
     }
 
     None
+}
+
+fn clear_stack_from_origin(
+    action: &PlannedAction,
+    player_roster: &PlayerRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    let moving_piece_id = action.piece_id();
+    let mut origin_position = None;
+    let mut moving_team = None;
+
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == moving_piece_id {
+            origin_position = piece_board_position(*piece_state, player_roster);
+            moving_team = Some(piece_state.team_id);
+            break;
+        }
+    }
+
+    let Some(origin_position) = origin_position else {
+        return;
+    };
+    let Some(moving_team) = moving_team else {
+        return;
+    };
+
+    let mut same_tile_piece_ids = Vec::new();
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == moving_piece_id {
+            continue;
+        }
+
+        if piece_state.team_id == moving_team
+            && piece_state.status == PieceStatus::Active
+            && piece_board_position(*piece_state, player_roster) == Some(origin_position)
+        {
+            same_tile_piece_ids.push(piece_id.0);
+        }
+    }
+
+    if same_tile_piece_ids.is_empty() {
+        return;
+    }
+
+    for (piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == moving_piece_id || same_tile_piece_ids.contains(&piece_id.0) {
+            piece_state.stack_shield = 0;
+        }
+    }
+}
+
+fn apply_team_stack(
+    action: &PlannedAction,
+    player_roster: &PlayerRoster,
+    match_config: &MatchConfig,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    notes: &mut Vec<String>,
+) {
+    if match_config.mode != crate::data::game_mode::GameMode::TwoVsTwo {
+        return;
+    }
+
+    let moving_piece_id = action.piece_id();
+    let mut landing_position = None;
+    let mut moving_team = None;
+
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == moving_piece_id {
+            landing_position = piece_board_position(*piece_state, player_roster);
+            moving_team = Some(piece_state.team_id);
+            break;
+        }
+    }
+
+    let Some(landing_position) = landing_position else {
+        return;
+    };
+    let Some(moving_team) = moving_team else {
+        return;
+    };
+
+    let mut stack_piece_ids = vec![moving_piece_id];
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == moving_piece_id {
+            continue;
+        }
+
+        if piece_state.team_id == moving_team
+            && piece_state.status == PieceStatus::Active
+            && piece_board_position(*piece_state, player_roster) == Some(landing_position)
+        {
+            stack_piece_ids.push(piece_id.0);
+        }
+    }
+
+    if stack_piece_ids.len() < 2 {
+        return;
+    }
+
+    for (piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
+        if stack_piece_ids.contains(&piece_id.0) {
+            piece_state.stack_shield = 1;
+        }
+    }
+
+    notes.push(format!("stacked with teammate (shared shield {})", 1));
+}
+
+fn consume_stack_shield(
+    defender_piece_ids: &[u8],
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    for (piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
+        if defender_piece_ids.contains(&piece_id.0) {
+            piece_state.stack_shield = 0;
+        }
+    }
 }
 
 fn apply_event_effect(

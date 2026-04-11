@@ -14,4 +14,5 @@ pub struct PieceState {
     pub status: PieceStatus,
     pub progress: u8,
     pub shield: u8,
+    pub stack_shield: u8,
 }

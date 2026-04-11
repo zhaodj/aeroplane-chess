@@ -81,6 +81,11 @@ fn update_hud(
     } else {
         String::new()
     };
+    let stacked_hint = if matches!(game_phase.get(), GamePhase::AwaitPieceSelect) {
+        " | Highlighted teammate stacks share one shield".to_string()
+    } else {
+        String::new()
+    };
     let prompt_text = input_state
         .prompt
         .as_deref()
@@ -88,7 +93,7 @@ fn update_hud(
         .unwrap_or_default();
 
     *text = Text::new(format!(
-        "Mode: {:?} | AI: {:?} | Players: {} | Teams: {} | Turn: P{} ({}) / {} | Phase: {:?} | Last Roll: {} | Last Action: {}{}{}",
+        "Mode: {:?} | AI: {:?} | Players: {} | Teams: {} | Turn: P{} ({}) / {} | Phase: {:?} | Last Roll: {} | Last Action: {}{}{}{}",
         match_config.mode,
         match_config.ai_difficulty,
         player_roster.players.len(),
@@ -100,6 +105,7 @@ fn update_hud(
         roll_text,
         action_text,
         result_text,
+        stacked_hint,
         prompt_text,
     ));
 }
