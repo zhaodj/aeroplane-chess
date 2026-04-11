@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::constants::HUD_Z_LAYER;
+use crate::constants::{HUD_PANEL_WIDTH, HUD_Z_LAYER};
 use crate::domain::player::PlayerControl;
 use crate::plugins::game_plugin::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
 use crate::plugins::turn_plugin::TurnInputState;
@@ -29,24 +29,56 @@ struct HudEntity;
 #[derive(Component)]
 struct ResultEntity;
 
+#[derive(Component)]
+struct HudPrimaryText;
+
+#[derive(Component)]
+struct HudPromptText;
+
 fn spawn_hud(
     mut commands: Commands,
 ) {
     commands.spawn((
+        Sprite::from_color(
+            Color::srgba(0.98, 0.99, 1.0, 0.90),
+            Vec2::new(HUD_PANEL_WIDTH, 148.0),
+        ),
+        Transform::from_xyz(-365.0, 280.0, HUD_Z_LAYER),
+        Name::new("HudPanelBackdrop"),
+        HudEntity,
+    ));
+    commands.spawn((
         Text::new("Loading HUD..."),
         TextFont {
-            font_size: 28.0,
+            font_size: 24.0,
             ..default()
         },
-        TextColor(Color::srgb(0.12, 0.16, 0.24)),
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(20.0),
-            left: Val::Px(20.0),
+            top: Val::Px(28.0),
+            left: Val::Px(28.0),
             ..default()
         },
-        GlobalZIndex(HUD_Z_LAYER as i32),
-        Name::new("HudText"),
+        Name::new("HudPrimaryText"),
+        HudPrimaryText,
+        HudEntity,
+    ));
+    commands.spawn((
+        Text::new(""),
+        TextFont {
+            font_size: 18.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.28, 0.35, 0.46)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(122.0),
+            left: Val::Px(28.0),
+            ..default()
+        },
+        Name::new("HudPromptText"),
+        HudPromptText,
         HudEntity,
     ));
 }
@@ -59,9 +91,13 @@ fn update_hud(
     input_state: Res<TurnInputState>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
-    mut query: Query<&mut Text, With<HudEntity>>,
+    mut primary_query: Query<&mut Text, (With<HudPrimaryText>, Without<HudPromptText>)>,
+    mut prompt_query: Query<&mut Text, (With<HudPromptText>, Without<HudPrimaryText>)>,
 ) {
-    let Ok(mut text) = query.single_mut() else {
+    let Ok(mut primary_text) = primary_query.single_mut() else {
+        return;
+    };
+    let Ok(mut prompt_text_node) = prompt_query.single_mut() else {
         return;
     };
 
@@ -82,41 +118,46 @@ fn update_hud(
             PlayerControl::Ai => "AI",
         })
         .unwrap_or("-");
+    let phase_label = match game_phase.get() {
+        GamePhase::AwaitDice => "Roll",
+        GamePhase::AwaitPieceSelect => "Choose Piece",
+        GamePhase::CheckVictory => "Victory Check",
+        _ => "Resolving",
+    };
     let result_text = if match_result.finished {
-        format!(
-            " | Result: Team {} wins",
-            match_result.winner_team_id.unwrap_or_default()
-        )
+        format!("Result: Team {} wins", match_result.winner_team_id.unwrap_or_default())
     } else {
-        String::new()
+        "Result: in progress".to_string()
     };
     let stacked_hint = if matches!(game_phase.get(), GamePhase::AwaitPieceSelect) {
-        " | Highlighted teammate stacks share one shield".to_string()
+        "Highlighted teammate stacks share one shield.".to_string()
     } else {
         String::new()
     };
     let prompt_text = input_state
         .prompt
         .as_deref()
-        .map(|prompt| format!(" | Prompt: {prompt}"))
-        .unwrap_or_default();
+        .unwrap_or("Space rolls. Click a highlighted piece when multiple actions exist.");
 
-    *text = Text::new(format!(
-        "Mode: {:?} | AI: {:?} | Players: {} | Teams: {} | Turn: P{} ({}) / {} | Phase: {:?} | Last Roll: {} | Last Action: {}{}{}{}",
+    *primary_text = Text::new(format!(
+        "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\n{}\nLast Action: {}",
         match_config.mode,
         match_config.ai_difficulty,
-        player_roster.players.len(),
-        team_roster.teams.len(),
         turn_state.current_player,
         current_control,
         turn_state.turn_index,
-        game_phase.get(),
+        phase_label,
         roll_text,
-        action_text,
+        player_roster.players.len(),
+        team_roster.teams.len(),
         result_text,
-        stacked_hint,
-        prompt_text,
+        action_text,
     ));
+    *prompt_text_node = Text::new(if stacked_hint.is_empty() {
+        format!("Prompt: {prompt_text}")
+    } else {
+        format!("Prompt: {prompt_text}\n{stacked_hint}")
+    });
 }
 
 fn cleanup_hud(mut commands: Commands, query: Query<Entity, With<HudEntity>>) {
@@ -131,8 +172,17 @@ fn spawn_result_screen(
 ) {
     let winner = match_result.winner_team_id.unwrap_or_default();
     commands.spawn((
+        Sprite::from_color(
+            Color::srgba(0.98, 0.99, 1.0, 0.94),
+            Vec2::new(420.0, 220.0),
+        ),
+        Transform::from_xyz(0.0, 40.0, HUD_Z_LAYER),
+        Name::new("ResultBackdrop"),
+        ResultEntity,
+    ));
+    commands.spawn((
         Text::new(format!(
-            "Match Result\n\nTeam {} wins\n\nR: Restart\nEsc: Main Menu",
+            "Match Result\n\nTeam {} wins\n\nR: Restart Match\nEsc: Main Menu",
             winner
         )),
         TextFont {

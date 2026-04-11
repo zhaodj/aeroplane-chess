@@ -1,9 +1,11 @@
 use bevy::prelude::*;
 
 use crate::constants::BOARD_Z_LAYER;
+use crate::domain::player::PlayerControl;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::plugins::game_plugin::PlayerRoster;
 use crate::plugins::turn_plugin::TurnInputState;
+use crate::gameplay::turn_flow::TurnState;
 use crate::states::GamePhase;
 use crate::states::AppState;
 
@@ -70,15 +72,28 @@ fn cleanup_pieces(mut commands: Commands, query: Query<Entity, With<PieceEntity>
 
 fn update_piece_highlight(
     input_state: Res<TurnInputState>,
+    player_roster: Res<PlayerRoster>,
+    turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
-    mut query: Query<(&PieceId, &PieceBaseColor, &mut Sprite, &mut Transform), With<PieceEntity>>,
+    mut query: Query<(&PieceId, &PieceState, &PieceBaseColor, &mut Sprite, &mut Transform), With<PieceEntity>>,
 ) {
     let selectable = matches!(game_phase.get(), GamePhase::AwaitPieceSelect);
+    let current_player_control = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == turn_state.current_player)
+        .map(|player| player.state.control);
 
-    for (piece_id, base_color, mut sprite, mut transform) in &mut query {
+    for (piece_id, piece_state, base_color, mut sprite, mut transform) in &mut query {
         if selectable && input_state.candidate_piece_ids().contains(&piece_id.0) {
             sprite.color = base_color.0.mix(&Color::WHITE, 0.35);
             transform.scale = Vec3::splat(1.18);
+        } else if matches!(current_player_control, Some(PlayerControl::Human))
+            && input_state.candidate_piece_ids().is_empty()
+            && piece_state.owner_player_id == turn_state.current_player
+        {
+            sprite.color = base_color.0.mix(&Color::WHITE, 0.18);
+            transform.scale = Vec3::splat(1.08);
         } else {
             sprite.color = base_color.0;
             transform.scale = Vec3::ONE;
