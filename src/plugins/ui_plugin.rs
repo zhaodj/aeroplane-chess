@@ -225,7 +225,15 @@ fn update_hud(
         .or(input_state.prompt.as_deref())
         .unwrap_or("Space rolls. Q uses Shield. S uses Snipe. A uses Swap. W arms DoubleDice. E arms Dash after rolling.");
     let skill_text = current_skills
-        .map(|skills| format_skill_panel(skills, is_human_turn, can_use_skill, match_config.mode, game_phase.get()))
+        .map(|skills| {
+            format_skill_panel(
+                skills,
+                is_human_turn,
+                can_use_skill,
+                match_config.mode,
+                game_phase.get(),
+            )
+        })
         .unwrap_or_else(|| {
             "Skills\nDash [E]: -\nSnipe [S]: -\nSwap [A]: -\nShield [Q]: -\nDoubleDice [W]: -".to_string()
         });
@@ -295,7 +303,6 @@ fn handle_skill_panel_click(
     match_result: Res<MatchResult>,
     player_roster: Res<PlayerRoster>,
     turn_state: Res<TurnState>,
-    skill_roster: Res<SkillRoster>,
     mut skill_ui_request: ResMut<SkillUiRequest>,
 ) {
     if match_result.finished
@@ -313,11 +320,6 @@ fn handle_skill_panel_click(
         return;
     };
     if current_player.state.control != PlayerControl::Human {
-        return;
-    }
-
-    let can_use_skill = can_use_skill_this_turn(&skill_roster, turn_state.current_player);
-    if !can_use_skill {
         return;
     }
 
@@ -362,7 +364,9 @@ fn format_skill_panel(
     phase: &GamePhase,
 ) -> String {
     let header = if is_human_turn {
-        if can_use_skill {
+        if skills.skill_blocked_this_turn {
+            "Skills blocked by event"
+        } else if can_use_skill {
             "Skills ready"
         } else {
             "Skill slot spent"

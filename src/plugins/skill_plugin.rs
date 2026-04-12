@@ -141,6 +141,20 @@ fn handle_human_skill_input(
     }
 
     if !can_use_skill_this_turn(&skill_roster, turn_state.current_player) {
+        let blocked_by_event = player_skill_state(&skill_roster, turn_state.current_player)
+            .map(|state| state.skill_blocked_this_turn)
+            .unwrap_or(false);
+        skill_roster.last_skill_action = Some(if blocked_by_event {
+            format!(
+                "P{} cannot use skills this turn (event lock)",
+                turn_state.current_player
+            )
+        } else {
+            format!(
+                "P{} already used a skill this turn",
+                turn_state.current_player
+            )
+        });
         return;
     }
 
@@ -304,7 +318,9 @@ fn handle_human_skill_input(
                 &mut piece_query,
             ));
         }
-        _ => {}
+        _ => {
+            skill_roster.last_skill_action = Some("Skill not available in current phase".to_string());
+        }
     }
 }
 
