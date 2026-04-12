@@ -105,6 +105,13 @@ fn drive_ai_turn_loop(
     }
 
     let current_player = turn_state.current_player;
+    maybe_arm_dash_for_ai_after_roll(
+        current_player,
+        roll,
+        &player_roster,
+        &mut skill_roster,
+        &mut piece_query,
+    );
     let Some(action) =
         choose_action(
             current_player,
@@ -198,16 +205,45 @@ fn maybe_use_ai_skills(
         }
     }
 
-    if arm_dash_for_ai(current_player, skill_roster, piece_query) {
-        return;
-    }
-
     if should_ai_arm_double_dice(current_player, skill_roster, piece_query)
         && arm_double_dice(skill_roster, current_player)
     {
         mark_skill_used(skill_roster, current_player);
         skill_roster.last_skill_action = Some(format!(
             "P{} (AI) armed DoubleDice for launch pressure",
+            current_player
+        ));
+    }
+}
+
+fn maybe_arm_dash_for_ai_after_roll(
+    current_player: u8,
+    roll: DiceRoll,
+    player_roster: &PlayerRoster,
+    skill_roster: &mut SkillRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    if !can_use_skill_this_turn(skill_roster, current_player) {
+        return;
+    }
+    let can_arm = player_skill_state(skill_roster, current_player)
+        .map(|skills| skills.dash_charges > 0 && !skills.dash_armed)
+        .unwrap_or(false);
+    if !can_arm {
+        return;
+    }
+
+    let has_movable_action = collect_actions(current_player, roll, 0, player_roster, piece_query)
+        .iter()
+        .any(PlannedAction::is_move);
+    if !has_movable_action {
+        return;
+    }
+
+    if arm_dash(skill_roster, current_player) {
+        mark_skill_used(skill_roster, current_player);
+        skill_roster.last_skill_action = Some(format!(
+            "P{} (AI) armed Dash after roll for +3 movement",
             current_player
         ));
     }
@@ -328,35 +364,6 @@ fn should_ai_arm_double_dice(
     }
 
     !has_active_piece && has_hangar_piece
-}
-
-fn arm_dash_for_ai(
-    current_player: u8,
-    skill_roster: &mut SkillRoster,
-    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-) -> bool {
-    if !can_use_skill_this_turn(skill_roster, current_player) {
-        return false;
-    }
-
-    let has_movable_piece = piece_query.iter_mut().any(|(_, _, piece_state, _)| {
-        piece_state.owner_player_id == current_player
-            && piece_state.status == crate::domain::piece::PieceStatus::Active
-    });
-    if !has_movable_piece {
-        return false;
-    }
-
-    if arm_dash(skill_roster, current_player) {
-        mark_skill_used(skill_roster, current_player);
-        skill_roster.last_skill_action = Some(format!(
-            "P{} (AI) armed Dash for +3 movement",
-            current_player
-        ));
-        return true;
-    }
-
-    false
 }
 
 fn apply_shield_to_piece_to_turn_query(
