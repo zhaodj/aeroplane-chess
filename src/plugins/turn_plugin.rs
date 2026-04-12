@@ -133,6 +133,7 @@ fn drive_ai_turn_loop(
         &match_config,
         &board_layout,
         &mut piece_query,
+        &mut skill_roster,
         &mut match_result,
         &mut turn_state,
         &mut input_state,
@@ -360,12 +361,16 @@ fn apply_shield_to_piece_to_turn_query(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
+    const MAX_PIECE_SHIELD: u8 = 2;
     for (query_piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
         if query_piece_id.0 != piece_id {
             continue;
         }
 
-        piece_state.shield = piece_state.shield.saturating_add(1);
+        piece_state.shield = piece_state
+            .shield
+            .saturating_add(1)
+            .min(MAX_PIECE_SHIELD);
         return Some(piece_state.shield);
     }
 
@@ -529,6 +534,7 @@ fn handle_human_roll_input(
             &match_config,
             &board_layout,
             &mut piece_query,
+            &mut skill_roster,
             &mut match_result,
             &mut turn_state,
             &mut input_state,
@@ -594,6 +600,7 @@ fn handle_human_action_input(
         &match_config,
         &board_layout,
         &mut piece_query,
+        &mut skill_roster,
         &mut match_result,
         &mut turn_state,
         &mut input_state,
@@ -678,6 +685,7 @@ fn handle_human_action_click(
         &match_config,
         &board_layout,
         &mut piece_query,
+        &mut skill_roster,
         &mut match_result,
         &mut turn_state,
         &mut input_state,

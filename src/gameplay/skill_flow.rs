@@ -24,6 +24,8 @@ pub struct PlayerSkillState {
     pub shield_charges: u8,
     pub double_dice_charges: u8,
     pub double_dice_armed: bool,
+    pub skip_next_skill_turn: bool,
+    pub skill_blocked_this_turn: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +48,8 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
                 shield_charges: 1,
                 double_dice_charges: 1,
                 double_dice_armed: false,
+                skip_next_skill_turn: false,
+                skill_blocked_this_turn: false,
             })
             .collect(),
         last_skill_action: None,
@@ -68,11 +72,27 @@ pub fn sync_turn_skill_usage(skill_roster: &mut SkillRoster, current_player: u8)
     if skill_roster.active_turn_player != Some(current_player) {
         skill_roster.active_turn_player = Some(current_player);
         skill_roster.skill_used_this_turn = false;
+        if let Some(player_state) = skill_roster
+            .players
+            .iter_mut()
+            .find(|player| player.player_id == current_player)
+        {
+            if player_state.skip_next_skill_turn {
+                player_state.skip_next_skill_turn = false;
+                player_state.skill_blocked_this_turn = true;
+            } else {
+                player_state.skill_blocked_this_turn = false;
+            }
+        }
     }
 }
 
 pub fn can_use_skill_this_turn(skill_roster: &SkillRoster, current_player: u8) -> bool {
-    skill_roster.active_turn_player == Some(current_player) && !skill_roster.skill_used_this_turn
+    skill_roster.active_turn_player == Some(current_player)
+        && !skill_roster.skill_used_this_turn
+        && !player_skill_state(skill_roster, current_player)
+            .map(|state| state.skill_blocked_this_turn)
+            .unwrap_or(false)
 }
 
 pub fn mark_skill_used(skill_roster: &mut SkillRoster, current_player: u8) {
@@ -254,12 +274,13 @@ pub fn apply_shield_to_piece(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &mut PieceState)>,
 ) -> Option<u8> {
+    const MAX_PIECE_SHIELD: u8 = 2;
     for (query_piece_id, mut piece_state) in piece_query.iter_mut() {
         if query_piece_id.0 != piece_id {
             continue;
         }
 
-        piece_state.shield = piece_state.shield.saturating_add(1);
+        piece_state.shield = piece_state.shield.saturating_add(1).min(MAX_PIECE_SHIELD);
         return Some(piece_state.shield);
     }
 
@@ -343,6 +364,48 @@ pub fn resolve_roll_from_values(first: u8, second: u8, use_double_dice: bool) ->
     }
 }
 
+pub fn grant_random_skill_charge(skill_roster: &mut SkillRoster, player_id: u8) -> Option<&'static str> {
+    let player_state = skill_roster
+        .players
+        .iter_mut()
+        .find(|player| player.player_id == player_id)?;
+
+    match random_range(0..=4) {
+        0 => {
+            player_state.dash_charges = player_state.dash_charges.saturating_add(1);
+            Some("Dash")
+        }
+        1 => {
+            player_state.snipe_charges = player_state.snipe_charges.saturating_add(1);
+            Some("Snipe")
+        }
+        2 => {
+            player_state.swap_charges = player_state.swap_charges.saturating_add(1);
+            Some("Swap")
+        }
+        3 => {
+            player_state.shield_charges = player_state.shield_charges.saturating_add(1);
+            Some("Shield")
+        }
+        _ => {
+            player_state.double_dice_charges = player_state.double_dice_charges.saturating_add(1);
+            Some("DoubleDice")
+        }
+    }
+}
+
+pub fn disable_next_skill_turn(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
+    let Some(player_state) = skill_roster
+        .players
+        .iter_mut()
+        .find(|player| player.player_id == player_id)
+    else {
+        return false;
+    };
+    player_state.skip_next_skill_turn = true;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +481,21 @@ mod tests {
 
         sync_turn_skill_usage(&mut skill_roster, 2);
         assert!(can_use_skill_this_turn(&skill_roster, 2));
+    }
+
+    #[test]
+    fn disable_next_skill_turn_blocks_only_the_next_turn() {
+        let mut skill_roster = build_skill_roster(&sample_roster());
+
+        assert!(disable_next_skill_turn(&mut skill_roster, 1));
+        sync_turn_skill_usage(&mut skill_roster, 1);
+        assert!(!can_use_skill_this_turn(&skill_roster, 1));
+
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        assert!(can_use_skill_this_turn(&skill_roster, 2));
+
+        sync_turn_skill_usage(&mut skill_roster, 1);
+        assert!(can_use_skill_this_turn(&skill_roster, 1));
     }
 
     #[test]

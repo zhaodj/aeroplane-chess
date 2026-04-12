@@ -438,11 +438,15 @@ fn apply_shield_to_piece_for_full_query(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
+    const MAX_PIECE_SHIELD: u8 = 2;
     for (query_piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
         if query_piece_id.0 != piece_id {
             continue;
         }
-        piece_state.shield = piece_state.shield.saturating_add(1);
+        piece_state.shield = piece_state
+            .shield
+            .saturating_add(1)
+            .min(MAX_PIECE_SHIELD);
         return Some(piece_state.shield);
     }
     None

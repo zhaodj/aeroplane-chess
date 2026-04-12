@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::constants::{HUD_PANEL_WIDTH, HUD_Z_LAYER};
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
-use crate::gameplay::skill_flow::{player_skill_state, SkillRoster};
+use crate::gameplay::skill_flow::{can_use_skill_this_turn, player_skill_state, SkillRoster};
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
 use crate::states::{AppState, GamePhase};
@@ -200,9 +200,7 @@ fn update_hud(
         "Result: in progress".to_string()
     };
     let is_human_turn = matches!(current_control, "Human");
-    let can_use_skill = skill_roster.active_turn_player == Some(turn_state.current_player)
-        && !skill_roster.skill_used_this_turn
-        && is_human_turn;
+    let can_use_skill = can_use_skill_this_turn(&skill_roster, turn_state.current_player) && is_human_turn;
     let current_skills = player_skill_state(&skill_roster, turn_state.current_player);
     for (button, mut background) in &mut skill_button_query {
         let ready = current_skills
@@ -318,8 +316,7 @@ fn handle_skill_panel_click(
         return;
     }
 
-    let can_use_skill = skill_roster.active_turn_player == Some(turn_state.current_player)
-        && !skill_roster.skill_used_this_turn;
+    let can_use_skill = can_use_skill_this_turn(&skill_roster, turn_state.current_player);
     if !can_use_skill {
         return;
     }

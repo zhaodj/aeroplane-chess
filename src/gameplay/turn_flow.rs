@@ -12,17 +12,23 @@ use crate::gameplay::match_flow::{
     evaluate_match_result, BoardLayout, MatchConfig, MatchResult, PlayerProfile, PlayerRoster,
     TeamRoster,
 };
+use crate::gameplay::skill_flow::{
+    disable_next_skill_turn, grant_random_skill_charge, SkillRoster,
+};
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::GamePhase;
 
 pub const MAIN_ROUTE_STEPS: u8 = 32;
 pub const HOME_LANE_STEPS: u8 = 4;
 pub const FINISH_DISTANCE: u8 = MAIN_ROUTE_STEPS + HOME_LANE_STEPS;
+pub const MAX_CHAIN_EXTRA_ROLLS: u8 = 3;
+pub const MAX_PIECE_SHIELD: u8 = 2;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Resource)]
 pub struct TurnState {
     pub current_player: u8,
     pub extra_rolls_remaining: u8,
+    pub consecutive_sixes: u8,
     pub turn_index: u32,
     pub current_roll: Option<u8>,
     pub last_roll: Option<u8>,
@@ -34,6 +40,7 @@ impl TurnState {
         Self {
             current_player: 1,
             extra_rolls_remaining: 0,
+            consecutive_sixes: 0,
             turn_index: 1,
             current_roll: None,
             last_roll: None,
@@ -91,6 +98,14 @@ struct PieceSnapshot {
     board_position: Option<BoardPosition>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ActionOrigin {
+    status: PieceStatus,
+    progress: u8,
+    translation: Vec3,
+    new_progress: u8,
+}
+
 pub fn roll_die() -> u8 {
     random_range(1..=6)
 }
@@ -120,7 +135,12 @@ pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
     turn_state.last_roll = Some(roll_value);
 
     if roll_value == 6 {
-        turn_state.extra_rolls_remaining = turn_state.extra_rolls_remaining.saturating_add(1);
+        if turn_state.consecutive_sixes < MAX_CHAIN_EXTRA_ROLLS {
+            turn_state.extra_rolls_remaining = turn_state.extra_rolls_remaining.saturating_add(1);
+        }
+        turn_state.consecutive_sixes = turn_state.consecutive_sixes.saturating_add(1);
+    } else {
+        turn_state.consecutive_sixes = 0;
     }
 }
 
@@ -299,13 +319,17 @@ pub fn execute_action(
     match_config: &MatchConfig,
     board_layout: &BoardLayout,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    skill_roster: &mut SkillRoster,
     match_result: &mut MatchResult,
     turn_state: &mut TurnState,
     input_state: &mut TurnInputState,
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
     clear_stack_from_origin(&action, player_roster, piece_query);
-    let initial_progress = apply_action(&action, board_layout, player_roster, piece_query);
+    let action_origin = apply_action(&action, board_layout, player_roster, piece_query);
+    let initial_progress = action_origin
+        .map(|origin| origin.new_progress)
+        .unwrap_or_default();
     let mut notes = Vec::new();
     apply_tile_effects(
         &action,
@@ -313,11 +337,13 @@ pub fn execute_action(
         board_layout,
         player_roster,
         piece_query,
+        skill_roster,
         &mut notes,
     );
     apply_team_stack(&action, player_roster, match_config, piece_query, &mut notes);
     resolve_collision(
         &action,
+        action_origin,
         player_roster,
         match_config,
         piece_query,
@@ -499,7 +525,7 @@ fn apply_action(
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-) -> u8 {
+) -> Option<ActionOrigin> {
     for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
         let (target_piece_id, target_progress, next_status) = match *action {
             PlannedAction::Launch {
@@ -524,6 +550,9 @@ fn apply_action(
             continue;
         }
 
+        let previous_status = piece_state.status;
+        let previous_progress = piece_state.progress;
+        let previous_translation = transform.translation;
         piece_state.status = next_status;
         piece_state.progress = target_progress;
         if let Some(world_pos) = world_position_for_piece(
@@ -536,10 +565,15 @@ fn apply_action(
             transform.translation.x = world_pos.x;
             transform.translation.y = world_pos.y;
         }
-        return target_progress;
+        return Some(ActionOrigin {
+            status: previous_status,
+            progress: previous_progress,
+            translation: previous_translation,
+            new_progress: target_progress,
+        });
     }
 
-    0
+    None
 }
 
 fn apply_tile_effects(
@@ -548,6 +582,7 @@ fn apply_tile_effects(
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    skill_roster: &mut SkillRoster,
     notes: &mut Vec<String>,
 ) -> u8 {
     if board_layout.route_len() == 0 || final_progress >= MAIN_ROUTE_STEPS {
@@ -590,6 +625,7 @@ fn apply_tile_effects(
                 board_layout,
                 player_roster,
                 piece_query,
+                skill_roster,
             ) {
                 notes.push(event_note);
             }
@@ -602,6 +638,7 @@ fn apply_tile_effects(
 
 fn resolve_collision(
     action: &PlannedAction,
+    action_origin: Option<ActionOrigin>,
     player_roster: &PlayerRoster,
     match_config: &MatchConfig,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -648,9 +685,11 @@ fn resolve_collision(
     if !defenders_with_stack.is_empty() {
         consume_stack_shield(&defenders_with_stack, piece_query);
         notes.push("shared stack shield blocked collision".to_string());
+        restore_attacker_origin(action, action_origin, piece_query);
         return;
     }
 
+    let mut collision_blocked = false;
     for (piece_id, hangar_slot, mut piece_state, mut transform) in piece_query.iter_mut() {
         if piece_id.0 == attacker_piece_id {
             continue;
@@ -665,6 +704,7 @@ fn resolve_collision(
 
         if piece_state.shield > 0 {
             piece_state.shield -= 1;
+            collision_blocked = true;
             notes.push(format!("piece #{} blocked collision with shield", piece_id.0));
             continue;
         }
@@ -676,6 +716,31 @@ fn resolve_collision(
         transform.translation.x = hangar_slot.0.x;
         transform.translation.y = hangar_slot.0.y;
         notes.push(format!("sent piece #{} back to hangar", piece_id.0));
+    }
+
+    if collision_blocked {
+        restore_attacker_origin(action, action_origin, piece_query);
+        notes.push("attacker bounced back after shield block".to_string());
+    }
+}
+
+fn restore_attacker_origin(
+    action: &PlannedAction,
+    action_origin: Option<ActionOrigin>,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    let Some(action_origin) = action_origin else {
+        return;
+    };
+
+    for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
+        if piece_id.0 != action.piece_id() {
+            continue;
+        }
+        piece_state.status = action_origin.status;
+        piece_state.progress = action_origin.progress;
+        transform.translation = action_origin.translation;
+        break;
     }
 }
 
@@ -725,7 +790,10 @@ fn modify_piece_shield(
             continue;
         }
 
-        piece_state.shield = piece_state.shield.saturating_add(delta);
+        piece_state.shield = piece_state
+            .shield
+            .saturating_add(delta)
+            .min(MAX_PIECE_SHIELD);
         return Some(piece_state.shield);
     }
 
@@ -855,8 +923,9 @@ fn apply_event_effect(
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    skill_roster: &mut SkillRoster,
 ) -> Option<String> {
-    match random_range(0..=2) {
+    match random_range(0..=4) {
         0 => {
             let shield = modify_piece_shield(action, piece_query, 1)?;
             Some(format!(
@@ -865,6 +934,15 @@ fn apply_event_effect(
             ))
         }
         1 => {
+            let owner_player_id = owner_player_id_for_action(action, piece_query)?;
+            let charged = grant_random_skill_charge(skill_roster, owner_player_id)
+                .unwrap_or("UnknownSkill");
+            Some(format!(
+                "event {:?}: gained 1 {charged} charge",
+                TileEventKind::GainSkillCharge
+            ))
+        }
+        2 => {
             let next_progress = (*final_progress + 2).min(FINISH_DISTANCE);
             *final_progress = next_progress;
             update_piece_progress(action, next_progress, board_layout, player_roster, piece_query);
@@ -872,6 +950,18 @@ fn apply_event_effect(
                 "event {:?}: advanced to tile {next_progress}",
                 TileEventKind::AdvanceTwo
             ))
+        }
+        3 => {
+            let owner_player_id = owner_player_id_for_action(action, piece_query)?;
+            if disable_next_skill_turn(skill_roster, owner_player_id) {
+                Some(format!(
+                    "event {:?}: next skill turn disabled for P{}",
+                    TileEventKind::DisableNextSkill,
+                    owner_player_id
+                ))
+            } else {
+                Some("event fizzled: could not disable next skill turn".to_string())
+            }
         }
         _ => {
             let target_piece_id = action.piece_id();
@@ -903,6 +993,18 @@ fn apply_event_effect(
             Some("event fizzled: no enemy shield to remove".to_string())
         }
     }
+}
+
+fn owner_player_id_for_action(
+    action: &PlannedAction,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == action.piece_id() {
+            return Some(piece_state.owner_player_id);
+        }
+    }
+    None
 }
 
 fn piece_board_position(piece_state: PieceState, player_roster: &PlayerRoster) -> Option<BoardPosition> {
@@ -958,6 +1060,7 @@ pub fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
         } else {
             turn_state.current_player + 1
         };
+        turn_state.consecutive_sixes = 0;
         turn_state.turn_index = turn_state.turn_index.saturating_add(1);
     }
 
@@ -1005,6 +1108,7 @@ mod tests {
         let mut turn_state = TurnState {
             current_player: 1,
             extra_rolls_remaining: 1,
+            consecutive_sixes: 1,
             turn_index: 3,
             current_roll: Some(6),
             last_roll: Some(6),
@@ -1019,7 +1123,29 @@ mod tests {
 
         advance_turn(&mut turn_state, 4);
         assert_eq!(turn_state.current_player, 2);
+        assert_eq!(turn_state.consecutive_sixes, 0);
         assert_eq!(turn_state.turn_index, 4);
+    }
+
+    #[test]
+    fn set_roll_caps_bonus_roll_chain_at_three() {
+        let mut turn_state = TurnState::opening_turn();
+
+        set_roll(&mut turn_state, 6);
+        assert_eq!(turn_state.extra_rolls_remaining, 1);
+        assert_eq!(turn_state.consecutive_sixes, 1);
+
+        set_roll(&mut turn_state, 6);
+        assert_eq!(turn_state.extra_rolls_remaining, 2);
+        assert_eq!(turn_state.consecutive_sixes, 2);
+
+        set_roll(&mut turn_state, 6);
+        assert_eq!(turn_state.extra_rolls_remaining, 3);
+        assert_eq!(turn_state.consecutive_sixes, 3);
+
+        set_roll(&mut turn_state, 6);
+        assert_eq!(turn_state.extra_rolls_remaining, 3);
+        assert_eq!(turn_state.consecutive_sixes, 4);
     }
 
     #[test]
@@ -1315,6 +1441,7 @@ mod tests {
                 piece_id: 1,
                 target_progress: 2,
             },
+            None,
             &player_roster,
             &match_config,
             &mut query,
@@ -1336,5 +1463,85 @@ mod tests {
             ]
         );
         assert!(notes.iter().any(|note| note.contains("shared stack shield blocked collision")));
+    }
+
+    #[test]
+    fn resolve_collision_with_shield_bounces_attacker_to_origin() {
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
+        let player_roster = PlayerRoster { players };
+        let match_config = MatchConfig {
+            mode: GameMode::TwoVsTwo,
+            ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
+            fast_mode: false,
+        };
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 2,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::from_xyz(100.0, 100.0, 0.0),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 10,
+                shield: 1,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        resolve_collision(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 2,
+            },
+            Some(ActionOrigin {
+                status: PieceStatus::Active,
+                progress: 1,
+                translation: Vec3::new(-50.0, -70.0, 0.0),
+                new_progress: 2,
+            }),
+            &player_roster,
+            &match_config,
+            &mut query,
+            &mut notes,
+        );
+
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, transform)| {
+                (
+                    piece_id.0,
+                    piece_state.progress,
+                    piece_state.shield,
+                    transform.translation.x,
+                    transform.translation.y,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            vec![(1, 1, 0, -50.0, -70.0), (2, 10, 0, 0.0, 0.0)]
+        );
+        assert!(notes.iter().any(|note| note.contains("bounced back")));
     }
 }
