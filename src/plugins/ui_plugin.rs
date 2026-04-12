@@ -5,7 +5,7 @@ use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
 use crate::gameplay::skill_flow::{player_skill_state, SkillRoster};
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
-use crate::plugins::skill_plugin::SkillTargetState;
+use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
 use crate::states::{AppState, GamePhase};
 
 pub struct UiPlugin;
@@ -13,7 +13,10 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::InGame), spawn_hud)
-            .add_systems(Update, update_hud.run_if(in_state(AppState::InGame)))
+            .add_systems(
+                Update,
+                (update_hud, handle_skill_panel_click).run_if(in_state(AppState::InGame)),
+            )
             .add_systems(OnEnter(AppState::Result), spawn_result_screen)
             .add_systems(
                 Update,
@@ -39,15 +42,20 @@ struct HudSkillsText;
 #[derive(Component)]
 struct HudPromptText;
 
+const HUD_SKILL_PANEL_LEFT: f32 = 20.0;
+const HUD_SKILL_PANEL_RIGHT: f32 = 380.0;
+const HUD_SKILL_ROW_TOPS: [f32; 5] = [136.0, 160.0, 184.0, 208.0, 232.0];
+const HUD_SKILL_ROW_HEIGHT: f32 = 22.0;
+
 fn spawn_hud(
     mut commands: Commands,
 ) {
     commands.spawn((
         Sprite::from_color(
             Color::srgba(0.98, 0.99, 1.0, 0.90),
-            Vec2::new(HUD_PANEL_WIDTH, 242.0),
+            Vec2::new(HUD_PANEL_WIDTH, 282.0),
         ),
-        Transform::from_xyz(-365.0, 232.0, HUD_Z_LAYER),
+        Transform::from_xyz(-365.0, 212.0, HUD_Z_LAYER),
         Name::new("HudPanelBackdrop"),
         HudEntity,
     ));
@@ -94,7 +102,7 @@ fn spawn_hud(
         TextColor(Color::srgb(0.28, 0.35, 0.46)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(188.0),
+            top: Val::Px(252.0),
             left: Val::Px(28.0),
             ..default()
         },
@@ -201,6 +209,73 @@ fn update_hud(
     } else {
         format!("Prompt: {prompt_text}\n{stacked_hint}")
     });
+}
+
+fn handle_skill_panel_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    game_phase: Res<State<GamePhase>>,
+    match_result: Res<MatchResult>,
+    player_roster: Res<PlayerRoster>,
+    turn_state: Res<TurnState>,
+    skill_roster: Res<SkillRoster>,
+    mut skill_ui_request: ResMut<SkillUiRequest>,
+) {
+    if match_result.finished
+        || !matches!(game_phase.get(), GamePhase::AwaitDice | GamePhase::AwaitPieceSelect)
+        || !mouse.just_pressed(MouseButton::Left)
+    {
+        return;
+    }
+
+    let Some(current_player) = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == turn_state.current_player)
+    else {
+        return;
+    };
+    if current_player.state.control != PlayerControl::Human {
+        return;
+    }
+
+    let can_use_skill = skill_roster.active_turn_player == Some(turn_state.current_player)
+        && !skill_roster.skill_used_this_turn;
+    if !can_use_skill {
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    if cursor.x < HUD_SKILL_PANEL_LEFT || cursor.x > HUD_SKILL_PANEL_RIGHT {
+        return;
+    }
+
+    let Some(action) = skill_action_for_cursor_y(cursor.y) else {
+        return;
+    };
+    skill_ui_request.queue(action);
+}
+
+fn skill_action_for_cursor_y(cursor_y: f32) -> Option<SkillUiAction> {
+    HUD_SKILL_ROW_TOPS
+        .iter()
+        .enumerate()
+        .find_map(|(index, row_top)| {
+            (cursor_y >= *row_top && cursor_y <= *row_top + HUD_SKILL_ROW_HEIGHT).then_some(index)
+        })
+        .and_then(|index| match index {
+            0 => Some(SkillUiAction::Dash),
+            1 => Some(SkillUiAction::Snipe),
+            2 => Some(SkillUiAction::Swap),
+            3 => Some(SkillUiAction::Shield),
+            4 => Some(SkillUiAction::DoubleDice),
+            _ => None,
+        })
 }
 
 fn format_skill_panel(

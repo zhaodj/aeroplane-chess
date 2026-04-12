@@ -14,6 +14,32 @@ use crate::states::{AppState, GamePhase};
 
 pub struct SkillPlugin;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SkillUiAction {
+    Shield,
+    Snipe,
+    Swap,
+    DoubleDice,
+    Dash,
+}
+
+#[derive(Resource, Default)]
+pub struct SkillUiRequest {
+    pending: Option<SkillUiAction>,
+}
+
+impl SkillUiRequest {
+    pub fn queue(&mut self, action: SkillUiAction) {
+        if self.pending.is_none() {
+            self.pending = Some(action);
+        }
+    }
+
+    fn take(&mut self) -> Option<SkillUiAction> {
+        self.pending.take()
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct SkillTargetState {
     candidate_piece_ids: Vec<u8>,
@@ -51,11 +77,13 @@ impl Plugin for SkillPlugin {
 fn setup_skill_roster(mut commands: Commands, player_roster: Res<PlayerRoster>) {
     commands.insert_resource(build_skill_roster(&player_roster));
     commands.insert_resource(SkillTargetState::default());
+    commands.insert_resource(SkillUiRequest::default());
 }
 
 fn cleanup_skill_roster(mut commands: Commands) {
     commands.remove_resource::<SkillRoster>();
     commands.remove_resource::<SkillTargetState>();
+    commands.remove_resource::<SkillUiRequest>();
 }
 
 fn sync_skill_turn_state(
@@ -77,13 +105,31 @@ fn handle_human_skill_input(
     game_phase: Res<State<GamePhase>>,
     turn_state: Res<TurnState>,
     mut skill_roster: ResMut<SkillRoster>,
+    mut skill_ui_request: ResMut<SkillUiRequest>,
     mut target_state: ResMut<SkillTargetState>,
     mut next_phase: ResMut<NextState<GamePhase>>,
     mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
-    if match_result.finished
-        || !matches!(game_phase.get(), GamePhase::AwaitDice | GamePhase::AwaitPieceSelect)
-    {
+    let requested_action = if keyboard.just_pressed(KeyCode::KeyQ) {
+        Some(SkillUiAction::Shield)
+    } else if keyboard.just_pressed(KeyCode::KeyS) {
+        Some(SkillUiAction::Snipe)
+    } else if keyboard.just_pressed(KeyCode::KeyW) {
+        Some(SkillUiAction::DoubleDice)
+    } else if keyboard.just_pressed(KeyCode::KeyE) {
+        Some(SkillUiAction::Dash)
+    } else if keyboard.just_pressed(KeyCode::KeyA) {
+        Some(SkillUiAction::Swap)
+    } else {
+        None
+    }
+    .or_else(|| skill_ui_request.take());
+
+    let Some(action) = requested_action else {
+        return;
+    };
+
+    if match_result.finished {
         return;
     }
 
@@ -97,167 +143,167 @@ fn handle_human_skill_input(
         return;
     }
 
-    if keyboard.just_pressed(KeyCode::KeyQ) && matches!(game_phase.get(), GamePhase::AwaitDice) {
-        let Some(target_piece_id) =
-            preferred_shield_target_for_full_query(turn_state.current_player, &piece_query)
-        else {
-            skill_roster.last_skill_action = Some(format!(
-                "P{} could not find a piece for Shield",
-                turn_state.current_player
-            ));
-            return;
-        };
-
-        if !spend_shield_charge(&mut skill_roster, turn_state.current_player) {
-            skill_roster.last_skill_action = Some(format!(
-                "P{} has no Shield charges left",
-                turn_state.current_player
-            ));
-            return;
-        }
-
-        if let Some(shield_value) = apply_shield_to_piece_for_full_query(target_piece_id, &mut piece_query) {
-            mark_skill_used(&mut skill_roster, turn_state.current_player);
-            skill_roster.last_skill_action = Some(format!(
-                "P{} used Shield on piece #{} ({})",
-                turn_state.current_player,
-                target_piece_id,
-                shield_value
-            ));
-        }
-    } else if keyboard.just_pressed(KeyCode::KeyS) && matches!(game_phase.get(), GamePhase::AwaitDice) {
-        let Some(current_player_profile) = player_roster
-            .players
-            .iter()
-            .find(|player| player.state.player_id == turn_state.current_player)
-        else {
-            return;
-        };
-        let targets = collect_snipe_targets_for_full_query(
-            turn_state.current_player,
-            current_player_profile.state.team_id,
-            &piece_query,
-        );
-
-        if targets.is_empty() {
-            skill_roster.last_skill_action = Some(format!(
-                "P{} found no Snipe target",
-                turn_state.current_player
-            ));
-            return;
-        }
-        if !spend_snipe_charge(&mut skill_roster, turn_state.current_player) {
-            skill_roster.last_skill_action = Some(format!(
-                "P{} has no Snipe charges left",
-                turn_state.current_player
-            ));
-            return;
-        }
-
-        if targets.len() == 1 {
-            mark_skill_used(&mut skill_roster, turn_state.current_player);
-            skill_roster.last_skill_action =
-                Some(execute_snipe(targets[0], &mut piece_query));
-            return;
-        }
-
-        mark_skill_used(&mut skill_roster, turn_state.current_player);
-        target_state.candidate_piece_ids = targets;
-        target_state.prompt = Some(format!(
-            "Select a Snipe target with click or {}",
-            (1..=target_state.candidate_piece_ids.len())
-                .map(|index| index.to_string())
-                .collect::<Vec<_>>()
-                .join("/")
-        ));
-        target_state.active = true;
-        next_phase.set(GamePhase::ResolveSkillEffect);
-    } else if keyboard.just_pressed(KeyCode::KeyW) && matches!(game_phase.get(), GamePhase::AwaitDice) {
-        if arm_double_dice(&mut skill_roster, turn_state.current_player) {
-            mark_skill_used(&mut skill_roster, turn_state.current_player);
-            skill_roster.last_skill_action = Some(format!(
-                "P{} armed DoubleDice for the next roll",
-                turn_state.current_player
-            ));
-        } else {
-            let armed = player_skill_state(&skill_roster, turn_state.current_player)
-                .map(|state| state.double_dice_armed)
-                .unwrap_or(false);
-            let message = if armed {
-                format!(
-                    "P{} already has DoubleDice armed",
+    match action {
+        SkillUiAction::Shield if matches!(game_phase.get(), GamePhase::AwaitDice) => {
+            let Some(target_piece_id) =
+                preferred_shield_target_for_full_query(turn_state.current_player, &piece_query)
+            else {
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} could not find a piece for Shield",
                     turn_state.current_player
-                )
-            } else {
-                format!(
-                    "P{} has no DoubleDice charges left",
-                    turn_state.current_player
-                )
+                ));
+                return;
             };
-            skill_roster.last_skill_action = Some(message);
+
+            if !spend_shield_charge(&mut skill_roster, turn_state.current_player) {
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} has no Shield charges left",
+                    turn_state.current_player
+                ));
+                return;
+            }
+
+            if let Some(shield_value) =
+                apply_shield_to_piece_for_full_query(target_piece_id, &mut piece_query)
+            {
+                mark_skill_used(&mut skill_roster, turn_state.current_player);
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} used Shield on piece #{} ({})",
+                    turn_state.current_player, target_piece_id, shield_value
+                ));
+            }
         }
-    } else if keyboard.just_pressed(KeyCode::KeyE)
-        && matches!(game_phase.get(), GamePhase::AwaitPieceSelect)
-        && dash_bonus(&skill_roster, turn_state.current_player) == 0
-    {
-        if arm_dash(&mut skill_roster, turn_state.current_player) {
+        SkillUiAction::Snipe if matches!(game_phase.get(), GamePhase::AwaitDice) => {
+            let Some(current_player_profile) = player_roster
+                .players
+                .iter()
+                .find(|player| player.state.player_id == turn_state.current_player)
+            else {
+                return;
+            };
+            let targets = collect_snipe_targets_for_full_query(
+                turn_state.current_player,
+                current_player_profile.state.team_id,
+                &piece_query,
+            );
+
+            if targets.is_empty() {
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} found no Snipe target",
+                    turn_state.current_player
+                ));
+                return;
+            }
+            if !spend_snipe_charge(&mut skill_roster, turn_state.current_player) {
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} has no Snipe charges left",
+                    turn_state.current_player
+                ));
+                return;
+            }
+
+            if targets.len() == 1 {
+                mark_skill_used(&mut skill_roster, turn_state.current_player);
+                skill_roster.last_skill_action = Some(execute_snipe(targets[0], &mut piece_query));
+                return;
+            }
+
             mark_skill_used(&mut skill_roster, turn_state.current_player);
-            skill_roster.last_skill_action = Some(format!(
-                "P{} armed Dash for +3 movement",
-                turn_state.current_player
+            target_state.candidate_piece_ids = targets;
+            target_state.prompt = Some(format!(
+                "Select a Snipe target with click or {}",
+                (1..=target_state.candidate_piece_ids.len())
+                    .map(|index| index.to_string())
+                    .collect::<Vec<_>>()
+                    .join("/")
             ));
-        } else {
-            skill_roster.last_skill_action = Some(format!(
-                "P{} has no Dash charges left",
-                turn_state.current_player
-            ));
+            target_state.active = true;
+            next_phase.set(GamePhase::ResolveSkillEffect);
         }
-    } else if keyboard.just_pressed(KeyCode::KeyA) && matches!(game_phase.get(), GamePhase::AwaitDice) {
-        if match_config.mode != GameMode::TwoVsTwo {
-            skill_roster.last_skill_action = Some("Swap is only available in 2v2".to_string());
-            return;
+        SkillUiAction::DoubleDice if matches!(game_phase.get(), GamePhase::AwaitDice) => {
+            if arm_double_dice(&mut skill_roster, turn_state.current_player) {
+                mark_skill_used(&mut skill_roster, turn_state.current_player);
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} armed DoubleDice for the next roll",
+                    turn_state.current_player
+                ));
+            } else {
+                let armed = player_skill_state(&skill_roster, turn_state.current_player)
+                    .map(|state| state.double_dice_armed)
+                    .unwrap_or(false);
+                let message = if armed {
+                    format!("P{} already has DoubleDice armed", turn_state.current_player)
+                } else {
+                    format!("P{} has no DoubleDice charges left", turn_state.current_player)
+                };
+                skill_roster.last_skill_action = Some(message);
+            }
         }
+        SkillUiAction::Dash
+            if matches!(game_phase.get(), GamePhase::AwaitPieceSelect)
+                && dash_bonus(&skill_roster, turn_state.current_player) == 0 =>
+        {
+            if arm_dash(&mut skill_roster, turn_state.current_player) {
+                mark_skill_used(&mut skill_roster, turn_state.current_player);
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} armed Dash for +3 movement",
+                    turn_state.current_player
+                ));
+            } else {
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} has no Dash charges left",
+                    turn_state.current_player
+                ));
+            }
+        }
+        SkillUiAction::Swap if matches!(game_phase.get(), GamePhase::AwaitDice) => {
+            if match_config.mode != GameMode::TwoVsTwo {
+                skill_roster.last_skill_action = Some("Swap is only available in 2v2".to_string());
+                return;
+            }
 
-        let Some(current_player_profile) = player_roster
-            .players
-            .iter()
-            .find(|player| player.state.player_id == turn_state.current_player)
-        else {
-            return;
-        };
+            let Some(current_player_profile) = player_roster
+                .players
+                .iter()
+                .find(|player| player.state.player_id == turn_state.current_player)
+            else {
+                return;
+            };
 
-        let Some(teammate_piece_id) = find_active_teammate_piece_for_swap(
-            turn_state.current_player,
-            current_player_profile.state.team_id,
-            &piece_query,
-        ) else {
-            skill_roster.last_skill_action = Some(format!(
-                "P{} found no teammate piece to Swap with",
-                turn_state.current_player
-            ));
-            return;
-        };
-        if !current_player_has_active_piece(turn_state.current_player, &piece_query) {
-            skill_roster.last_skill_action = Some(format!(
-                "P{} needs an active piece to use Swap",
-                turn_state.current_player
-            ));
-            return;
-        }
-        if !spend_swap_charge(&mut skill_roster, turn_state.current_player) {
-            skill_roster.last_skill_action = Some(format!(
-                "P{} has no Swap charges left",
-                turn_state.current_player
-            ));
-            return;
-        }
+            let Some(teammate_piece_id) = find_active_teammate_piece_for_swap(
+                turn_state.current_player,
+                current_player_profile.state.team_id,
+                &piece_query,
+            ) else {
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} found no teammate piece to Swap with",
+                    turn_state.current_player
+                ));
+                return;
+            };
+            if !current_player_has_active_piece(turn_state.current_player, &piece_query) {
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} needs an active piece to use Swap",
+                    turn_state.current_player
+                ));
+                return;
+            }
+            if !spend_swap_charge(&mut skill_roster, turn_state.current_player) {
+                skill_roster.last_skill_action = Some(format!(
+                    "P{} has no Swap charges left",
+                    turn_state.current_player
+                ));
+                return;
+            }
 
-        mark_skill_used(&mut skill_roster, turn_state.current_player);
-        skill_roster.last_skill_action = Some(execute_swap(
-            turn_state.current_player,
-            teammate_piece_id,
-            &mut piece_query,
-        ));
+            mark_skill_used(&mut skill_roster, turn_state.current_player);
+            skill_roster.last_skill_action = Some(execute_swap(
+                turn_state.current_player,
+                teammate_piece_id,
+                &mut piece_query,
+            ));
+        }
+        _ => {}
     }
 }
 
