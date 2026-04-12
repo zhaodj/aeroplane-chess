@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::constants::{HUD_PANEL_WIDTH, HUD_Z_LAYER};
+use crate::constants::HUD_Z_LAYER;
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
 use crate::gameplay::skill_flow::{can_use_skill_this_turn, player_skill_state, SkillRoster};
@@ -47,8 +47,12 @@ struct HudSkillButton {
     action: SkillUiAction,
 }
 
-const HUD_SKILL_PANEL_LEFT: f32 = 20.0;
-const HUD_SKILL_PANEL_RIGHT: f32 = 360.0;
+const HUD_CARD_WIDTH: f32 = 250.0;
+const HUD_CARD_HEIGHT: f32 = 420.0;
+const HUD_CARD_CENTER_X: f32 = 510.0;
+const HUD_CARD_CENTER_Y: f32 = 0.0;
+const HUD_SKILL_PANEL_LEFT: f32 = 1028.0;
+const HUD_SKILL_PANEL_RIGHT: f32 = 1268.0;
 const HUD_SKILL_ROW_TOPS: [f32; 5] = [156.0, 178.0, 200.0, 222.0, 244.0];
 const HUD_SKILL_ROW_HEIGHT: f32 = 22.0;
 
@@ -58,9 +62,9 @@ fn spawn_hud(
     commands.spawn((
         Sprite::from_color(
             Color::srgba(0.98, 0.99, 1.0, 0.90),
-            Vec2::new(HUD_PANEL_WIDTH, 408.0),
+            Vec2::new(HUD_CARD_WIDTH, HUD_CARD_HEIGHT),
         ),
-        Transform::from_xyz(-365.0, 84.0, HUD_Z_LAYER),
+        Transform::from_xyz(HUD_CARD_CENTER_X, HUD_CARD_CENTER_Y, HUD_Z_LAYER),
         Name::new("HudPanelBackdrop"),
         HudEntity,
     ));
@@ -74,7 +78,7 @@ fn spawn_hud(
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(20.0),
-            left: Val::Px(28.0),
+            left: Val::Px(1028.0),
             ..default()
         },
         Name::new("HudPrimaryText"),
@@ -116,7 +120,7 @@ fn spawn_hud(
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(132.0),
-            left: Val::Px(28.0),
+            left: Val::Px(1028.0),
             ..default()
         },
         Name::new("HudSkillsText"),
@@ -133,7 +137,7 @@ fn spawn_hud(
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(312.0),
-            left: Val::Px(28.0),
+            left: Val::Px(1028.0),
             ..default()
         },
         Name::new("HudPromptText"),
@@ -223,7 +227,7 @@ fn update_hud(
         .prompt
         .as_deref()
         .or(input_state.prompt.as_deref())
-        .unwrap_or("Space rolls. Q uses Shield. S uses Snipe. A uses Swap. W arms DoubleDice. E arms Dash after rolling.");
+        .unwrap_or("Space roll | Q Shield | S Snipe | A Swap | W Double | E Dash");
     let skill_text = current_skills
         .map(|skills| {
             format_skill_panel(
@@ -250,8 +254,8 @@ fn update_hud(
         player_roster.players.len(),
         team_roster.teams.len(),
         result_text,
-        skill_action_text,
-        action_text,
+        trim_for_hud(skill_action_text, 28),
+        trim_for_hud(action_text, 28),
     ));
     *skills_text_node = Text::new(skill_text);
     *prompt_text_node = Text::new(if stacked_hint.is_empty() {
@@ -411,13 +415,23 @@ fn format_skill_panel(
     };
 
     format!(
-        "{header}\n[Dash][E]: {dash_state} | {}/tries\n[Snipe][S]: {snipe_state} | {}/tries\n[Swap][A]: {swap_state} | {}/tries\n[Shield][Q]: {shield_state} | {}/tries\n[DoubleDice][W]: {dice_state} | {}/tries",
+        "{header}\n[Dash E] {dash_state} | {}\n[Snipe S] {snipe_state} | {}\n[Swap A] {swap_state} | {}\n[Shield Q] {shield_state} | {}\n[Double W] {dice_state} | {}",
         skills.dash_charges,
         skills.snipe_charges,
         skills.swap_charges,
         skills.shield_charges,
         skills.double_dice_charges,
     )
+}
+
+fn trim_for_hud(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let preview = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
 }
 
 fn cleanup_hud(mut commands: Commands, query: Query<Entity, With<HudEntity>>) {
