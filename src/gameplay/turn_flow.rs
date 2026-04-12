@@ -344,6 +344,7 @@ pub fn execute_action(
     resolve_collision(
         &action,
         action_origin,
+        board_layout,
         player_roster,
         match_config,
         piece_query,
@@ -610,9 +611,7 @@ fn apply_tile_effects(
             );
             notes.push(format!("jumped to tile {final_progress}"));
         }
-        TileKind::Attack => {
-            notes.push("attack tile primed".to_string());
-        }
+        TileKind::Attack => {}
         TileKind::Defense => {
             if let Some(shield) = modify_piece_shield(action, piece_query, 1) {
                 notes.push(format!("gained shield ({shield})"));
@@ -639,6 +638,7 @@ fn apply_tile_effects(
 fn resolve_collision(
     action: &PlannedAction,
     action_origin: Option<ActionOrigin>,
+    board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     match_config: &MatchConfig,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -686,6 +686,7 @@ fn resolve_collision(
         consume_stack_shield(&defenders_with_stack, piece_query);
         notes.push("shared stack shield blocked collision".to_string());
         restore_attacker_origin(action, action_origin, piece_query);
+        append_attack_tile_collision_note(board_layout, target_tile_index, notes);
         return;
     }
 
@@ -721,6 +722,22 @@ fn resolve_collision(
     if collision_blocked {
         restore_attacker_origin(action, action_origin, piece_query);
         notes.push("attacker bounced back after shield block".to_string());
+        append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+    } else if notes
+        .iter()
+        .any(|note| note.contains("sent piece #") && note.contains("back to hangar"))
+    {
+        append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+    }
+}
+
+fn append_attack_tile_collision_note(
+    board_layout: &BoardLayout,
+    target_tile_index: u8,
+    notes: &mut Vec<String>,
+) {
+    if board_layout.tile_kind_for_route_index(target_tile_index) == Some(TileKind::Attack) {
+        notes.push("enhanced collision on attack tile".to_string());
     }
 }
 
@@ -1388,6 +1405,7 @@ mod tests {
             ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
             fast_mode: false,
         };
+        let board_layout = BoardLayout::default();
 
         let mut world = World::new();
         world.spawn((
@@ -1442,6 +1460,7 @@ mod tests {
                 target_progress: 2,
             },
             None,
+            &board_layout,
             &player_roster,
             &match_config,
             &mut query,
@@ -1474,6 +1493,7 @@ mod tests {
             ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
             fast_mode: false,
         };
+        let board_layout = BoardLayout::default();
 
         let mut world = World::new();
         world.spawn((
@@ -1520,6 +1540,7 @@ mod tests {
                 translation: Vec3::new(-50.0, -70.0, 0.0),
                 new_progress: 2,
             }),
+            &board_layout,
             &player_roster,
             &match_config,
             &mut query,
