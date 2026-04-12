@@ -16,6 +16,7 @@ use crate::gameplay::turn_flow::{
     choose_action, collect_actions, current_player_control, execute_action,
     find_pending_action_by_piece_id, finish_turn_without_action, get_pending_action,
     pressed_selection_key, set_pending_actions, set_roll, PlannedAction, TurnInputState,
+    MAIN_ROUTE_STEPS,
     TurnState,
 };
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
@@ -233,6 +234,7 @@ fn preferred_ai_snipe_target(
         if piece_state.owner_player_id == current_player
             || piece_state.team_id == attacker_team
             || piece_state.status != crate::domain::piece::PieceStatus::Active
+            || piece_state.progress >= MAIN_ROUTE_STEPS
         {
             continue;
         }

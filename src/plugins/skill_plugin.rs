@@ -8,6 +8,7 @@ use crate::gameplay::skill_flow::{
     dash_bonus, mark_skill_used, player_skill_state, spend_shield_charge, spend_snipe_charge,
     spend_swap_charge, sync_turn_skill_usage, SkillRoster,
 };
+use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
 use crate::gameplay::turn_flow::TurnState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
@@ -464,6 +465,7 @@ fn collect_snipe_targets_for_full_query(
         if piece_state.owner_player_id == current_player
             || piece_state.team_id == current_team
             || piece_state.status != crate::domain::piece::PieceStatus::Active
+            || piece_state.progress >= MAIN_ROUTE_STEPS
         {
             continue;
         }
@@ -777,5 +779,56 @@ mod tests {
                 (2, 3, 3, 1, 0, -100.0, 0.0),
             ]
         );
+    }
+
+    #[test]
+    fn collect_snipe_targets_for_full_query_excludes_home_lane_enemy() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 3,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: MAIN_ROUTE_STEPS + 1,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(3),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 2,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 6,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world);
+
+        assert_eq!(collect_snipe_targets_for_full_query(1, 1, &query), vec![3]);
     }
 }

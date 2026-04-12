@@ -4,6 +4,7 @@ use rand::random_range;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::PlayerRoster;
+use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
 use crate::plugins::piece_plugin::PieceId;
 
 #[derive(Clone, Debug, Default, Resource)]
@@ -180,6 +181,7 @@ pub fn collect_snipe_targets(
         if piece_state.owner_player_id == current_player
             || piece_state.team_id == current_team
             || piece_state.status != PieceStatus::Active
+            || piece_state.progress >= MAIN_ROUTE_STEPS
         {
             continue;
         }
@@ -639,5 +641,49 @@ mod tests {
         let query = system_state.get_mut(&mut world);
 
         assert_eq!(collect_snipe_targets(1, 1, &query), vec![3, 2]);
+    }
+
+    #[test]
+    fn collect_snipe_targets_excludes_home_lane_enemies() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 0,
+                shield: 0,
+                stack_shield: 0,
+            },
+        ));
+        world.spawn((
+            PieceId(2),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: MAIN_ROUTE_STEPS + 1,
+                shield: 0,
+                stack_shield: 0,
+            },
+        ));
+        world.spawn((
+            PieceId(3),
+            PieceState {
+                owner_player_id: 4,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 6,
+                shield: 0,
+                stack_shield: 0,
+            },
+        ));
+
+        let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
+            SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world);
+
+        assert_eq!(collect_snipe_targets(1, 1, &query), vec![3]);
     }
 }
