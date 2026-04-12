@@ -742,3 +742,99 @@ fn refresh_pending_actions_for_dash(
             .join("/")
     ));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gameplay::ai::AiDifficulty;
+    use crate::gameplay::match_flow::{build_match_rosters, MatchConfig, PlayerRoster};
+    use crate::gameplay::skill_flow::{build_skill_roster, player_skill_state, sync_turn_skill_usage};
+    use bevy::ecs::system::SystemState;
+
+    #[test]
+    fn maybe_use_ai_skills_does_not_arm_dash_before_roll() {
+        let match_config = MatchConfig {
+            mode: GameMode::OneVsOne,
+            ai_difficulty: AiDifficulty::Normal,
+            fast_mode: false,
+        };
+        let (players, _) = build_match_rosters(GameMode::OneVsOne);
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        if let Some(state) = skill_roster.players.iter_mut().find(|state| state.player_id == 2) {
+            state.snipe_charges = 0;
+            state.shield_charges = 0;
+            state.swap_charges = 0;
+            state.double_dice_charges = 0;
+            state.double_dice_armed = false;
+            state.dash_charges = 1;
+            state.dash_armed = false;
+        }
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 1,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+        let state = player_skill_state(&skill_roster, 2).unwrap();
+        assert!(!state.dash_armed);
+        assert!(!skill_roster.skill_used_this_turn);
+    }
+
+    #[test]
+    fn maybe_arm_dash_for_ai_after_roll_arms_dash_when_move_exists() {
+        let (players, _) = build_match_rosters(GameMode::OneVsOne);
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        if let Some(state) = skill_roster.players.iter_mut().find(|state| state.player_id == 2) {
+            state.snipe_charges = 0;
+            state.shield_charges = 0;
+            state.swap_charges = 0;
+            state.double_dice_charges = 0;
+            state.double_dice_armed = false;
+            state.dash_charges = 1;
+            state.dash_armed = false;
+        }
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 1,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        maybe_arm_dash_for_ai_after_roll(2, DiceRoll(2), &player_roster, &mut skill_roster, &mut query);
+        let state = player_skill_state(&skill_roster, 2).unwrap();
+        assert!(state.dash_armed);
+        assert!(skill_roster.skill_used_this_turn);
+    }
+}
