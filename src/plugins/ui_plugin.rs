@@ -12,10 +12,12 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::InGame), spawn_hud)
+        app.init_resource::<HudFoldState>()
+            .add_systems(OnEnter(AppState::InGame), spawn_hud)
             .add_systems(
                 Update,
-                (update_hud, handle_skill_panel_click).run_if(in_state(AppState::InGame)),
+                (update_hud, handle_hud_toggle, handle_skill_panel_click)
+                    .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnEnter(AppState::Result), spawn_result_screen)
             .add_systems(
@@ -29,6 +31,9 @@ impl Plugin for UiPlugin {
 
 #[derive(Component)]
 struct HudEntity;
+
+#[derive(Component)]
+struct HudCollapsible;
 
 #[derive(Component)]
 struct ResultEntity;
@@ -47,6 +52,14 @@ struct HudSkillButton {
     action: SkillUiAction,
 }
 
+#[derive(Component)]
+struct HudToggleHintText;
+
+#[derive(Resource, Default)]
+struct HudFoldState {
+    collapsed: bool,
+}
+
 const HUD_CARD_WIDTH: f32 = 250.0;
 const HUD_CARD_HEIGHT: f32 = 420.0;
 const HUD_CARD_CENTER_X: f32 = 510.0;
@@ -58,6 +71,7 @@ const HUD_SKILL_ROW_HEIGHT: f32 = 22.0;
 
 fn spawn_hud(
     mut commands: Commands,
+    hud_fold_state: Res<HudFoldState>,
 ) {
     commands.spawn((
         Sprite::from_color(
@@ -65,7 +79,13 @@ fn spawn_hud(
             Vec2::new(HUD_CARD_WIDTH, HUD_CARD_HEIGHT),
         ),
         Transform::from_xyz(HUD_CARD_CENTER_X, HUD_CARD_CENTER_Y, HUD_Z_LAYER),
+        if hud_fold_state.collapsed {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        },
         Name::new("HudPanelBackdrop"),
+        HudCollapsible,
         HudEntity,
     ));
     commands.spawn((
@@ -83,6 +103,7 @@ fn spawn_hud(
         },
         Name::new("HudPrimaryText"),
         HudPrimaryText,
+        HudCollapsible,
         HudEntity,
     ));
     for (row_index, action) in [
@@ -107,6 +128,7 @@ fn spawn_hud(
             BackgroundColor(skill_button_color(false, false)),
             Name::new(format!("HudSkillButton{:?}", action)),
             HudSkillButton { action: *action },
+            HudCollapsible,
             HudEntity,
         ));
     }
@@ -125,6 +147,7 @@ fn spawn_hud(
         },
         Name::new("HudSkillsText"),
         HudSkillsText,
+        HudCollapsible,
         HudEntity,
     ));
     commands.spawn((
@@ -142,6 +165,24 @@ fn spawn_hud(
         },
         Name::new("HudPromptText"),
         HudPromptText,
+        HudCollapsible,
+        HudEntity,
+    ));
+    commands.spawn((
+        Text::new("HUD: Expanded [Tab]"),
+        TextFont {
+            font_size: 14.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.18, 0.26, 0.38)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.0),
+            right: Val::Px(16.0),
+            ..default()
+        },
+        Name::new("HudToggleHintText"),
+        HudToggleHintText,
         HudEntity,
     ));
 }
@@ -156,9 +197,11 @@ fn update_hud(
     input_state: Res<TurnInputState>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
+    hud_fold_state: Res<HudFoldState>,
     mut primary_query: Query<&mut Text, (With<HudPrimaryText>, Without<HudSkillsText>, Without<HudPromptText>)>,
     mut skills_query: Query<&mut Text, (With<HudSkillsText>, Without<HudPrimaryText>, Without<HudPromptText>)>,
     mut prompt_query: Query<&mut Text, (With<HudPromptText>, Without<HudPrimaryText>, Without<HudSkillsText>)>,
+    mut toggle_hint_query: Query<&mut Text, (With<HudToggleHintText>, Without<HudPrimaryText>, Without<HudSkillsText>, Without<HudPromptText>)>,
     mut skill_button_query: Query<(&HudSkillButton, &mut BackgroundColor)>,
 ) {
     let Ok(mut primary_text) = primary_query.single_mut() else {
@@ -168,6 +211,9 @@ fn update_hud(
         return;
     };
     let Ok(mut prompt_text_node) = prompt_query.single_mut() else {
+        return;
+    };
+    let Ok(mut toggle_hint_text) = toggle_hint_query.single_mut() else {
         return;
     };
 
@@ -263,6 +309,31 @@ fn update_hud(
     } else {
         format!("Prompt: {prompt_text}\n{stacked_hint}")
     });
+    *toggle_hint_text = Text::new(if hud_fold_state.collapsed {
+        "HUD: Collapsed [Tab]"
+    } else {
+        "HUD: Expanded [Tab]"
+    });
+}
+
+fn handle_hud_toggle(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut hud_fold_state: ResMut<HudFoldState>,
+    mut collapsible_query: Query<&mut Visibility, With<HudCollapsible>>,
+) {
+    if !keyboard.just_pressed(KeyCode::Tab) {
+        return;
+    }
+
+    hud_fold_state.collapsed = !hud_fold_state.collapsed;
+    let next_visibility = if hud_fold_state.collapsed {
+        Visibility::Hidden
+    } else {
+        Visibility::Visible
+    };
+    for mut visibility in &mut collapsible_query {
+        *visibility = next_visibility;
+    }
 }
 
 fn is_skill_button_ready(
@@ -307,9 +378,11 @@ fn handle_skill_panel_click(
     match_result: Res<MatchResult>,
     player_roster: Res<PlayerRoster>,
     turn_state: Res<TurnState>,
+    hud_fold_state: Res<HudFoldState>,
     mut skill_ui_request: ResMut<SkillUiRequest>,
 ) {
-    if match_result.finished
+    if hud_fold_state.collapsed
+        || match_result.finished
         || !matches!(game_phase.get(), GamePhase::AwaitDice | GamePhase::AwaitPieceSelect)
         || !mouse.just_pressed(MouseButton::Left)
     {
