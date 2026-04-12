@@ -48,8 +48,8 @@ struct HudSkillButton {
 }
 
 const HUD_SKILL_PANEL_LEFT: f32 = 20.0;
-const HUD_SKILL_PANEL_RIGHT: f32 = 380.0;
-const HUD_SKILL_ROW_TOPS: [f32; 5] = [136.0, 160.0, 184.0, 208.0, 232.0];
+const HUD_SKILL_PANEL_RIGHT: f32 = 360.0;
+const HUD_SKILL_ROW_TOPS: [f32; 5] = [156.0, 178.0, 200.0, 222.0, 244.0];
 const HUD_SKILL_ROW_HEIGHT: f32 = 22.0;
 
 fn spawn_hud(
@@ -58,22 +58,22 @@ fn spawn_hud(
     commands.spawn((
         Sprite::from_color(
             Color::srgba(0.98, 0.99, 1.0, 0.90),
-            Vec2::new(HUD_PANEL_WIDTH, 282.0),
+            Vec2::new(HUD_PANEL_WIDTH, 408.0),
         ),
-        Transform::from_xyz(-365.0, 212.0, HUD_Z_LAYER),
+        Transform::from_xyz(-365.0, 84.0, HUD_Z_LAYER),
         Name::new("HudPanelBackdrop"),
         HudEntity,
     ));
     commands.spawn((
         Text::new("Loading HUD..."),
         TextFont {
-            font_size: 24.0,
+            font_size: 16.0,
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(22.0),
+            top: Val::Px(20.0),
             left: Val::Px(28.0),
             ..default()
         },
@@ -109,13 +109,13 @@ fn spawn_hud(
     commands.spawn((
         Text::new(""),
         TextFont {
-            font_size: 18.0,
+            font_size: 16.0,
             ..default()
         },
         TextColor(Color::srgb(0.20, 0.28, 0.40)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(116.0),
+            top: Val::Px(132.0),
             left: Val::Px(28.0),
             ..default()
         },
@@ -126,13 +126,13 @@ fn spawn_hud(
     commands.spawn((
         Text::new(""),
         TextFont {
-            font_size: 18.0,
+            font_size: 16.0,
             ..default()
         },
         TextColor(Color::srgb(0.28, 0.35, 0.46)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(252.0),
+            top: Val::Px(312.0),
             left: Val::Px(28.0),
             ..default()
         },
@@ -239,7 +239,7 @@ fn update_hud(
         });
 
     *primary_text = Text::new(format!(
-        "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\n{}\nLast Skill: {}\nLast Action: {}",
+        "Mode: {:?}  |  AI: {:?}\nTurn: P{} ({})  |  Round: {}\nPhase: {}  |  Last Roll: {}\nPlayers: {}  |  Teams: {}\nResult: {}\nLast Skill: {}\nLast Action: {}",
         match_config.mode,
         match_config.ai_difficulty,
         turn_state.current_player,
@@ -249,8 +249,8 @@ fn update_hud(
         roll_text,
         player_roster.players.len(),
         team_roster.teams.len(),
-        skill_action_text,
         result_text,
+        skill_action_text,
         action_text,
     ));
     *skills_text_node = Text::new(skill_text);
