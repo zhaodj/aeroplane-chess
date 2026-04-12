@@ -25,9 +25,31 @@
     <script type="module">
       import init from "./aeroplane_chess.js";
 
-      init().catch((err) => {
-        console.error("Failed to initialize WASM app:", err);
-      });
+      function ensureCanvas() {
+        const existing = document.querySelector("canvas#bevy");
+        if (existing) return existing;
+        const canvas = document.createElement("canvas");
+        canvas.id = "bevy";
+        document.body.appendChild(canvas);
+        return canvas;
+      }
+
+      async function boot() {
+        ensureCanvas();
+        await init();
+      }
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", () => {
+          boot().catch((err) => {
+            console.error("Failed to initialize WASM app:", err);
+          });
+        });
+      } else {
+        boot().catch((err) => {
+          console.error("Failed to initialize WASM app:", err);
+        });
+      }
     </script>
   </body>
   </html>
