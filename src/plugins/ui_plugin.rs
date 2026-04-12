@@ -42,6 +42,11 @@ struct HudSkillsText;
 #[derive(Component)]
 struct HudPromptText;
 
+#[derive(Component)]
+struct HudSkillButton {
+    action: SkillUiAction,
+}
+
 const HUD_SKILL_PANEL_LEFT: f32 = 20.0;
 const HUD_SKILL_PANEL_RIGHT: f32 = 380.0;
 const HUD_SKILL_ROW_TOPS: [f32; 5] = [136.0, 160.0, 184.0, 208.0, 232.0];
@@ -76,6 +81,31 @@ fn spawn_hud(
         HudPrimaryText,
         HudEntity,
     ));
+    for (row_index, action) in [
+        SkillUiAction::Dash,
+        SkillUiAction::Snipe,
+        SkillUiAction::Swap,
+        SkillUiAction::Shield,
+        SkillUiAction::DoubleDice,
+    ]
+    .iter()
+    .enumerate()
+    {
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(HUD_SKILL_PANEL_LEFT),
+                top: Val::Px(HUD_SKILL_ROW_TOPS[row_index]),
+                width: Val::Px(HUD_SKILL_PANEL_RIGHT - HUD_SKILL_PANEL_LEFT),
+                height: Val::Px(HUD_SKILL_ROW_HEIGHT),
+                ..default()
+            },
+            BackgroundColor(skill_button_color(false, false)),
+            Name::new(format!("HudSkillButton{:?}", action)),
+            HudSkillButton { action: *action },
+            HudEntity,
+        ));
+    }
     commands.spawn((
         Text::new(""),
         TextFont {
@@ -125,6 +155,7 @@ fn update_hud(
     mut primary_query: Query<&mut Text, (With<HudPrimaryText>, Without<HudSkillsText>, Without<HudPromptText>)>,
     mut skills_query: Query<&mut Text, (With<HudSkillsText>, Without<HudPrimaryText>, Without<HudPromptText>)>,
     mut prompt_query: Query<&mut Text, (With<HudPromptText>, Without<HudPrimaryText>, Without<HudSkillsText>)>,
+    mut skill_button_query: Query<(&HudSkillButton, &mut BackgroundColor)>,
 ) {
     let Ok(mut primary_text) = primary_query.single_mut() else {
         return;
@@ -172,6 +203,19 @@ fn update_hud(
     let can_use_skill = skill_roster.active_turn_player == Some(turn_state.current_player)
         && !skill_roster.skill_used_this_turn
         && is_human_turn;
+    let current_skills = player_skill_state(&skill_roster, turn_state.current_player);
+    for (button, mut background) in &mut skill_button_query {
+        let ready = current_skills
+            .map(|skills| is_skill_button_ready(
+                button.action,
+                skills,
+                can_use_skill,
+                game_phase.get(),
+                match_config.mode,
+            ))
+            .unwrap_or(false);
+        *background = BackgroundColor(skill_button_color(ready, can_use_skill));
+    }
     let stacked_hint = if matches!(game_phase.get(), GamePhase::AwaitPieceSelect) {
         "Highlighted teammate stacks share one shield.".to_string()
     } else {
@@ -182,7 +226,7 @@ fn update_hud(
         .as_deref()
         .or(input_state.prompt.as_deref())
         .unwrap_or("Space rolls. Q uses Shield. S uses Snipe. A uses Swap. W arms DoubleDice. E arms Dash after rolling.");
-    let skill_text = player_skill_state(&skill_roster, turn_state.current_player)
+    let skill_text = current_skills
         .map(|skills| format_skill_panel(skills, is_human_turn, can_use_skill, match_config.mode, game_phase.get()))
         .unwrap_or_else(|| {
             "Skills\nDash [E]: -\nSnipe [S]: -\nSwap [A]: -\nShield [Q]: -\nDoubleDice [W]: -".to_string()
@@ -209,6 +253,41 @@ fn update_hud(
     } else {
         format!("Prompt: {prompt_text}\n{stacked_hint}")
     });
+}
+
+fn is_skill_button_ready(
+    action: SkillUiAction,
+    skills: &crate::gameplay::skill_flow::PlayerSkillState,
+    can_use_skill: bool,
+    phase: &GamePhase,
+    mode: crate::data::game_mode::GameMode,
+) -> bool {
+    if !can_use_skill {
+        return false;
+    }
+    match action {
+        SkillUiAction::Dash => {
+            matches!(phase, GamePhase::AwaitPieceSelect) && !skills.dash_armed && skills.dash_charges > 0
+        }
+        SkillUiAction::Snipe => matches!(phase, GamePhase::AwaitDice) && skills.snipe_charges > 0,
+        SkillUiAction::Swap => {
+            matches!(phase, GamePhase::AwaitDice) && mode == crate::data::game_mode::GameMode::TwoVsTwo && skills.swap_charges > 0
+        }
+        SkillUiAction::Shield => matches!(phase, GamePhase::AwaitDice) && skills.shield_charges > 0,
+        SkillUiAction::DoubleDice => {
+            matches!(phase, GamePhase::AwaitDice) && !skills.double_dice_armed && skills.double_dice_charges > 0
+        }
+    }
+}
+
+fn skill_button_color(ready: bool, can_use_skill: bool) -> Color {
+    if ready {
+        Color::srgba(0.53, 0.77, 0.96, 0.42)
+    } else if can_use_skill {
+        Color::srgba(0.78, 0.82, 0.89, 0.28)
+    } else {
+        Color::srgba(0.70, 0.73, 0.79, 0.16)
+    }
 }
 
 fn handle_skill_panel_click(
