@@ -14,6 +14,8 @@ pub fn run() {
                 title: "Aeroplane Chess".into(),
                 resolution: (WINDOW_WIDTH, WINDOW_HEIGHT).into(),
                 resizable: true,
+                canvas: Some("#bevy".into()),
+                fit_canvas_to_parent: true,
                 ..default()
             }),
             ..default()
