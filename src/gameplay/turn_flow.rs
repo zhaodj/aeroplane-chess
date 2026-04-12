@@ -327,21 +327,9 @@ pub fn execute_action(
 ) {
     clear_stack_from_origin(&action, player_roster, piece_query);
     let action_origin = apply_action(&action, board_layout, player_roster, piece_query);
-    let initial_progress = action_origin
-        .map(|origin| origin.new_progress)
-        .unwrap_or_default();
     let mut notes = Vec::new();
-    apply_tile_effects(
-        &action,
-        initial_progress,
-        board_layout,
-        player_roster,
-        piece_query,
-        skill_roster,
-        &mut notes,
-    );
-    apply_team_stack(&action, player_roster, match_config, piece_query, &mut notes);
-    resolve_collision(
+    apply_jump_effect(&action, board_layout, player_roster, piece_query, &mut notes);
+    let attacker_landed = resolve_collision(
         &action,
         action_origin,
         board_layout,
@@ -350,6 +338,17 @@ pub fn execute_action(
         piece_query,
         &mut notes,
     );
+    if attacker_landed {
+        apply_post_collision_tile_effects(
+            &action,
+            board_layout,
+            player_roster,
+            piece_query,
+            skill_roster,
+            &mut notes,
+        );
+        apply_team_stack(&action, player_roster, match_config, piece_query, &mut notes);
+    }
 
     let finished_player_ids = piece_query
         .iter()
@@ -577,47 +576,67 @@ fn apply_action(
     None
 }
 
-fn apply_tile_effects(
+fn apply_jump_effect(
     action: &PlannedAction,
-    mut final_progress: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    notes: &mut Vec<String>,
+) {
+    if board_layout.route_len() == 0 {
+        return;
+    }
+
+    let Some(BoardPosition::Main(tile_index)) = attacker_position(action, player_roster, piece_query) else {
+        return;
+    };
+
+    let Some(tile_kind) = board_layout.tile_kind_for_route_index(tile_index) else {
+        return;
+    };
+    if tile_kind != TileKind::Jump {
+        return;
+    }
+
+    let current_progress = attacker_progress(action, piece_query).unwrap_or_default();
+    let final_progress = (current_progress + 4).min(FINISH_DISTANCE);
+    update_piece_progress(
+        action,
+        final_progress,
+        board_layout,
+        player_roster,
+        piece_query,
+    );
+    notes.push(format!("jumped to tile {final_progress}"));
+}
+
+fn apply_post_collision_tile_effects(
+    action: &PlannedAction,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     skill_roster: &mut SkillRoster,
     notes: &mut Vec<String>,
-) -> u8 {
-    if board_layout.route_len() == 0 || final_progress >= MAIN_ROUTE_STEPS {
-        return final_progress;
+) {
+    if board_layout.route_len() == 0 {
+        return;
     }
 
-    let Some(BoardPosition::Main(tile_index)) =
-        attacker_position(action, player_roster, piece_query) else {
-        return final_progress;
+    let Some(BoardPosition::Main(tile_index)) = attacker_position(action, player_roster, piece_query) else {
+        return;
     };
-
     let Some(tile_kind) = board_layout.tile_kind_for_route_index(tile_index) else {
-        return final_progress;
+        return;
     };
 
     match tile_kind {
-        TileKind::Jump => {
-            final_progress = (final_progress + 4).min(FINISH_DISTANCE);
-            update_piece_progress(
-                action,
-                final_progress,
-                board_layout,
-                player_roster,
-                piece_query,
-            );
-            notes.push(format!("jumped to tile {final_progress}"));
-        }
-        TileKind::Attack => {}
         TileKind::Defense => {
             if let Some(shield) = modify_piece_shield(action, piece_query, 1) {
                 notes.push(format!("gained shield ({shield})"));
             }
         }
         TileKind::Event => {
+            let mut final_progress = attacker_progress(action, piece_query).unwrap_or_default();
             if let Some(event_note) = apply_event_effect(
                 action,
                 &mut final_progress,
@@ -629,10 +648,8 @@ fn apply_tile_effects(
                 notes.push(event_note);
             }
         }
-        TileKind::Goal | TileKind::Normal => {}
+        TileKind::Attack | TileKind::Goal | TileKind::Jump | TileKind::Normal => {}
     }
-
-    final_progress
 }
 
 fn resolve_collision(
@@ -643,12 +660,12 @@ fn resolve_collision(
     match_config: &MatchConfig,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     notes: &mut Vec<String>,
-) {
+) -> bool {
     let Some(attacker_board_position) = attacker_position(action, player_roster, piece_query) else {
-        return;
+        return true;
     };
     let BoardPosition::Main(target_tile_index) = attacker_board_position else {
-        return;
+        return true;
     };
 
     let attacker_piece_id = action.piece_id();
@@ -661,7 +678,7 @@ fn resolve_collision(
     }
 
     let Some(attacker_team) = attacker_team else {
-        return;
+        return true;
     };
 
     let mut defenders_with_stack = Vec::new();
@@ -687,7 +704,7 @@ fn resolve_collision(
         notes.push("shared stack shield blocked collision".to_string());
         restore_attacker_origin(action, action_origin, piece_query);
         append_attack_tile_collision_note(board_layout, target_tile_index, notes);
-        return;
+        return false;
     }
 
     let mut collision_blocked = false;
@@ -723,12 +740,14 @@ fn resolve_collision(
         restore_attacker_origin(action, action_origin, piece_query);
         notes.push("attacker bounced back after shield block".to_string());
         append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        return false;
     } else if notes
         .iter()
         .any(|note| note.contains("sent piece #") && note.contains("back to hangar"))
     {
         append_attack_tile_collision_note(board_layout, target_tile_index, notes);
     }
+    true
 }
 
 fn append_attack_tile_collision_note(
@@ -1085,6 +1104,19 @@ fn attacker_position(
         }
     }
 
+    None
+}
+
+fn attacker_progress(
+    action: &PlannedAction,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    let attacker_piece_id = action.piece_id();
+    for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
+        if piece_id.0 == attacker_piece_id {
+            return Some(piece_state.progress);
+        }
+    }
     None
 }
 
