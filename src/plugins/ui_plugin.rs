@@ -212,32 +212,51 @@ fn format_skill_panel(
 ) -> String {
     let header = if is_human_turn {
         if can_use_skill {
-            "Skills: ready"
+            "Skills ready"
         } else {
-            "Skills: spent this turn"
+            "Skill slot spent"
         }
     } else {
-        "Skills: AI auto"
+        "AI skills auto"
     };
-    let dash_state = if skills.dash_armed { "armed +3" } else { "idle" };
-    let snipe_state = if matches!(phase, GamePhase::ResolveSkillEffect) {
-        "selecting target"
+    let dash_state = if skills.dash_armed {
+        "armed +3 move"
+    } else if skills.dash_charges == 0 {
+        "cooldown"
     } else {
-        "idle"
+        "ready"
+    };
+    let snipe_state = if matches!(phase, GamePhase::ResolveSkillEffect) {
+        "targeting"
+    } else if skills.snipe_charges == 0 {
+        "reloading"
+    } else {
+        "ready"
     };
     let swap_state = if mode == crate::data::game_mode::GameMode::TwoVsTwo {
-        "team-only"
+        if skills.swap_charges == 0 {
+            "empty"
+        } else {
+            "ready"
+        }
     } else {
-        "2v2 only"
+        "locked (2v2)"
+    };
+    let shield_state = if skills.shield_charges == 0 {
+        "empty"
+    } else {
+        "ready"
     };
     let dice_state = if skills.double_dice_armed {
         "armed"
+    } else if skills.double_dice_charges == 0 {
+        "empty"
     } else {
-        "idle"
+        "ready"
     };
 
     format!(
-        "{header}\n[E] Dash: {} ({dash_state})  |  [S] Snipe: {} ({snipe_state})\n[A] Swap: {} ({swap_state})  |  [Q] Shield: {}\n[W] DoubleDice: {} ({dice_state})",
+        "{header}\n[Dash][E]: {dash_state} | {}/tries\n[Snipe][S]: {snipe_state} | {}/tries\n[Swap][A]: {swap_state} | {}/tries\n[Shield][Q]: {shield_state} | {}/tries\n[DoubleDice][W]: {dice_state} | {}/tries",
         skills.dash_charges,
         skills.snipe_charges,
         skills.swap_charges,
