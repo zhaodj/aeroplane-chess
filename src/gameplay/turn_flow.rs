@@ -982,7 +982,8 @@ fn apply_event_kind_effect(
         }
         TileEventKind::GainSkillCharge => {
             let owner_player_id = owner_player_id_for_action(action, piece_query)?;
-            let charged = grant_random_skill_charge(skill_roster, owner_player_id)
+            let allow_swap = player_roster.players.len() > 2;
+            let charged = grant_random_skill_charge(skill_roster, owner_player_id, allow_swap)
                 .unwrap_or("UnknownSkill");
             Some(format!(
                 "event {:?}: gained 1 {charged} charge",

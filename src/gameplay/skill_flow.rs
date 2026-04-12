@@ -366,32 +366,57 @@ pub fn resolve_roll_from_values(first: u8, second: u8, use_double_dice: bool) ->
     }
 }
 
-pub fn grant_random_skill_charge(skill_roster: &mut SkillRoster, player_id: u8) -> Option<&'static str> {
+pub fn grant_random_skill_charge(
+    skill_roster: &mut SkillRoster,
+    player_id: u8,
+    allow_swap: bool,
+) -> Option<&'static str> {
     let player_state = skill_roster
         .players
         .iter_mut()
         .find(|player| player.player_id == player_id)?;
 
-    match random_range(0..=4) {
-        0 => {
-            player_state.dash_charges = player_state.dash_charges.saturating_add(1);
-            Some("Dash")
+    if allow_swap {
+        match random_range(0..=4) {
+            0 => {
+                player_state.dash_charges = player_state.dash_charges.saturating_add(1);
+                Some("Dash")
+            }
+            1 => {
+                player_state.snipe_charges = player_state.snipe_charges.saturating_add(1);
+                Some("Snipe")
+            }
+            2 => {
+                player_state.swap_charges = player_state.swap_charges.saturating_add(1);
+                Some("Swap")
+            }
+            3 => {
+                player_state.shield_charges = player_state.shield_charges.saturating_add(1);
+                Some("Shield")
+            }
+            _ => {
+                player_state.double_dice_charges = player_state.double_dice_charges.saturating_add(1);
+                Some("DoubleDice")
+            }
         }
-        1 => {
-            player_state.snipe_charges = player_state.snipe_charges.saturating_add(1);
-            Some("Snipe")
-        }
-        2 => {
-            player_state.swap_charges = player_state.swap_charges.saturating_add(1);
-            Some("Swap")
-        }
-        3 => {
-            player_state.shield_charges = player_state.shield_charges.saturating_add(1);
-            Some("Shield")
-        }
-        _ => {
-            player_state.double_dice_charges = player_state.double_dice_charges.saturating_add(1);
-            Some("DoubleDice")
+    } else {
+        match random_range(0..=3) {
+            0 => {
+                player_state.dash_charges = player_state.dash_charges.saturating_add(1);
+                Some("Dash")
+            }
+            1 => {
+                player_state.snipe_charges = player_state.snipe_charges.saturating_add(1);
+                Some("Snipe")
+            }
+            2 => {
+                player_state.shield_charges = player_state.shield_charges.saturating_add(1);
+                Some("Shield")
+            }
+            _ => {
+                player_state.double_dice_charges = player_state.double_dice_charges.saturating_add(1);
+                Some("DoubleDice")
+            }
         }
     }
 }
