@@ -942,15 +942,45 @@ fn apply_event_effect(
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     skill_roster: &mut SkillRoster,
 ) -> Option<String> {
+    apply_event_kind_effect(
+        random_event_kind(),
+        action,
+        final_progress,
+        board_layout,
+        player_roster,
+        piece_query,
+        skill_roster,
+    )
+}
+
+fn random_event_kind() -> TileEventKind {
     match random_range(0..=4) {
-        0 => {
+        0 => TileEventKind::GainShield,
+        1 => TileEventKind::GainSkillCharge,
+        2 => TileEventKind::AdvanceTwo,
+        3 => TileEventKind::DisableNextSkill,
+        _ => TileEventKind::RemoveEnemyShield,
+    }
+}
+
+fn apply_event_kind_effect(
+    event_kind: TileEventKind,
+    action: &PlannedAction,
+    final_progress: &mut u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    skill_roster: &mut SkillRoster,
+) -> Option<String> {
+    match event_kind {
+        TileEventKind::GainShield => {
             let shield = modify_piece_shield(action, piece_query, 1)?;
             Some(format!(
                 "event {:?}: gained shield ({shield})",
                 TileEventKind::GainShield
             ))
         }
-        1 => {
+        TileEventKind::GainSkillCharge => {
             let owner_player_id = owner_player_id_for_action(action, piece_query)?;
             let charged = grant_random_skill_charge(skill_roster, owner_player_id)
                 .unwrap_or("UnknownSkill");
@@ -959,7 +989,7 @@ fn apply_event_effect(
                 TileEventKind::GainSkillCharge
             ))
         }
-        2 => {
+        TileEventKind::AdvanceTwo => {
             let next_progress = (*final_progress + 2).min(FINISH_DISTANCE);
             *final_progress = next_progress;
             update_piece_progress(action, next_progress, board_layout, player_roster, piece_query);
@@ -968,7 +998,7 @@ fn apply_event_effect(
                 TileEventKind::AdvanceTwo
             ))
         }
-        3 => {
+        TileEventKind::DisableNextSkill => {
             let owner_player_id = owner_player_id_for_action(action, piece_query)?;
             if disable_next_skill_turn(skill_roster, owner_player_id) {
                 Some(format!(
@@ -980,7 +1010,7 @@ fn apply_event_effect(
                 Some("event fizzled: could not disable next skill turn".to_string())
             }
         }
-        _ => {
+        TileEventKind::RemoveEnemyShield => {
             let target_piece_id = action.piece_id();
             let mut attacker_team = None;
             for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
@@ -1087,6 +1117,7 @@ pub fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gameplay::skill_flow::{build_skill_roster, can_use_skill_this_turn, sync_turn_skill_usage};
     use crate::domain::player::PlayerState;
     use bevy::ecs::system::SystemState;
 
@@ -1564,5 +1595,124 @@ mod tests {
             vec![(1, 1, 0, -50.0, -70.0), (2, 10, 0, 0.0, 0.0)]
         );
         assert!(notes.iter().any(|note| note.contains("bounced back")));
+    }
+
+    #[test]
+    fn gain_skill_charge_event_adds_exactly_one_charge() {
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::OneVsOne);
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let board_layout = BoardLayout::default();
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 2,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        let before = skill_roster
+            .players
+            .iter()
+            .find(|p| p.player_id == 1)
+            .map(|p| {
+                p.dash_charges
+                    + p.snipe_charges
+                    + p.swap_charges
+                    + p.shield_charges
+                    + p.double_dice_charges
+            })
+            .unwrap_or_default();
+        let mut final_progress = 2;
+        let note = apply_event_kind_effect(
+            TileEventKind::GainSkillCharge,
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 2,
+            },
+            &mut final_progress,
+            &board_layout,
+            &player_roster,
+            &mut query,
+            &mut skill_roster,
+        );
+        let after = skill_roster
+            .players
+            .iter()
+            .find(|p| p.player_id == 1)
+            .map(|p| {
+                p.dash_charges
+                    + p.snipe_charges
+                    + p.swap_charges
+                    + p.shield_charges
+                    + p.double_dice_charges
+            })
+            .unwrap_or_default();
+
+        assert_eq!(after, before + 1);
+        assert!(note.unwrap_or_default().contains("GainSkillCharge"));
+    }
+
+    #[test]
+    fn disable_next_skill_event_blocks_next_turn_only() {
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::OneVsOne);
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let board_layout = BoardLayout::default();
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 2,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut final_progress = 2;
+
+        let note = apply_event_kind_effect(
+            TileEventKind::DisableNextSkill,
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 2,
+            },
+            &mut final_progress,
+            &board_layout,
+            &player_roster,
+            &mut query,
+            &mut skill_roster,
+        );
+        assert!(note.unwrap_or_default().contains("DisableNextSkill"));
+
+        sync_turn_skill_usage(&mut skill_roster, 1);
+        assert!(!can_use_skill_this_turn(&skill_roster, 1));
+
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        sync_turn_skill_usage(&mut skill_roster, 1);
+        assert!(can_use_skill_this_turn(&skill_roster, 1));
     }
 }
