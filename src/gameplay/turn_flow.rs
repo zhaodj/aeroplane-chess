@@ -350,14 +350,20 @@ pub fn execute_action(
         apply_team_stack(&action, player_roster, match_config, piece_query, &mut notes);
     }
 
-    let finished_player_ids = piece_query
+    let player_completion = player_roster
+        .players
         .iter()
-        .filter_map(|(_, _, piece_state, _)| {
-            (piece_state.status == PieceStatus::Finished).then_some(piece_state.owner_player_id)
+        .map(|player| {
+            let player_id = player.state.player_id;
+            let all_finished = piece_query
+                .iter()
+                .filter(|(_, _, piece_state, _)| piece_state.owner_player_id == player_id)
+                .all(|(_, _, piece_state, _)| piece_state.status == PieceStatus::Finished);
+            (player_id, all_finished)
         })
         .collect::<Vec<_>>();
 
-    let evaluated_result = evaluate_match_result(team_roster, &finished_player_ids);
+    let evaluated_result = evaluate_match_result(team_roster, &player_completion);
     if evaluated_result.finished {
         match_result.winner_team_id = evaluated_result.winner_team_id;
         match_result.winner_player_ids = evaluated_result.winner_player_ids.clone();
@@ -1159,9 +1165,21 @@ pub fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gameplay::skill_flow::{build_skill_roster, can_use_skill_this_turn, sync_turn_skill_usage};
+    use crate::gameplay::ai::AiDifficulty;
     use crate::domain::player::PlayerState;
+    use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
+    use crate::gameplay::skill_flow::{build_skill_roster, can_use_skill_this_turn, sync_turn_skill_usage};
     use bevy::ecs::system::SystemState;
+
+    fn setup(mode: GameMode) -> MatchSetup {
+        MatchSetup {
+            mode,
+            ai_difficulty: AiDifficulty::Normal,
+            fast_mode: false,
+            human_color: PlayerColorChoice::Crimson,
+            pieces_per_player: 2,
+        }
+    }
 
     #[test]
     fn compute_target_distance_blocks_overshoot() {
@@ -1171,7 +1189,7 @@ mod tests {
 
     #[test]
     fn board_position_uses_player_launch_offset_on_main_route() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_one = &players[0];
         let player_two = &players[1];
 
@@ -1240,7 +1258,7 @@ mod tests {
 
     #[test]
     fn world_position_for_piece_uses_home_lane_and_goal_positions() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
         let board_layout = BoardLayout {
             tiles: crate::data::board_config::default_board_tiles(),
@@ -1274,7 +1292,7 @@ mod tests {
 
     #[test]
     fn collect_actions_returns_launch_and_move_options_for_human_player() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::OneVsOne);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
 
         let mut world = World::new();
@@ -1354,12 +1372,14 @@ mod tests {
 
     #[test]
     fn apply_team_stack_grants_shared_shield_in_two_vs_two() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
-            ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
+            ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
+            human_color: PlayerColorChoice::Crimson,
+            pieces_per_player: 2,
         };
 
         let mut world = World::new();
@@ -1417,7 +1437,7 @@ mod tests {
 
     #[test]
     fn clear_stack_from_origin_removes_shared_shield_from_remaining_stack() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
 
         let mut world = World::new();
@@ -1471,12 +1491,14 @@ mod tests {
 
     #[test]
     fn resolve_collision_consumes_shared_stack_shield_before_returning_to_hangar() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
-            ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
+            ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
+            human_color: PlayerColorChoice::Crimson,
+            pieces_per_player: 2,
         };
         let board_layout = BoardLayout::default();
 
@@ -1559,12 +1581,14 @@ mod tests {
 
     #[test]
     fn resolve_collision_with_shield_bounces_attacker_to_origin() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::TwoVsTwo);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
-            ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
+            ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
+            human_color: PlayerColorChoice::Crimson,
+            pieces_per_player: 2,
         };
         let board_layout = BoardLayout::default();
 
@@ -1641,7 +1665,7 @@ mod tests {
 
     #[test]
     fn gain_skill_charge_event_adds_exactly_one_charge() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::OneVsOne);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();
@@ -1710,7 +1734,7 @@ mod tests {
 
     #[test]
     fn disable_next_skill_event_blocks_next_turn_only() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::OneVsOne);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();
@@ -1760,7 +1784,7 @@ mod tests {
 
     #[test]
     fn remove_enemy_shield_event_hits_the_only_valid_enemy_target() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::OneVsOne);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();

@@ -30,12 +30,14 @@ fn prepare_match(
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_phase: ResMut<NextState<GamePhase>>,
 ) {
-    let (board_layout, player_roster, team_roster) = build_match_resources(match_setup.mode);
+    let (board_layout, player_roster, team_roster) = build_match_resources(&match_setup);
 
     commands.insert_resource(MatchConfig {
         mode: match_setup.mode,
         ai_difficulty: match_setup.ai_difficulty,
         fast_mode: match_setup.fast_mode,
+        human_color: match_setup.human_color,
+        pieces_per_player: match_setup.pieces_per_player,
     });
     commands.insert_resource(board_layout);
     commands.insert_resource(player_roster);

@@ -747,9 +747,21 @@ fn refresh_pending_actions_for_dash(
 mod tests {
     use super::*;
     use crate::gameplay::ai::AiDifficulty;
-    use crate::gameplay::match_flow::{build_match_rosters, MatchConfig, PlayerRoster};
+    use crate::gameplay::match_flow::{
+        build_match_rosters, MatchConfig, MatchSetup, PlayerColorChoice, PlayerRoster,
+    };
     use crate::gameplay::skill_flow::{build_skill_roster, player_skill_state, sync_turn_skill_usage};
     use bevy::ecs::system::SystemState;
+
+    fn setup(mode: GameMode) -> MatchSetup {
+        MatchSetup {
+            mode,
+            ai_difficulty: AiDifficulty::Normal,
+            fast_mode: false,
+            human_color: PlayerColorChoice::Crimson,
+            pieces_per_player: 2,
+        }
+    }
 
     #[test]
     fn maybe_use_ai_skills_does_not_arm_dash_before_roll() {
@@ -757,8 +769,10 @@ mod tests {
             mode: GameMode::OneVsOne,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
+            human_color: PlayerColorChoice::Crimson,
+            pieces_per_player: 2,
         };
-        let (players, _) = build_match_rosters(GameMode::OneVsOne);
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
@@ -799,7 +813,7 @@ mod tests {
 
     #[test]
     fn maybe_arm_dash_for_ai_after_roll_arms_dash_when_move_exists() {
-        let (players, _) = build_match_rosters(GameMode::OneVsOne);
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
