@@ -1022,14 +1022,24 @@ fn apply_event_kind_effect(
             }
 
             let attacker_team = attacker_team?;
+            let candidates = piece_query
+                .iter_mut()
+                .filter(|(piece_id, _, piece_state, _)| {
+                    piece_id.0 != target_piece_id
+                        && piece_state.team_id != attacker_team
+                        && piece_state.shield > 0
+                })
+                .map(|(piece_id, _, _, _)| piece_id.0)
+                .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                return Some("event fizzled: no enemy shield to remove".to_string());
+            }
+
+            let picked_piece_id = candidates[random_range(0..candidates.len())];
             for (piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
-                if piece_id.0 == target_piece_id
-                    || piece_state.team_id == attacker_team
-                    || piece_state.shield == 0
-                {
+                if piece_id.0 != picked_piece_id {
                     continue;
                 }
-
                 piece_state.shield -= 1;
                 return Some(format!(
                     "event {:?}: removed shield from piece #{}",
@@ -1037,8 +1047,7 @@ fn apply_event_kind_effect(
                     piece_id.0
                 ));
             }
-
-            Some("event fizzled: no enemy shield to remove".to_string())
+            Some("event failed: selected enemy shield target disappeared".to_string())
         }
     }
 }
@@ -1715,5 +1724,81 @@ mod tests {
         sync_turn_skill_usage(&mut skill_roster, 2);
         sync_turn_skill_usage(&mut skill_roster, 1);
         assert!(can_use_skill_this_turn(&skill_roster, 1));
+    }
+
+    #[test]
+    fn remove_enemy_shield_event_hits_the_only_valid_enemy_target() {
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(GameMode::OneVsOne);
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let board_layout = BoardLayout::default();
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 3,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 4,
+                shield: 1,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(3),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 5,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut final_progress = 3;
+
+        let note = apply_event_kind_effect(
+            TileEventKind::RemoveEnemyShield,
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 3,
+            },
+            &mut final_progress,
+            &board_layout,
+            &player_roster,
+            &mut query,
+            &mut skill_roster,
+        )
+        .unwrap_or_default();
+
+        let shields = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.shield))
+            .collect::<Vec<_>>();
+        assert_eq!(shields, vec![(1, 0), (2, 0), (3, 0)]);
+        assert!(note.contains("removed shield from piece #2"));
     }
 }
