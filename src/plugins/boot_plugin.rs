@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
+use crate::domain::player::PlayerControl;
 use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
 use crate::states::AppState;
@@ -22,6 +23,12 @@ fn setup_camera(mut commands: Commands) {
         fast_mode: false,
         human_color: PlayerColorChoice::Crimson,
         pieces_per_player: 2,
+        player_controls: [
+            PlayerControl::Human,
+            PlayerControl::Ai,
+            PlayerControl::Human,
+            PlayerControl::Ai,
+        ],
     });
 }
 

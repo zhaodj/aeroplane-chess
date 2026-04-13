@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
+use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::MatchSetup;
 use crate::states::AppState;
 
@@ -69,9 +70,29 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
 }
 
 fn mode_select_content(match_setup: &MatchSetup) -> String {
+    let controls = match_setup.normalized_player_controls();
+    let control_label = |control: PlayerControl| match control {
+        PlayerControl::Human => "Human",
+        PlayerControl::Ai => "AI",
+    };
     let current_mode = match match_setup.mode {
         GameMode::OneVsOne => "1v1",
         GameMode::TwoVsTwo => "2v2",
+    };
+    let players_line = if match_setup.mode == GameMode::OneVsOne {
+        format!(
+            "Q/W: P1/P2 人机 ({}/{})",
+            control_label(controls[0]),
+            control_label(controls[1]),
+        )
+    } else {
+        format!(
+            "Q/W/E/R: P1..P4 人机 ({}/{}/{}/{})",
+            control_label(controls[0]),
+            control_label(controls[1]),
+            control_label(controls[2]),
+            control_label(controls[3]),
+        )
     };
 
     format!(
@@ -79,11 +100,14 @@ fn mode_select_content(match_setup: &MatchSetup) -> String {
 1/2: 模式 ({})\n\
 C: 人类颜色 ({})\n\
 [-]/[=]: 棋子数量 ({} / 1~4)\n\n\
+{}\n\
+约束: 至少 1 名 Human\n\n\
 Enter: 开始对局\n\
 Esc: 返回",
         current_mode,
         match_setup.human_color.label(),
-        match_setup.pieces_per_player
+        match_setup.pieces_per_player,
+        players_line
     )
 }
 
@@ -117,8 +141,10 @@ fn handle_mode_select_input(
 
     if keyboard.just_pressed(KeyCode::Digit1) {
         match_setup.mode = GameMode::OneVsOne;
+        match_setup.sanitize_player_controls();
     } else if keyboard.just_pressed(KeyCode::Digit2) {
         match_setup.mode = GameMode::TwoVsTwo;
+        match_setup.sanitize_player_controls();
     }
 
     if keyboard.just_pressed(KeyCode::KeyC) {
@@ -133,7 +159,21 @@ fn handle_mode_select_input(
         match_setup.pieces_per_player = match_setup.pieces_per_player.saturating_add(1).clamp(1, 4);
     }
 
+    if keyboard.just_pressed(KeyCode::KeyQ) {
+        match_setup.toggle_player_control(0);
+    }
+    if keyboard.just_pressed(KeyCode::KeyW) {
+        match_setup.toggle_player_control(1);
+    }
+    if keyboard.just_pressed(KeyCode::KeyE) {
+        match_setup.toggle_player_control(2);
+    }
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        match_setup.toggle_player_control(3);
+    }
+
     if keyboard.just_pressed(KeyCode::Enter) {
+        match_setup.sanitize_player_controls();
         next_state.set(AppState::LoadingGame);
     }
 }

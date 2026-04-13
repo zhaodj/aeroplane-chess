@@ -9,11 +9,11 @@ use crate::domain::player::PlayerControl;
 use crate::domain::rules::can_launch;
 use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{
-    evaluate_match_result, BoardLayout, MatchConfig, MatchResult, PlayerProfile, PlayerRoster,
-    TeamRoster,
+    BoardLayout, MatchConfig, MatchResult, PlayerProfile, PlayerRoster, TeamRoster,
+    evaluate_match_result,
 };
 use crate::gameplay::skill_flow::{
-    disable_next_skill_turn, grant_random_skill_charge, SkillRoster,
+    SkillRoster, disable_next_skill_turn, grant_random_skill_charge,
 };
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::GamePhase;
@@ -110,7 +110,10 @@ pub fn roll_die() -> u8 {
     random_range(1..=6)
 }
 
-pub fn current_player_control(current_player: u8, player_roster: &PlayerRoster) -> Option<PlayerControl> {
+pub fn current_player_control(
+    current_player: u8,
+    player_roster: &PlayerRoster,
+) -> Option<PlayerControl> {
     player_roster
         .players
         .iter()
@@ -118,16 +121,16 @@ pub fn current_player_control(current_player: u8, player_roster: &PlayerRoster) 
         .map(|player| player.state.control)
 }
 
-pub fn pressed_selection_key(
-    keyboard: &ButtonInput<KeyCode>,
-    max_actions: usize,
-) -> Option<usize> {
-    let keys = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4];
-    keys.iter()
-        .enumerate()
-        .find_map(|(index, key)| {
-            (index < max_actions && keyboard.just_pressed(*key)).then_some(index)
-        })
+pub fn pressed_selection_key(keyboard: &ButtonInput<KeyCode>, max_actions: usize) -> Option<usize> {
+    let keys = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+    ];
+    keys.iter().enumerate().find_map(|(index, key)| {
+        (index < max_actions && keyboard.just_pressed(*key)).then_some(index)
+    })
 }
 
 pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
@@ -163,7 +166,10 @@ pub fn choose_action(
         .find(|player| player.state.player_id == current_player)?;
 
     if roll.0 == 6 {
-        for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
+        for piece in snapshots
+            .iter()
+            .filter(|piece| piece.owner_player_id == current_player)
+        {
             if piece.status != PieceStatus::InHangar {
                 continue;
             }
@@ -199,7 +205,10 @@ pub fn choose_action(
         }
     }
 
-    for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
+    for piece in snapshots
+        .iter()
+        .filter(|piece| piece.owner_player_id == current_player)
+    {
         if piece.status != PieceStatus::Active {
             continue;
         }
@@ -224,7 +233,10 @@ pub fn choose_action(
     }
 
     if roll.0 == 6 {
-        for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
+        for piece in snapshots
+            .iter()
+            .filter(|piece| piece.owner_player_id == current_player)
+        {
             if piece.status == PieceStatus::InHangar {
                 return Some(PlannedAction::Launch {
                     piece_id: piece.piece_id,
@@ -234,7 +246,10 @@ pub fn choose_action(
         }
     }
 
-    for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
+    for piece in snapshots
+        .iter()
+        .filter(|piece| piece.owner_player_id == current_player)
+    {
         if piece.status == PieceStatus::Active {
             let Some(target_progress) =
                 compute_target_distance(piece.distance, roll.0.saturating_add(move_bonus))
@@ -271,7 +286,10 @@ pub fn collect_actions(
     let mut actions = Vec::new();
 
     if roll.0 == 6 {
-        for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
+        for piece in snapshots
+            .iter()
+            .filter(|piece| piece.owner_player_id == current_player)
+        {
             if piece.status == PieceStatus::InHangar
                 && can_launch(
                     &PieceState {
@@ -293,7 +311,10 @@ pub fn collect_actions(
         }
     }
 
-    for piece in snapshots.iter().filter(|piece| piece.owner_player_id == current_player) {
+    for piece in snapshots
+        .iter()
+        .filter(|piece| piece.owner_player_id == current_player)
+    {
         if piece.status != PieceStatus::Active {
             continue;
         }
@@ -328,7 +349,13 @@ pub fn execute_action(
     clear_stack_from_origin(&action, player_roster, piece_query);
     let action_origin = apply_action(&action, board_layout, player_roster, piece_query);
     let mut notes = Vec::new();
-    apply_jump_effect(&action, board_layout, player_roster, piece_query, &mut notes);
+    apply_jump_effect(
+        &action,
+        board_layout,
+        player_roster,
+        piece_query,
+        &mut notes,
+    );
     let attacker_landed = resolve_collision(
         &action,
         action_origin,
@@ -347,7 +374,13 @@ pub fn execute_action(
             skill_roster,
             &mut notes,
         );
-        apply_team_stack(&action, player_roster, match_config, piece_query, &mut notes);
+        apply_team_stack(
+            &action,
+            player_roster,
+            match_config,
+            piece_query,
+            &mut notes,
+        );
     }
 
     let player_completion = player_roster
@@ -593,7 +626,9 @@ fn apply_jump_effect(
         return;
     }
 
-    let Some(BoardPosition::Main(tile_index)) = attacker_position(action, player_roster, piece_query) else {
+    let Some(BoardPosition::Main(tile_index)) =
+        attacker_position(action, player_roster, piece_query)
+    else {
         return;
     };
 
@@ -628,7 +663,9 @@ fn apply_post_collision_tile_effects(
         return;
     }
 
-    let Some(BoardPosition::Main(tile_index)) = attacker_position(action, player_roster, piece_query) else {
+    let Some(BoardPosition::Main(tile_index)) =
+        attacker_position(action, player_roster, piece_query)
+    else {
         return;
     };
     let Some(tile_kind) = board_layout.tile_kind_for_route_index(tile_index) else {
@@ -667,7 +704,8 @@ fn resolve_collision(
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     notes: &mut Vec<String>,
 ) -> bool {
-    let Some(attacker_board_position) = attacker_position(action, player_roster, piece_query) else {
+    let Some(attacker_board_position) = attacker_position(action, player_roster, piece_query)
+    else {
         return true;
     };
     let BoardPosition::Main(target_tile_index) = attacker_board_position else {
@@ -695,7 +733,8 @@ fn resolve_collision(
 
         if piece_state.status != PieceStatus::Active
             || piece_state.team_id == attacker_team
-            || piece_board_position(*piece_state, player_roster) != Some(BoardPosition::Main(target_tile_index))
+            || piece_board_position(*piece_state, player_roster)
+                != Some(BoardPosition::Main(target_tile_index))
         {
             continue;
         }
@@ -721,7 +760,8 @@ fn resolve_collision(
 
         if piece_state.status != PieceStatus::Active
             || piece_state.team_id == attacker_team
-            || piece_board_position(*piece_state, player_roster) != Some(BoardPosition::Main(target_tile_index))
+            || piece_board_position(*piece_state, player_roster)
+                != Some(BoardPosition::Main(target_tile_index))
         {
             continue;
         }
@@ -729,7 +769,10 @@ fn resolve_collision(
         if piece_state.shield > 0 {
             piece_state.shield -= 1;
             collision_blocked = true;
-            notes.push(format!("piece #{} blocked collision with shield", piece_id.0));
+            notes.push(format!(
+                "piece #{} blocked collision with shield",
+                piece_id.0
+            ));
             continue;
         }
 
@@ -1018,7 +1061,13 @@ fn apply_event_kind_effect(
         TileEventKind::AdvanceTwo => {
             let next_progress = (*final_progress + 2).min(FINISH_DISTANCE);
             *final_progress = next_progress;
-            update_piece_progress(action, next_progress, board_layout, player_roster, piece_query);
+            update_piece_progress(
+                action,
+                next_progress,
+                board_layout,
+                player_roster,
+                piece_query,
+            );
             Some(format!(
                 "event {:?}: advanced to tile {next_progress}",
                 TileEventKind::AdvanceTwo
@@ -1089,7 +1138,10 @@ fn owner_player_id_for_action(
     None
 }
 
-fn piece_board_position(piece_state: PieceState, player_roster: &PlayerRoster) -> Option<BoardPosition> {
+fn piece_board_position(
+    piece_state: PieceState,
+    player_roster: &PlayerRoster,
+) -> Option<BoardPosition> {
     let player_profile = player_roster
         .players
         .iter()
@@ -1134,9 +1186,7 @@ fn describe_action(action: &PlannedAction, roll_value: u8, notes: &[String]) -> 
         PlannedAction::Move {
             piece_id,
             target_progress,
-        } => format!(
-            "rolled {roll_value}, moved piece #{piece_id} to tile {target_progress}"
-        ),
+        } => format!("rolled {roll_value}, moved piece #{piece_id} to tile {target_progress}"),
     };
 
     if notes.is_empty() {
@@ -1165,10 +1215,12 @@ pub fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::player::{PlayerControl, PlayerState};
     use crate::gameplay::ai::AiDifficulty;
-    use crate::domain::player::PlayerState;
     use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
-    use crate::gameplay::skill_flow::{build_skill_roster, can_use_skill_this_turn, sync_turn_skill_usage};
+    use crate::gameplay::skill_flow::{
+        build_skill_roster, can_use_skill_this_turn, sync_turn_skill_usage,
+    };
     use bevy::ecs::system::SystemState;
 
     fn setup(mode: GameMode) -> MatchSetup {
@@ -1178,18 +1230,28 @@ mod tests {
             fast_mode: false,
             human_color: PlayerColorChoice::Crimson,
             pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
         }
     }
 
     #[test]
     fn compute_target_distance_blocks_overshoot() {
-        assert_eq!(compute_target_distance(FINISH_DISTANCE - 2, 2), Some(FINISH_DISTANCE));
+        assert_eq!(
+            compute_target_distance(FINISH_DISTANCE - 2, 2),
+            Some(FINISH_DISTANCE)
+        );
         assert_eq!(compute_target_distance(FINISH_DISTANCE - 2, 3), None);
     }
 
     #[test]
     fn board_position_uses_player_launch_offset_on_main_route() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_one = &players[0];
         let player_two = &players[1];
 
@@ -1258,7 +1320,8 @@ mod tests {
 
     #[test]
     fn world_position_for_piece_uses_home_lane_and_goal_positions() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
         let board_layout = BoardLayout {
             tiles: crate::data::board_config::default_board_tiles(),
@@ -1292,7 +1355,8 @@ mod tests {
 
     #[test]
     fn collect_actions_returns_launch_and_move_options_for_human_player() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
 
         let mut world = World::new();
@@ -1330,8 +1394,18 @@ mod tests {
 
         let actions = collect_actions(1, DiceRoll(6), 0, &player_roster, &query);
         assert_eq!(actions.len(), 2);
-        assert!(actions.iter().any(|action| matches!(action, PlannedAction::Launch { piece_id: 1, .. })));
-        assert!(actions.iter().any(|action| matches!(action, PlannedAction::Move { piece_id: 2, target_progress: 9 })));
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, PlannedAction::Launch { piece_id: 1, .. }))
+        );
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            PlannedAction::Move {
+                piece_id: 2,
+                target_progress: 9
+            }
+        )));
     }
 
     #[test]
@@ -1365,14 +1439,21 @@ mod tests {
             ],
         };
 
-        assert_eq!(current_player_control(1, &player_roster), Some(PlayerControl::Human));
-        assert_eq!(current_player_control(2, &player_roster), Some(PlayerControl::Ai));
+        assert_eq!(
+            current_player_control(1, &player_roster),
+            Some(PlayerControl::Human)
+        );
+        assert_eq!(
+            current_player_control(2, &player_roster),
+            Some(PlayerControl::Ai)
+        );
         assert_eq!(current_player_control(9, &player_roster), None);
     }
 
     #[test]
     fn apply_team_stack_grants_shared_shield_in_two_vs_two() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
@@ -1380,6 +1461,12 @@ mod tests {
             fast_mode: false,
             human_color: PlayerColorChoice::Crimson,
             pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
         };
 
         let mut world = World::new();
@@ -1432,12 +1519,17 @@ mod tests {
             .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.stack_shield))
             .collect::<Vec<_>>();
         assert_eq!(shields, vec![(1, 1), (2, 1)]);
-        assert!(notes.iter().any(|note| note.contains("stacked with teammate")));
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("stacked with teammate"))
+        );
     }
 
     #[test]
     fn clear_stack_from_origin_removes_shared_shield_from_remaining_stack() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
 
         let mut world = World::new();
@@ -1491,7 +1583,8 @@ mod tests {
 
     #[test]
     fn resolve_collision_consumes_shared_stack_shield_before_returning_to_hangar() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
@@ -1499,6 +1592,12 @@ mod tests {
             fast_mode: false,
             human_color: PlayerColorChoice::Crimson,
             pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
         };
         let board_layout = BoardLayout::default();
 
@@ -1576,12 +1675,17 @@ mod tests {
                 (3, PieceStatus::Active, 0),
             ]
         );
-        assert!(notes.iter().any(|note| note.contains("shared stack shield blocked collision")));
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("shared stack shield blocked collision"))
+        );
     }
 
     #[test]
     fn resolve_collision_with_shield_bounces_attacker_to_origin() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster { players };
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
@@ -1589,6 +1693,12 @@ mod tests {
             fast_mode: false,
             human_color: PlayerColorChoice::Crimson,
             pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
         };
         let board_layout = BoardLayout::default();
 
@@ -1656,16 +1766,14 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            states,
-            vec![(1, 1, 0, -50.0, -70.0), (2, 10, 0, 0.0, 0.0)]
-        );
+        assert_eq!(states, vec![(1, 1, 0, -50.0, -70.0), (2, 10, 0, 0.0, 0.0)]);
         assert!(notes.iter().any(|note| note.contains("bounced back")));
     }
 
     #[test]
     fn gain_skill_charge_event_adds_exactly_one_charge() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();
@@ -1734,7 +1842,8 @@ mod tests {
 
     #[test]
     fn disable_next_skill_event_blocks_next_turn_only() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();
@@ -1784,7 +1893,8 @@ mod tests {
 
     #[test]
     fn remove_enemy_shield_event_hits_the_only_valid_enemy_target() {
-        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();

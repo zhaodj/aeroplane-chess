@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::data::board_config::{default_board_tiles, TileConfig};
+use crate::data::board_config::{TileConfig, default_board_tiles};
 use crate::data::game_mode::GameMode;
 use crate::domain::player::{PlayerControl, PlayerState};
 use crate::domain::team::TeamState;
@@ -15,6 +15,7 @@ pub struct MatchConfig {
     pub fast_mode: bool,
     pub human_color: PlayerColorChoice,
     pub pieces_per_player: u8,
+    pub player_controls: [PlayerControl; 4],
 }
 
 #[derive(Clone, Debug, Resource)]
@@ -24,6 +25,59 @@ pub struct MatchSetup {
     pub fast_mode: bool,
     pub human_color: PlayerColorChoice,
     pub pieces_per_player: u8,
+    pub player_controls: [PlayerControl; 4],
+}
+
+impl MatchSetup {
+    pub fn active_player_count(&self) -> usize {
+        match self.mode {
+            GameMode::OneVsOne => 2,
+            GameMode::TwoVsTwo => 4,
+        }
+    }
+
+    pub fn normalized_player_controls(&self) -> [PlayerControl; 4] {
+        let mut controls = self.player_controls;
+        let active_count = self.active_player_count();
+        if controls[..active_count]
+            .iter()
+            .all(|control| matches!(control, PlayerControl::Ai))
+        {
+            controls[0] = PlayerControl::Human;
+        }
+        controls
+    }
+
+    pub fn player_control(&self, player_index: usize) -> Option<PlayerControl> {
+        self.player_controls.get(player_index).copied()
+    }
+
+    pub fn sanitize_player_controls(&mut self) {
+        self.player_controls = self.normalized_player_controls();
+    }
+
+    pub fn toggle_player_control(&mut self, player_index: usize) {
+        if player_index >= self.active_player_count() {
+            return;
+        }
+
+        let mut controls = self.player_controls;
+        let current = controls[player_index];
+        controls[player_index] = match current {
+            PlayerControl::Human => PlayerControl::Ai,
+            PlayerControl::Ai => PlayerControl::Human,
+        };
+
+        let active_count = self.active_player_count();
+        if controls[..active_count]
+            .iter()
+            .all(|control| matches!(control, PlayerControl::Ai))
+        {
+            return;
+        }
+
+        self.player_controls = controls;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,6 +214,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
     let human_secondary = human_primary.mix(&Color::WHITE, 0.25);
     let (enemy_primary, enemy_secondary) = setup.human_color.enemy_colors();
     let pieces_per_player = setup.pieces_per_player.clamp(1, 4) as usize;
+    let player_controls = setup.normalized_player_controls();
 
     match setup.mode {
         GameMode::OneVsOne => (
@@ -168,7 +223,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     state: PlayerState {
                         player_id: 1,
                         team_id: 1,
-                        control: PlayerControl::Human,
+                        control: player_controls[0],
                     },
                     color: human_primary,
                     hangar_slots: build_hangar_slots(Vec2::new(-290.0, 280.0), pieces_per_player),
@@ -185,7 +240,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     state: PlayerState {
                         player_id: 2,
                         team_id: 2,
-                        control: PlayerControl::Ai,
+                        control: player_controls[1],
                     },
                     color: enemy_primary,
                     hangar_slots: build_hangar_slots(Vec2::new(290.0, -280.0), pieces_per_player),
@@ -216,7 +271,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     state: PlayerState {
                         player_id: 1,
                         team_id: 1,
-                        control: PlayerControl::Human,
+                        control: player_controls[0],
                     },
                     color: human_primary,
                     hangar_slots: build_hangar_slots(Vec2::new(-320.0, 280.0), pieces_per_player),
@@ -233,7 +288,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     state: PlayerState {
                         player_id: 2,
                         team_id: 2,
-                        control: PlayerControl::Ai,
+                        control: player_controls[1],
                     },
                     color: enemy_primary,
                     hangar_slots: build_hangar_slots(Vec2::new(320.0, 280.0), pieces_per_player),
@@ -250,7 +305,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     state: PlayerState {
                         player_id: 3,
                         team_id: 1,
-                        control: PlayerControl::Human,
+                        control: player_controls[2],
                     },
                     color: human_secondary,
                     hangar_slots: build_hangar_slots(Vec2::new(-320.0, -280.0), pieces_per_player),
@@ -267,7 +322,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     state: PlayerState {
                         player_id: 4,
                         team_id: 2,
-                        control: PlayerControl::Ai,
+                        control: player_controls[3],
                     },
                     color: enemy_secondary,
                     hangar_slots: build_hangar_slots(Vec2::new(320.0, -280.0), pieces_per_player),
@@ -309,7 +364,10 @@ fn build_hangar_slots(anchor: Vec2, pieces_per_player: usize) -> Vec<Vec2> {
         .collect()
 }
 
-pub fn evaluate_match_result(team_roster: &TeamRoster, player_completion: &[(u8, bool)]) -> MatchResult {
+pub fn evaluate_match_result(
+    team_roster: &TeamRoster,
+    player_completion: &[(u8, bool)],
+) -> MatchResult {
     for team in &team_roster.teams {
         let team_finished = team
             .player_ids
@@ -346,6 +404,12 @@ mod tests {
             fast_mode: false,
             human_color: PlayerColorChoice::Crimson,
             pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
         }
     }
 
@@ -395,5 +459,35 @@ mod tests {
         assert!(player_one_finished.finished);
         assert_eq!(player_one_finished.winner_team_id, Some(1));
         assert_eq!(player_one_finished.winner_player_ids, vec![1]);
+    }
+
+    #[test]
+    fn one_vs_one_roster_uses_configured_player_controls() {
+        let mut one_vs_one_setup = setup(GameMode::OneVsOne);
+        one_vs_one_setup.player_controls = [
+            PlayerControl::Ai,
+            PlayerControl::Human,
+            PlayerControl::Ai,
+            PlayerControl::Ai,
+        ];
+        let (players, _) = build_match_rosters(&one_vs_one_setup);
+
+        assert_eq!(players[0].state.control, PlayerControl::Ai);
+        assert_eq!(players[1].state.control, PlayerControl::Human);
+    }
+
+    #[test]
+    fn one_vs_one_roster_never_allows_all_ai() {
+        let mut one_vs_one_setup = setup(GameMode::OneVsOne);
+        one_vs_one_setup.player_controls = [
+            PlayerControl::Ai,
+            PlayerControl::Ai,
+            PlayerControl::Human,
+            PlayerControl::Human,
+        ];
+        let (players, _) = build_match_rosters(&one_vs_one_setup);
+
+        assert_eq!(players[0].state.control, PlayerControl::Human);
+        assert_eq!(players[1].state.control, PlayerControl::Ai);
     }
 }

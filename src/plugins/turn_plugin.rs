@@ -8,16 +8,15 @@ use crate::gameplay::match_flow::{
     BoardLayout, MatchConfig, MatchResult, PlayerRoster, TeamRoster,
 };
 use crate::gameplay::skill_flow::{
-    arm_dash, arm_double_dice, can_use_skill_this_turn, clear_dash_arm, dash_bonus,
+    SkillRoster, arm_dash, arm_double_dice, can_use_skill_this_turn, clear_dash_arm, dash_bonus,
     mark_skill_used, player_skill_state, resolve_roll_value, spend_shield_charge,
-    spend_snipe_charge, spend_swap_charge, SkillRoster,
+    spend_snipe_charge, spend_swap_charge,
 };
 use crate::gameplay::turn_flow::{
-    choose_action, collect_actions, current_player_control, execute_action,
-    find_pending_action_by_piece_id, finish_turn_without_action, get_pending_action,
-    pressed_selection_key, set_pending_actions, set_roll, PlannedAction, TurnInputState,
-    MAIN_ROUTE_STEPS,
-    TurnState,
+    MAIN_ROUTE_STEPS, PlannedAction, TurnInputState, TurnState, choose_action, collect_actions,
+    current_player_control, execute_action, find_pending_action_by_piece_id,
+    finish_turn_without_action, get_pending_action, pressed_selection_key, set_pending_actions,
+    set_roll,
 };
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
@@ -112,18 +111,17 @@ fn drive_ai_turn_loop(
         &mut skill_roster,
         &mut piece_query,
     );
-    let Some(action) =
-        choose_action(
-            current_player,
-            roll,
-            dash_bonus(&skill_roster, current_player),
-            &board_layout,
-            &player_roster,
-            &piece_query,
-        )
-    else {
-        turn_state.last_action =
-            Some(format!("P{current_player} rolled {roll_value} but had no legal action"));
+    let Some(action) = choose_action(
+        current_player,
+        roll,
+        dash_bonus(&skill_roster, current_player),
+        &board_layout,
+        &player_roster,
+        &piece_query,
+    ) else {
+        turn_state.last_action = Some(format!(
+            "P{current_player} rolled {roll_value} but had no legal action"
+        ));
         finish_turn_without_action(
             &mut turn_state,
             &mut input_state,
@@ -165,8 +163,11 @@ fn maybe_use_ai_skills(
 
         if can_use_snipe && spend_snipe_charge(skill_roster, current_player) {
             mark_skill_used(skill_roster, current_player);
-            skill_roster.last_skill_action =
-                Some(execute_snipe_on_turn_query(target_piece_id, piece_query, true));
+            skill_roster.last_skill_action = Some(execute_snipe_on_turn_query(
+                target_piece_id,
+                piece_query,
+                true,
+            ));
             return;
         }
     }
@@ -199,8 +200,11 @@ fn maybe_use_ai_skills(
             .unwrap_or(false);
         if can_use_swap && spend_swap_charge(skill_roster, current_player) {
             mark_skill_used(skill_roster, current_player);
-            skill_roster.last_skill_action =
-                Some(execute_swap_on_turn_query(current_player, teammate_piece_id, piece_query));
+            skill_roster.last_skill_action = Some(execute_swap_on_turn_query(
+                current_player,
+                teammate_piece_id,
+                piece_query,
+            ));
             return;
         }
     }
@@ -284,7 +288,10 @@ fn preferred_ai_snipe_target(
 
     unshielded.sort_unstable();
     shielded.sort_unstable();
-    unshielded.into_iter().next().or_else(|| shielded.into_iter().next())
+    unshielded
+        .into_iter()
+        .next()
+        .or_else(|| shielded.into_iter().next())
 }
 
 fn preferred_ai_shield_target(
@@ -376,10 +383,7 @@ fn apply_shield_to_piece_to_turn_query(
             continue;
         }
 
-        piece_state.shield = piece_state
-            .shield
-            .saturating_add(1)
-            .min(MAX_PIECE_SHIELD);
+        piece_state.shield = piece_state.shield.saturating_add(1).min(MAX_PIECE_SHIELD);
         return Some(piece_state.shield);
     }
 
@@ -427,22 +431,24 @@ fn execute_swap_on_turn_query(
     teammate_piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> String {
-    let Some((current_piece_id, current_state, current_translation)) = piece_query
-        .iter()
-        .find_map(|(piece_id, _, piece_state, transform)| {
-            (piece_state.owner_player_id == current_player
-                && piece_state.status == crate::domain::piece::PieceStatus::Active)
-                .then_some((piece_id.0, *piece_state, transform.translation))
-        })
+    let Some((current_piece_id, current_state, current_translation)) =
+        piece_query
+            .iter()
+            .find_map(|(piece_id, _, piece_state, transform)| {
+                (piece_state.owner_player_id == current_player
+                    && piece_state.status == crate::domain::piece::PieceStatus::Active)
+                    .then_some((piece_id.0, *piece_state, transform.translation))
+            })
     else {
         return "AI Swap failed: current active piece not found".to_string();
     };
 
-    let Some((teammate_state, teammate_translation)) = piece_query
-        .iter()
-        .find_map(|(piece_id, _, piece_state, transform)| {
-            (piece_id.0 == teammate_piece_id).then_some((*piece_state, transform.translation))
-        })
+    let Some((teammate_state, teammate_translation)) =
+        piece_query
+            .iter()
+            .find_map(|(piece_id, _, piece_state, transform)| {
+                (piece_id.0 == teammate_piece_id).then_some((*piece_state, transform.translation))
+            })
     else {
         return "AI Swap failed: teammate piece not found".to_string();
     };
@@ -671,7 +677,10 @@ fn handle_human_action_click(
             continue;
         }
 
-        let distance_sq = transform.translation.truncate().distance_squared(cursor_world);
+        let distance_sq = transform
+            .translation
+            .truncate()
+            .distance_squared(cursor_world);
         if distance_sq <= 28.0 * 28.0 && distance_sq < best_distance_sq {
             best_distance_sq = distance_sq;
             selected_piece_id = Some(piece_id.0);
@@ -746,11 +755,14 @@ fn refresh_pending_actions_for_dash(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::player::PlayerControl;
     use crate::gameplay::ai::AiDifficulty;
     use crate::gameplay::match_flow::{
-        build_match_rosters, MatchConfig, MatchSetup, PlayerColorChoice, PlayerRoster,
+        MatchConfig, MatchSetup, PlayerColorChoice, PlayerRoster, build_match_rosters,
     };
-    use crate::gameplay::skill_flow::{build_skill_roster, player_skill_state, sync_turn_skill_usage};
+    use crate::gameplay::skill_flow::{
+        build_skill_roster, player_skill_state, sync_turn_skill_usage,
+    };
     use bevy::ecs::system::SystemState;
 
     fn setup(mode: GameMode) -> MatchSetup {
@@ -760,6 +772,12 @@ mod tests {
             fast_mode: false,
             human_color: PlayerColorChoice::Crimson,
             pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
         }
     }
 
@@ -771,12 +789,22 @@ mod tests {
             fast_mode: false,
             human_color: PlayerColorChoice::Crimson,
             pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
         };
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
-        if let Some(state) = skill_roster.players.iter_mut().find(|state| state.player_id == 2) {
+        if let Some(state) = skill_roster
+            .players
+            .iter_mut()
+            .find(|state| state.player_id == 2)
+        {
             state.snipe_charges = 0;
             state.shield_charges = 0;
             state.swap_charges = 0;
@@ -817,7 +845,11 @@ mod tests {
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
-        if let Some(state) = skill_roster.players.iter_mut().find(|state| state.player_id == 2) {
+        if let Some(state) = skill_roster
+            .players
+            .iter_mut()
+            .find(|state| state.player_id == 2)
+        {
             state.snipe_charges = 0;
             state.shield_charges = 0;
             state.swap_charges = 0;
@@ -846,7 +878,13 @@ mod tests {
         > = SystemState::new(&mut world);
         let mut query = system_state.get_mut(&mut world);
 
-        maybe_arm_dash_for_ai_after_roll(2, DiceRoll(2), &player_roster, &mut skill_roster, &mut query);
+        maybe_arm_dash_for_ai_after_roll(
+            2,
+            DiceRoll(2),
+            &player_roster,
+            &mut skill_roster,
+            &mut query,
+        );
         let state = player_skill_state(&skill_roster, 2).unwrap();
         assert!(state.dash_armed);
         assert!(skill_roster.skill_used_this_turn);

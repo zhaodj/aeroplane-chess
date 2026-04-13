@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 
-use crate::gameplay::match_flow::{
-    build_match_resources, MatchConfig, MatchResult, MatchSetup,
-};
+use crate::gameplay::match_flow::{MatchConfig, MatchResult, MatchSetup, build_match_resources};
 use crate::gameplay::turn_flow::TurnState;
 use crate::states::AppState;
 use crate::states::GamePhase;
@@ -38,6 +36,7 @@ fn prepare_match(
         fast_mode: match_setup.fast_mode,
         human_color: match_setup.human_color,
         pieces_per_player: match_setup.pieces_per_player,
+        player_controls: match_setup.normalized_player_controls(),
     });
     commands.insert_resource(board_layout);
     commands.insert_resource(player_roster);
