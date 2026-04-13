@@ -4,9 +4,9 @@ use crate::data::game_mode::GameMode;
 use crate::domain::piece::PieceState;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster};
 use crate::gameplay::skill_flow::{
-    arm_dash, arm_double_dice, build_skill_roster, can_use_skill_this_turn, current_player_type,
-    dash_bonus, mark_skill_used, player_skill_state, spend_shield_charge, spend_snipe_charge,
-    spend_swap_charge, sync_turn_skill_usage, SkillRoster,
+    SkillRoster, arm_dash, arm_double_dice, build_skill_roster, can_use_skill_this_turn,
+    current_player_type, dash_bonus, mark_skill_used, player_skill_state, spend_shield_charge,
+    spend_snipe_charge, spend_swap_charge, sync_turn_skill_usage,
 };
 use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
 use crate::gameplay::turn_flow::TurnState;
@@ -93,7 +93,9 @@ fn sync_skill_turn_state(
     mut target_state: ResMut<SkillTargetState>,
 ) {
     sync_turn_skill_usage(&mut skill_roster, turn_state.current_player);
-    if target_state.is_active() && skill_roster.active_turn_player != Some(turn_state.current_player) {
+    if target_state.is_active()
+        && skill_roster.active_turn_player != Some(turn_state.current_player)
+    {
         clear_target_state(&mut target_state);
     }
 }
@@ -247,9 +249,15 @@ fn handle_human_skill_input(
                     .map(|state| state.double_dice_armed)
                     .unwrap_or(false);
                 let message = if armed {
-                    format!("P{} already has DoubleDice armed", turn_state.current_player)
+                    format!(
+                        "P{} already has DoubleDice armed",
+                        turn_state.current_player
+                    )
                 } else {
-                    format!("P{} has no DoubleDice charges left", turn_state.current_player)
+                    format!(
+                        "P{} has no DoubleDice charges left",
+                        turn_state.current_player
+                    )
                 };
                 skill_roster.last_skill_action = Some(message);
             }
@@ -319,7 +327,8 @@ fn handle_human_skill_input(
             ));
         }
         _ => {
-            skill_roster.last_skill_action = Some("Skill not available in current phase".to_string());
+            skill_roster.last_skill_action =
+                Some("Skill not available in current phase".to_string());
         }
     }
 }
@@ -343,15 +352,16 @@ fn handle_human_snipe_key_select(
         return;
     }
 
-    let keys = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4];
-    let Some(selection) = keys
-        .iter()
-        .enumerate()
-        .find_map(|(index, key)| {
-            (index < target_state.candidate_piece_ids.len() && keyboard.just_pressed(*key))
-                .then_some(index)
-        })
-    else {
+    let keys = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+    ];
+    let Some(selection) = keys.iter().enumerate().find_map(|(index, key)| {
+        (index < target_state.candidate_piece_ids.len() && keyboard.just_pressed(*key))
+            .then_some(index)
+    }) else {
         return;
     };
 
@@ -398,7 +408,10 @@ fn handle_human_snipe_click(
             continue;
         }
 
-        let distance_sq = transform.translation.truncate().distance_squared(cursor_world);
+        let distance_sq = transform
+            .translation
+            .truncate()
+            .distance_squared(cursor_world);
         if distance_sq <= 28.0 * 28.0 && distance_sq < best_distance_sq {
             best_distance_sq = distance_sq;
             selected_piece_id = Some(piece_id.0);
@@ -460,10 +473,7 @@ fn apply_shield_to_piece_for_full_query(
         if query_piece_id.0 != piece_id {
             continue;
         }
-        piece_state.shield = piece_state
-            .shield
-            .saturating_add(1)
-            .min(MAX_PIECE_SHIELD);
+        piece_state.shield = piece_state.shield.saturating_add(1).min(MAX_PIECE_SHIELD);
         return Some(piece_state.shield);
     }
     None
@@ -562,22 +572,24 @@ fn execute_swap(
     teammate_piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> String {
-    let Some((current_piece_id, current_state, current_translation)) = piece_query
-        .iter()
-        .find_map(|(piece_id, _, piece_state, transform)| {
-            (piece_state.owner_player_id == current_player
-                && piece_state.status == crate::domain::piece::PieceStatus::Active)
-                .then_some((piece_id.0, *piece_state, transform.translation))
-        })
+    let Some((current_piece_id, current_state, current_translation)) =
+        piece_query
+            .iter()
+            .find_map(|(piece_id, _, piece_state, transform)| {
+                (piece_state.owner_player_id == current_player
+                    && piece_state.status == crate::domain::piece::PieceStatus::Active)
+                    .then_some((piece_id.0, *piece_state, transform.translation))
+            })
     else {
         return "Swap failed: current player's active piece not found".to_string();
     };
 
-    let Some((teammate_state, teammate_translation)) = piece_query
-        .iter()
-        .find_map(|(piece_id, _, piece_state, transform)| {
-            (piece_id.0 == teammate_piece_id).then_some((*piece_state, transform.translation))
-        })
+    let Some((teammate_state, teammate_translation)) =
+        piece_query
+            .iter()
+            .find_map(|(piece_id, _, piece_state, transform)| {
+                (piece_id.0 == teammate_piece_id).then_some((*piece_state, transform.translation))
+            })
     else {
         return "Swap failed: teammate piece not found".to_string();
     };
@@ -634,11 +646,16 @@ mod tests {
         let note = execute_snipe(1, &mut query);
         let states = query
             .iter_mut()
-            .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.status, piece_state.shield))
+            .map(|(piece_id, _, piece_state, _)| {
+                (piece_id.0, piece_state.status, piece_state.shield)
+            })
             .collect::<Vec<_>>();
 
         assert!(note.contains("removed a shield"));
-        assert_eq!(states, vec![(1, crate::domain::piece::PieceStatus::Active, 0)]);
+        assert_eq!(
+            states,
+            vec![(1, crate::domain::piece::PieceStatus::Active, 0)]
+        );
     }
 
     #[test]
@@ -681,7 +698,13 @@ mod tests {
         assert!(note.contains("back to hangar"));
         assert_eq!(
             states,
-            vec![(1, crate::domain::piece::PieceStatus::InHangar, 0, hangar.x, hangar.y)]
+            vec![(
+                1,
+                crate::domain::piece::PieceStatus::InHangar,
+                0,
+                hangar.x,
+                hangar.y
+            )]
         );
     }
 
@@ -790,10 +813,7 @@ mod tests {
         assert!(note.contains("exchanged"));
         assert_eq!(
             states,
-            vec![
-                (1, 1, 18, 0, 1, 100.0, 50.0),
-                (2, 3, 3, 1, 0, -100.0, 0.0),
-            ]
+            vec![(1, 1, 18, 0, 1, 100.0, 50.0), (2, 3, 3, 1, 0, -100.0, 0.0),]
         );
     }
 

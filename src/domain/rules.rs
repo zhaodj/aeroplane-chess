@@ -36,6 +36,10 @@ mod tests {
         assert!(can_move_exact(&piece(PieceStatus::Active), DiceRoll(3), 3));
         assert!(can_move_exact(&piece(PieceStatus::Active), DiceRoll(2), 3));
         assert!(!can_move_exact(&piece(PieceStatus::Active), DiceRoll(4), 3));
-        assert!(!can_move_exact(&piece(PieceStatus::InHangar), DiceRoll(3), 3));
+        assert!(!can_move_exact(
+            &piece(PieceStatus::InHangar),
+            DiceRoll(3),
+            3
+        ));
     }
 }

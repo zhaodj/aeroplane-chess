@@ -17,7 +17,11 @@ impl Plugin for BoardPlugin {
 #[derive(Component)]
 struct BoardSceneEntity;
 
-fn spawn_board(mut commands: Commands, board_layout: Res<BoardLayout>, player_roster: Res<PlayerRoster>) {
+fn spawn_board(
+    mut commands: Commands,
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+) {
     commands.spawn((
         Sprite::from_color(Color::srgb(0.84, 0.89, 0.96), Vec2::new(760.0, 760.0)),
         Transform::from_xyz(0.0, 0.0, BOARD_Z_LAYER - 1.0),
@@ -48,8 +52,15 @@ fn spawn_board(mut commands: Commands, board_layout: Res<BoardLayout>, player_ro
         }
 
         commands.spawn((
-            Sprite::from_color(player.color.with_alpha(0.55), Vec2::splat(BOARD_TILE_SIZE * 0.9)),
-            Transform::from_xyz(player.goal_position.x, player.goal_position.y, BOARD_Z_LAYER),
+            Sprite::from_color(
+                player.color.with_alpha(0.55),
+                Vec2::splat(BOARD_TILE_SIZE * 0.9),
+            ),
+            Transform::from_xyz(
+                player.goal_position.x,
+                player.goal_position.y,
+                BOARD_Z_LAYER,
+            ),
             Name::new(format!("Goal_P{}", player.state.player_id)),
             BoardSceneEntity,
         ));

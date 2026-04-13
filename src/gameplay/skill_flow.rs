@@ -59,10 +59,7 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
     }
 }
 
-pub fn player_skill_state(
-    skill_roster: &SkillRoster,
-    player_id: u8,
-) -> Option<&PlayerSkillState> {
+pub fn player_skill_state(skill_roster: &SkillRoster, player_id: u8) -> Option<&PlayerSkillState> {
     skill_roster
         .players
         .iter()
@@ -395,7 +392,8 @@ pub fn grant_random_skill_charge(
                 Some("Shield")
             }
             _ => {
-                player_state.double_dice_charges = player_state.double_dice_charges.saturating_add(1);
+                player_state.double_dice_charges =
+                    player_state.double_dice_charges.saturating_add(1);
                 Some("DoubleDice")
             }
         }
@@ -414,7 +412,8 @@ pub fn grant_random_skill_charge(
                 Some("Shield")
             }
             _ => {
-                player_state.double_dice_charges = player_state.double_dice_charges.saturating_add(1);
+                player_state.double_dice_charges =
+                    player_state.double_dice_charges.saturating_add(1);
                 Some("DoubleDice")
             }
         }
@@ -491,7 +490,10 @@ mod tests {
 
         assert!(arm_dash(&mut skill_roster, 1));
         assert_eq!(dash_bonus(&skill_roster, 1), 3);
-        assert_eq!(player_skill_state(&skill_roster, 1).unwrap().dash_charges, 0);
+        assert_eq!(
+            player_skill_state(&skill_roster, 1).unwrap().dash_charges,
+            0
+        );
 
         clear_dash_arm(&mut skill_roster, 1);
         assert_eq!(dash_bonus(&skill_roster, 1), 0);
@@ -554,8 +556,17 @@ mod tests {
         let mut skill_roster = build_skill_roster(&sample_roster());
 
         assert!(arm_double_dice(&mut skill_roster, 1));
-        assert!(player_skill_state(&skill_roster, 1).unwrap().double_dice_armed);
-        assert_eq!(player_skill_state(&skill_roster, 1).unwrap().double_dice_charges, 0);
+        assert!(
+            player_skill_state(&skill_roster, 1)
+                .unwrap()
+                .double_dice_armed
+        );
+        assert_eq!(
+            player_skill_state(&skill_roster, 1)
+                .unwrap()
+                .double_dice_charges,
+            0
+        );
         assert!(!arm_double_dice(&mut skill_roster, 1));
     }
 

@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::constants::HUD_Z_LAYER;
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster, TeamRoster};
-use crate::gameplay::skill_flow::{can_use_skill_this_turn, player_skill_state, SkillRoster};
+use crate::gameplay::skill_flow::{SkillRoster, can_use_skill_this_turn, player_skill_state};
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
 use crate::states::{AppState, GamePhase};
@@ -69,10 +69,7 @@ const HUD_SKILL_PANEL_RIGHT: f32 = 1268.0;
 const HUD_SKILL_ROW_TOPS: [f32; 5] = [156.0, 178.0, 200.0, 222.0, 244.0];
 const HUD_SKILL_ROW_HEIGHT: f32 = 22.0;
 
-fn spawn_hud(
-    mut commands: Commands,
-    hud_fold_state: Res<HudFoldState>,
-) {
+fn spawn_hud(mut commands: Commands, hud_fold_state: Res<HudFoldState>) {
     commands.spawn((
         Sprite::from_color(
             Color::srgba(0.98, 0.99, 1.0, 0.90),
@@ -198,10 +195,39 @@ fn update_hud(
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
     hud_fold_state: Res<HudFoldState>,
-    mut primary_query: Query<&mut Text, (With<HudPrimaryText>, Without<HudSkillsText>, Without<HudPromptText>)>,
-    mut skills_query: Query<&mut Text, (With<HudSkillsText>, Without<HudPrimaryText>, Without<HudPromptText>)>,
-    mut prompt_query: Query<&mut Text, (With<HudPromptText>, Without<HudPrimaryText>, Without<HudSkillsText>)>,
-    mut toggle_hint_query: Query<&mut Text, (With<HudToggleHintText>, Without<HudPrimaryText>, Without<HudSkillsText>, Without<HudPromptText>)>,
+    mut primary_query: Query<
+        &mut Text,
+        (
+            With<HudPrimaryText>,
+            Without<HudSkillsText>,
+            Without<HudPromptText>,
+        ),
+    >,
+    mut skills_query: Query<
+        &mut Text,
+        (
+            With<HudSkillsText>,
+            Without<HudPrimaryText>,
+            Without<HudPromptText>,
+        ),
+    >,
+    mut prompt_query: Query<
+        &mut Text,
+        (
+            With<HudPromptText>,
+            Without<HudPrimaryText>,
+            Without<HudSkillsText>,
+        ),
+    >,
+    mut toggle_hint_query: Query<
+        &mut Text,
+        (
+            With<HudToggleHintText>,
+            Without<HudPrimaryText>,
+            Without<HudSkillsText>,
+            Without<HudPromptText>,
+        ),
+    >,
     mut skill_button_query: Query<(&HudSkillButton, &mut BackgroundColor)>,
 ) {
     let Ok(mut primary_text) = primary_query.single_mut() else {
@@ -225,10 +251,7 @@ fn update_hud(
         .last_action
         .as_deref()
         .unwrap_or("waiting for first action");
-    let skill_action_text = skill_roster
-        .last_skill_action
-        .as_deref()
-        .unwrap_or("none");
+    let skill_action_text = skill_roster.last_skill_action.as_deref().unwrap_or("none");
     let current_control = player_roster
         .players
         .iter()
@@ -245,22 +268,28 @@ fn update_hud(
         _ => "Resolving",
     };
     let result_text = if match_result.finished {
-        format!("Result: Team {} wins", match_result.winner_team_id.unwrap_or_default())
+        format!(
+            "Result: Team {} wins",
+            match_result.winner_team_id.unwrap_or_default()
+        )
     } else {
         "Result: in progress".to_string()
     };
     let is_human_turn = matches!(current_control, "Human");
-    let can_use_skill = can_use_skill_this_turn(&skill_roster, turn_state.current_player) && is_human_turn;
+    let can_use_skill =
+        can_use_skill_this_turn(&skill_roster, turn_state.current_player) && is_human_turn;
     let current_skills = player_skill_state(&skill_roster, turn_state.current_player);
     for (button, mut background) in &mut skill_button_query {
         let ready = current_skills
-            .map(|skills| is_skill_button_ready(
-                button.action,
-                skills,
-                can_use_skill,
-                game_phase.get(),
-                match_config.mode,
-            ))
+            .map(|skills| {
+                is_skill_button_ready(
+                    button.action,
+                    skills,
+                    can_use_skill,
+                    game_phase.get(),
+                    match_config.mode,
+                )
+            })
             .unwrap_or(false);
         *background = BackgroundColor(skill_button_color(ready, can_use_skill));
     }
@@ -285,7 +314,8 @@ fn update_hud(
             )
         })
         .unwrap_or_else(|| {
-            "Skills\nDash [E]: -\nSnipe [S]: -\nSwap [A]: -\nShield [Q]: -\nDoubleDice [W]: -".to_string()
+            "Skills\nDash [E]: -\nSnipe [S]: -\nSwap [A]: -\nShield [Q]: -\nDoubleDice [W]: -"
+                .to_string()
         });
 
     *primary_text = Text::new(format!(
@@ -348,15 +378,21 @@ fn is_skill_button_ready(
     }
     match action {
         SkillUiAction::Dash => {
-            matches!(phase, GamePhase::AwaitPieceSelect) && !skills.dash_armed && skills.dash_charges > 0
+            matches!(phase, GamePhase::AwaitPieceSelect)
+                && !skills.dash_armed
+                && skills.dash_charges > 0
         }
         SkillUiAction::Snipe => matches!(phase, GamePhase::AwaitDice) && skills.snipe_charges > 0,
         SkillUiAction::Swap => {
-            matches!(phase, GamePhase::AwaitDice) && mode == crate::data::game_mode::GameMode::TwoVsTwo && skills.swap_charges > 0
+            matches!(phase, GamePhase::AwaitDice)
+                && mode == crate::data::game_mode::GameMode::TwoVsTwo
+                && skills.swap_charges > 0
         }
         SkillUiAction::Shield => matches!(phase, GamePhase::AwaitDice) && skills.shield_charges > 0,
         SkillUiAction::DoubleDice => {
-            matches!(phase, GamePhase::AwaitDice) && !skills.double_dice_armed && skills.double_dice_charges > 0
+            matches!(phase, GamePhase::AwaitDice)
+                && !skills.double_dice_armed
+                && skills.double_dice_charges > 0
         }
     }
 }
@@ -383,7 +419,10 @@ fn handle_skill_panel_click(
 ) {
     if hud_fold_state.collapsed
         || match_result.finished
-        || !matches!(game_phase.get(), GamePhase::AwaitDice | GamePhase::AwaitPieceSelect)
+        || !matches!(
+            game_phase.get(),
+            GamePhase::AwaitDice | GamePhase::AwaitPieceSelect
+        )
         || !mouse.just_pressed(MouseButton::Left)
     {
         return;
@@ -513,16 +552,10 @@ fn cleanup_hud(mut commands: Commands, query: Query<Entity, With<HudEntity>>) {
     }
 }
 
-fn spawn_result_screen(
-    mut commands: Commands,
-    match_result: Res<MatchResult>,
-) {
+fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
     let winner = match_result.winner_team_id.unwrap_or_default();
     commands.spawn((
-        Sprite::from_color(
-            Color::srgba(0.98, 0.99, 1.0, 0.94),
-            Vec2::new(420.0, 220.0),
-        ),
+        Sprite::from_color(Color::srgba(0.98, 0.99, 1.0, 0.94), Vec2::new(420.0, 220.0)),
         Transform::from_xyz(0.0, 40.0, HUD_Z_LAYER),
         Name::new("ResultBackdrop"),
         ResultEntity,
