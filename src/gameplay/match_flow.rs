@@ -78,6 +78,25 @@ impl MatchSetup {
 
         self.player_controls = controls;
     }
+
+    pub fn set_player_control(&mut self, player_index: usize, control: PlayerControl) {
+        if player_index >= self.active_player_count() {
+            return;
+        }
+
+        let mut controls = self.player_controls;
+        controls[player_index] = control;
+
+        let active_count = self.active_player_count();
+        if controls[..active_count]
+            .iter()
+            .all(|selected| matches!(selected, PlayerControl::Ai))
+        {
+            return;
+        }
+
+        self.player_controls = controls;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,7 +138,7 @@ impl PlayerColorChoice {
         }
     }
 
-    fn to_color(self) -> Color {
+    pub fn to_color(self) -> Color {
         match self {
             Self::Crimson => Color::srgb(0.88, 0.30, 0.26),
             Self::Amber => Color::srgb(0.96, 0.66, 0.22),
