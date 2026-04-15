@@ -81,13 +81,13 @@ fn mode_select_content(match_setup: &MatchSetup) -> String {
     };
     let players_line = if match_setup.mode == GameMode::OneVsOne {
         format!(
-            "Q/W: P1/P2 人机 ({}/{})",
+            "Q/W: P1/P2 Control ({}/{})",
             control_label(controls[0]),
             control_label(controls[1]),
         )
     } else {
         format!(
-            "Q/W/E/R: P1..P4 人机 ({}/{}/{}/{})",
+            "Q/W/E/R: P1..P4 Control ({}/{}/{}/{})",
             control_label(controls[0]),
             control_label(controls[1]),
             control_label(controls[2]),
@@ -96,14 +96,14 @@ fn mode_select_content(match_setup: &MatchSetup) -> String {
     };
 
     format!(
-        "对局设置\n\n\
-1/2: 模式 ({})\n\
-C: 人类颜色 ({})\n\
-[-]/[=]: 棋子数量 ({} / 1~4)\n\n\
+        "Match Setup\n\n\
+1/2: Mode ({})\n\
+C: Human Color ({})\n\
+[-]/[=]: Pieces Per Player ({} / 1~4)\n\n\
 {}\n\
-约束: 至少 1 名 Human\n\n\
-Enter: 开始对局\n\
-Esc: 返回",
+Constraint: At least 1 Human\n\n\
+Enter: Start Match\n\
+Esc: Back",
         current_mode,
         match_setup.human_color.label(),
         match_setup.pieces_per_player,
