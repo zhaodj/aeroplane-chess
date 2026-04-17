@@ -1,0 +1,625 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 840" width="840" height="840">
+  <defs>
+    <!-- 箭头标记 -->
+    <marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#2a9d2a"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#1565c0"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="8" markerHeight="8" refX="2" refY="3" orient="auto-start-reverse">
+      <path d="M8,0 L8,6 L0,3 z" fill="#c62828"/>
+    </marker>
+    <marker id="arrowYellow" markerWidth="8" markerHeight="8" refX="2" refY="3" orient="auto-start-reverse">
+      <path d="M8,0 L8,6 L0,3 z" fill="#f9a825"/>
+    </marker>
+  </defs>
+
+  <!-- ==================== 背景 ==================== -->
+  <rect width="840" height="840" fill="#f5f0e0" stroke="#333" stroke-width="3"/>
+
+  <!-- ==================== 四个角的大本营 ==================== -->
+  <!-- 左上角 蓝色大本营 (0,0)~(240,240) -->
+  <rect x="0" y="0" width="240" height="240" fill="#1565c0" stroke="#333" stroke-width="2"/>
+  <!-- 蓝色大本营内部白色区域 -->
+  <rect x="10" y="10" width="220" height="220" fill="#1976d2" stroke="#333" stroke-width="1.5" rx="4"/>
+  <!-- 4个停机坪 -->
+  <circle cx="65" cy="65" r="38" fill="#e8f4fd" stroke="#333" stroke-width="2.5"/>
+  <circle cx="175" cy="65" r="38" fill="#e8f4fd" stroke="#333" stroke-width="2.5"/>
+  <circle cx="65" cy="175" r="38" fill="#e8f4fd" stroke="#333" stroke-width="2.5"/>
+  <circle cx="175" cy="175" r="38" fill="#e8f4fd" stroke="#333" stroke-width="2.5"/>
+  <!-- 蓝色飞机图标 -->
+  <!-- 飞机1 右上 -->
+  <g transform="translate(175,65)">
+    <polygon points="0,-18 5,-5 18,-8 8,0 18,8 5,5 0,18 -5,5 -18,8 -8,0 -18,-8 -5,-5" fill="#1565c0" stroke="#333" stroke-width="1"/>
+    <circle cx="0" cy="0" r="5" fill="#333"/>
+    <line x1="0" y1="-18" x2="0" y2="18" stroke="#333" stroke-width="1.5"/>
+    <line x1="-18" y1="0" x2="18" y2="0" stroke="#333" stroke-width="1.5"/>
+  </g>
+  <!-- 简化飞机为箭头圆 -->
+  <circle cx="65" cy="65" r="38" fill="#e8f4fd" stroke="#333" stroke-width="2.5"/>
+  <text x="65" y="70" text-anchor="middle" font-size="22" fill="#1565c0">↓</text>
+  <circle cx="175" cy="65" r="38" fill="#e8f4fd" stroke="#333" stroke-width="2.5"/>
+  <text x="175" y="70" text-anchor="middle" font-size="22" fill="#1565c0">↗</text>
+  <circle cx="65" cy="175" r="38" fill="#e8f4fd" stroke="#333" stroke-width="2.5"/>
+  <text x="65" y="180" text-anchor="middle" font-size="22" fill="#1565c0">←</text>
+  <circle cx="175" cy="175" r="38" fill="#e8f4fd" stroke="#333" stroke-width="2.5"/>
+  <text x="175" y="180" text-anchor="middle" font-size="22" fill="#1565c0">↗</text>
+
+  <!-- 右上角 红色大本营 (600,0)~(840,240) -->
+  <rect x="600" y="0" width="240" height="240" fill="#c62828" stroke="#333" stroke-width="2"/>
+  <rect x="610" y="10" width="220" height="220" fill="#d32f2f" stroke="#333" stroke-width="1.5" rx="4"/>
+  <circle cx="665" cy="65" r="38" fill="#fdecea" stroke="#333" stroke-width="2.5"/>
+  <circle cx="775" cy="65" r="38" fill="#fdecea" stroke="#333" stroke-width="2.5"/>
+  <circle cx="665" cy="175" r="38" fill="#fdecea" stroke="#333" stroke-width="2.5"/>
+  <circle cx="775" cy="175" r="38" fill="#fdecea" stroke="#333" stroke-width="2.5"/>
+  <text x="665" y="70" text-anchor="middle" font-size="22" fill="#c62828">★</text>
+  <text x="775" y="70" text-anchor="middle" font-size="22" fill="#c62828">★</text>
+  <text x="665" y="180" text-anchor="middle" font-size="22" fill="#c62828">↓</text>
+  <text x="775" y="180" text-anchor="middle" font-size="22" fill="#c62828">↗</text>
+
+  <!-- 左下角 绿色大本营 (0,600)~(240,840) -->
+  <rect x="0" y="600" width="240" height="240" fill="#2e7d32" stroke="#333" stroke-width="2"/>
+  <rect x="10" y="610" width="220" height="220" fill="#388e3c" stroke="#333" stroke-width="1.5" rx="4"/>
+  <circle cx="65" cy="665" r="38" fill="#e8f5e9" stroke="#333" stroke-width="2.5"/>
+  <circle cx="175" cy="665" r="38" fill="#e8f5e9" stroke="#333" stroke-width="2.5"/>
+  <circle cx="65" cy="775" r="38" fill="#e8f5e9" stroke="#333" stroke-width="2.5"/>
+  <circle cx="175" cy="775" r="38" fill="#e8f5e9" stroke="#333" stroke-width="2.5"/>
+  <text x="65" y="670" text-anchor="middle" font-size="22" fill="#2e7d32">↓</text>
+  <text x="175" y="670" text-anchor="middle" font-size="22" fill="#2e7d32">↘</text>
+  <text x="65" y="780" text-anchor="middle" font-size="22" fill="#2e7d32">↓</text>
+  <text x="175" y="780" text-anchor="middle" font-size="22" fill="#2e7d32">↘</text>
+
+  <!-- 右下角 黄色大本营 (600,600)~(840,840) -->
+  <rect x="600" y="600" width="240" height="240" fill="#f9a825" stroke="#333" stroke-width="2"/>
+  <rect x="610" y="610" width="220" height="220" fill="#fbc02d" stroke="#333" stroke-width="1.5" rx="4"/>
+  <circle cx="665" cy="665" r="38" fill="#fffde7" stroke="#333" stroke-width="2.5"/>
+  <circle cx="775" cy="665" r="38" fill="#fffde7" stroke="#333" stroke-width="2.5"/>
+  <circle cx="665" cy="775" r="38" fill="#fffde7" stroke="#333" stroke-width="2.5"/>
+  <circle cx="775" cy="775" r="38" fill="#fffde7" stroke="#333" stroke-width="2.5"/>
+  <text x="665" y="670" text-anchor="middle" font-size="22" fill="#e65100">↓</text>
+  <text x="775" y="670" text-anchor="middle" font-size="22" fill="#e65100">↘</text>
+  <text x="665" y="780" text-anchor="middle" font-size="22" fill="#e65100">↓</text>
+  <text x="775" y="780" text-anchor="middle" font-size="22" fill="#e65100">↘</text>
+
+  <!-- ==================== 中央终点区域 (300,300)~(540,540) ==================== -->
+  <!-- 中央正方形 -->
+  <rect x="300" y="300" width="240" height="240" fill="#f5f0e0" stroke="#333" stroke-width="2"/>
+  <!-- 四个彩色三角形 -->
+  <!-- 上三角 蓝色 -->
+  <polygon points="300,300 540,300 420,420" fill="#1565c0" stroke="#333" stroke-width="1.5"/>
+  <!-- 右三角 红色 -->
+  <polygon points="540,300 540,540 420,420" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+  <!-- 下三角 黄色 -->
+  <polygon points="300,540 540,540 420,420" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <!-- 左三角 绿色 -->
+  <polygon points="300,300 300,540 420,420" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <!-- 中央小圆 -->
+  <circle cx="420" cy="420" r="28" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="420" y="426" text-anchor="middle" font-size="16" fill="#333" font-weight="bold">★</text>
+
+  <!-- ==================== 跑道格子 ==================== -->
+  <!-- 格子大小60x60，跑道宽度60，共3列/行 -->
+  <!-- 坐标系：每格60x60 -->
+  <!-- 棋盘划分：
+       左侧区域 x:0-240, 右侧区域 x:600-840
+       顶部区域 y:0-240, 底部区域 y:600-840
+       跑道：
+         上方跑道: x:240-600, y:0-240
+         下方跑道: x:240-600, y:600-840
+         左侧跑道: x:0-240, y:240-600
+         右侧跑道: x:600-840, y:240-600
+         中间横: x:240-600, y:240-300 和 y:540-600
+         中间竖: x:240-300, y:240-600 和 x:540-600, y:240-600
+  -->
+
+  <!-- ===== 上方跑道区域 (x:240-600, y:0-240) ===== -->
+  <!-- 列从左到右: 240,300,360,420,480,540  宽度各60 -->
+  <!-- 行从上到下: 0,60,120,180  高度各60 -->
+
+  <!-- 列1 (x:240) 绿色列 -->
+  <rect x="240" y="0"   width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <rect x="240" y="60"  width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <rect x="240" y="120" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="240" y="180" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="270" cy="30"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="270" cy="90"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="270" cy="150" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="270" cy="210" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 列2 (x:300) 蓝/白列 -->
+  <rect x="300" y="0"   width="60" height="60" fill="#1565c0" stroke="#333" stroke-width="1.5"/>
+  <rect x="300" y="60"  width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="300" y="120" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="300" y="180" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="330" cy="30"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="330" y="36" text-anchor="middle" font-size="18" fill="#333">★</text>
+  <circle cx="330" cy="90"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="330" cy="150" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="330" cy="210" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 列3 (x:360) 红色列顶部 -->
+  <rect x="360" y="0"   width="60" height="60" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+  <rect x="360" y="60"  width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="360" y="120" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="360" y="180" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="390" cy="30"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="390" cy="90"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="390" cy="150" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="390" cy="210" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 列4 (x:420) 黄色 -->
+  <rect x="420" y="0"   width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <rect x="420" y="60"  width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="420" y="120" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="420" y="180" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="450" cy="30"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="450" cy="90"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="450" cy="150" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="450" cy="210" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 列5 (x:480) -->
+  <rect x="480" y="0"   width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <rect x="480" y="60"  width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="480" y="120" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="480" y="180" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="510" cy="30"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="510" cy="90"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="510" cy="150" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="510" cy="210" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 列6 (x:540) -->
+  <rect x="540" y="0"   width="60" height="60" fill="#1565c0" stroke="#333" stroke-width="1.5"/>
+  <rect x="540" y="60"  width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="540" y="120" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="540" y="180" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="570" cy="30"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="570" cy="90"  r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="570" cy="150" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="570" cy="210" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- ===== 下方跑道区域 (x:240-600, y:600-840) ===== -->
+  <!-- 列1 (x:240) -->
+  <rect x="240" y="600" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="240" y="660" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="240" y="720" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <rect x="240" y="780" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <circle cx="270" cy="630" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="270" cy="690" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="270" cy="750" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="270" cy="810" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 列2 (x:300) -->
+  <rect x="300" y="600" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="300" y="660" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="300" y="720" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="300" y="780" width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <circle cx="330" cy="630" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="330" cy="690" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="330" cy="750" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="330" cy="810" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <!-- 绿色飞机标志 -->
+  <text x="330" y="816" text-anchor="middle" font-size="18" fill="#2e7d32">▲</text>
+
+  <!-- 列3 (x:360) -->
+  <rect x="360" y="600" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="360" y="660" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="360" y="720" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="360" y="780" width="60" height="60" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+  <circle cx="390" cy="630" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="390" cy="690" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="390" cy="750" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="390" cy="810" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="390" y="816" text-anchor="middle" font-size="18" fill="#c62828">★</text>
+
+  <!-- 列4 (x:420) -->
+  <rect x="420" y="600" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="420" y="660" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="420" y="720" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="420" y="780" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <circle cx="450" cy="630" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="450" cy="690" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="450" cy="750" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="450" cy="810" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 列5 (x:480) -->
+  <rect x="480" y="600" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="480" y="660" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="480" y="720" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="480" y="780" width="60" height="60" fill="#1565c0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="510" cy="630" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="510" cy="690" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="510" cy="750" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="510" cy="810" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 列6 (x:540) -->
+  <rect x="540" y="600" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="540" y="660" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="540" y="720" width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <rect x="540" y="780" width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <circle cx="570" cy="630" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="570" cy="690" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="570" cy="750" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="570" cy="810" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- ===== 左侧跑道区域 (x:0-240, y:240-600) ===== -->
+  <!-- 行从上到下: 240,300,360,420,480,540  每行60 -->
+  <!-- 列从左到右: 0,60,120,180 每列60 -->
+
+  <!-- 行1 (y:240) -->
+  <rect x="0"   y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="60"  y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="120" y="240" width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <rect x="180" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="30"  cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="90"  cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="150" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="210" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <!-- 绿色箭头 -->
+  <text x="150" y="276" text-anchor="middle" font-size="18" fill="white">→</text>
+
+  <!-- 行2 (y:300) -->
+  <rect x="0"   y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="60"  y="300" width="60" height="60" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+  <rect x="120" y="300" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <rect x="180" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="30"  cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="90"  cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="150" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="210" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="150" y="336" text-anchor="middle" font-size="16" fill="#333">☆</text>
+
+  <!-- 行3 (y:360) 蓝色跑道行 -->
+  <rect x="0"   y="360" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <rect x="60"  y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="120" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="180" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="30"  cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="90"  cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="150" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="210" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 行4 (y:420) -->
+  <rect x="0"   y="420" width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <rect x="60"  y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="120" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="180" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="30"  cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="90"  cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="150" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="210" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 行5 (y:480) -->
+  <rect x="0"   y="480" width="60" height="60" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+  <rect x="60"  y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="120" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="180" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="30"  cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="90"  cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="150" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="210" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 行6 (y:540) -->
+  <rect x="0"   y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="60"  y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="120" y="540" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <rect x="180" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="30"  cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="90"  cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="150" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="210" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- ===== 右侧跑道区域 (x:600-840, y:240-600) ===== -->
+  <!-- 行1 (y:240) -->
+  <rect x="600" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="660" y="240" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <rect x="720" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="780" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="630" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="690" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="750" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="810" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="630" y="276" text-anchor="middle" font-size="16" fill="#333">+</text>
+
+  <!-- 行2 (y:300) -->
+  <rect x="600" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="660" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="720" y="300" width="60" height="60" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+  <rect x="780" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="630" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="690" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="750" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="810" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 行3 (y:360) -->
+  <rect x="600" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="660" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="720" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="780" y="360" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <circle cx="630" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="690" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="750" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="810" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 行4 (y:420) -->
+  <rect x="600" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="660" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="720" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="780" y="420" width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <circle cx="630" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="690" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="750" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="810" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="810" y="456" text-anchor="middle" font-size="18" fill="white">→</text>
+
+  <!-- 行5 (y:480) -->
+  <rect x="600" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="660" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="720" y="480" width="60" height="60" fill="#1565c0" stroke="#333" stroke-width="1.5"/>
+  <rect x="780" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="630" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="690" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="750" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="810" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 行6 (y:540) -->
+  <rect x="600" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="660" y="540" width="60" height="60" fill="#2e7d32" stroke="#333" stroke-width="1.5"/>
+  <rect x="720" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <rect x="780" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="630" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="690" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="750" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <circle cx="810" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- ===== 中间十字跑道 ===== -->
+  <!-- 中间竖道 左列 (x:240-300) y:240-600 -->
+  <!-- 上段 -->
+  <rect x="240" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="270" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="240" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="270" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <!-- 竖道中段 (已含在中央区域) -->
+
+  <!-- 中间竖道 右列 (x:540-600) y:240-300 和 y:540-600 -->
+  <rect x="540" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="570" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="540" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="570" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 竖道下段 -->
+  <rect x="240" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="270" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="240" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="270" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <rect x="540" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="570" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="540" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="570" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 中间横道 上行 (y:240-300) x:300-540 -->
+  <rect x="300" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="330" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="360" y="240" width="60" height="60" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+  <circle cx="390" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="420" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="450" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="480" y="240" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="510" cy="270" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 中间横道 下行 (y:540-600) x:300-540 -->
+  <rect x="300" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="330" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="360" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="390" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="420" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="450" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="480" y="540" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="510" cy="570" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 中间竖道 左列中段 (x:240-300) y:360-540 -->
+  <rect x="240" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="270" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="240" y="420" width="60" height="60" fill="#1565c0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="270" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="270" y="456" text-anchor="middle" font-size="18" fill="white">→</text>
+
+  <!-- 中间竖道 右列中段 (x:540-600) y:360-540 -->
+  <rect x="540" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="570" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="540" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="570" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 中间竖跑道 (x:300-540) y:300-540 上下过渡 -->
+  <!-- 上部 (y:300-540) x:300-360 -->
+  <rect x="300" y="300" width="60" height="60" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+  <circle cx="330" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="300" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="330" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="300" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="330" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="300" y="480" width="60" height="60" fill="#f9a825" stroke="#333" stroke-width="1.5"/>
+  <circle cx="330" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="330" y="516" text-anchor="middle" font-size="16" fill="#333">☆</text>
+
+  <!-- (x:480-540) y:300-540 -->
+  <rect x="480" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="510" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="480" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="510" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="480" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="510" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="480" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="510" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 中间横排中段 y:360-420 (非中央区) -->
+  <!-- (x:300-540) y:360 -->
+  <rect x="360" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="390" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="360" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="390" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="360" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="390" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="360" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="390" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <rect x="420" y="300" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="450" cy="330" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="420" y="360" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="450" cy="390" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="420" y="420" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="450" cy="450" r="20" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="420" y="480" width="60" height="60" fill="#f5f0e0" stroke="#333" stroke-width="1.5"/>
+  <circle cx="450" cy="510" r="20" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- ==================== 大三角形装饰 - 四角对角线三角 ==================== -->
+  <!-- 左上角区域三角 -->
+  <polygon points="240,0 360,0 240,120" fill="#f9a825" stroke="#333" stroke-width="1.5" opacity="0.9"/>
+  <polygon points="360,0 600,0 600,120 480,120 360,0" fill="none"/>
+  <!-- 右上角 -->
+  <polygon points="600,0 720,0 600,120" fill="#2e7d32" stroke="#333" stroke-width="1.5" opacity="0.9"/>
+  <!-- 右下角 -->
+  <polygon points="600,720 720,840 600,840" fill="#1565c0" stroke="#333" stroke-width="1.5" opacity="0.9"/>
+  <!-- 左下角 -->
+  <polygon points="240,720 360,840 240,840" fill="#c62828" stroke="#333" stroke-width="1.5" opacity="0.9"/>
+
+  <!-- ==================== 中间跑道箭头方向指示 ==================== -->
+  <!-- 上方进入跑道箭头（红色，向下） -->
+  <polygon points="390,245 420,245 420,230 440,265 420,300 420,285 390,285" fill="#c62828" stroke="#333" stroke-width="1.5"/>
+
+  <!-- 下方进入跑道箭头（绿色，向上） -->
+  <polygon points="390,595 420,595 420,610 440,575 420,540 420,555 390,555" fill="#2e7d32" stroke="#333" stroke-width="1.5" transform="rotate(180,415,575)"/>
+
+  <!-- 左方进入跑道箭头（蓝色，向右） -->
+  <polygon points="245,390 245,420 230,420 265,440 300,420 285,420 285,390" fill="#1565c0" stroke="#333" stroke-width="1.5" transform="rotate(-90,265,415)"/>
+
+  <!-- 右方进入跑道箭头（黄色，向左） -->
+  <polygon points="595,390 595,420 610,420 575,440 540,420 555,420 555,390" fill="#f9a825" stroke="#333" stroke-width="1.5" transform="rotate(90,575,415)"/>
+
+  <!-- ==================== 中央大箭头 ==================== -->
+  <!-- 红色向下大箭头（上方跑道入口） -->
+  <polygon points="375,248 445,248 445,310 470,310 410,375 350,310 375,310" fill="#c62828" stroke="#333" stroke-width="2"/>
+  <circle cx="410" cy="335" r="16" fill="black"/>
+
+  <!-- 绿色向上大箭头（下方跑道入口） -->
+  <polygon points="375,592 445,592 445,530 470,530 410,465 350,530 375,530" fill="#2e7d32" stroke="#333" stroke-width="2"/>
+  <circle cx="410" cy="510" r="16" fill="black"/>
+
+  <!-- 蓝色向右大箭头（左侧跑道入口） -->
+  <polygon points="248,375 248,445 310,445 310,470 375,410 310,350 310,375" fill="#1565c0" stroke="#333" stroke-width="2"/>
+  <circle cx="335" cy="410" r="16" fill="black"/>
+
+  <!-- 黄色向左大箭头（右侧跑道入口） -->
+  <polygon points="592,375 592,445 530,445 530,470 465,410 530,350 530,375" fill="#f9a825" stroke="#333" stroke-width="2"/>
+  <circle cx="495" cy="410" r="16" fill="black"/>
+
+  <!-- ==================== 中央横跑道（格子行） ==================== -->
+  <!-- 蓝色横跑道 y:420行（左半段 x:240-300 到 x:0） -->
+  <!-- 已在上面格子处理 -->
+  
+  <!-- 绿色虚线跑道（上半横） -->
+  <line x1="260" y1="278" x2="390" y2="278" stroke="#2a9d2a" stroke-width="4" stroke-dasharray="12,6"
+        marker-end="url(#arrowGreen)"/>
+  <!-- 蓝色虚线跑道（上半横右侧） -->
+  <line x1="450" y1="278" x2="580" y2="278" stroke="#1565c0" stroke-width="4" stroke-dasharray="12,6"
+        marker-end="url(#arrowBlue)"/>
+  <!-- 中央横跑道标记圆 -->
+  <circle cx="420" cy="278" r="18" fill="white" stroke="#2a9d2a" stroke-width="2.5"/>
+  <text x="420" y="284" text-anchor="middle" font-size="12" fill="#1565c0" font-weight="bold">WW</text>
+
+  <!-- 红色虚线跑道（下半横） -->
+  <line x1="580" y1="562" x2="450" y2="562" stroke="#c62828" stroke-width="4" stroke-dasharray="12,6"
+        marker-end="url(#arrowRed)"/>
+  <line x1="390" y1="562" x2="260" y2="562" stroke="#c62828" stroke-width="4" stroke-dasharray="12,6"
+        marker-end="url(#arrowRed)"/>
+  <circle cx="420" cy="562" r="18" fill="white" stroke="#c62828" stroke-width="2.5"/>
+  <text x="420" y="568" text-anchor="middle" font-size="12" fill="#c62828" font-weight="bold">WW</text>
+
+  <!-- 黄色虚线跑道（左竖） -->
+  <line x1="302" y1="260" x2="302" y2="390" stroke="#f9a825" stroke-width="4" stroke-dasharray="12,6"
+        marker-end="url(#arrowBlue)"/>
+  <!-- 蓝色虚线跑道（右竖上） -->
+  <line x1="302" y1="450" x2="302" y2="580" stroke="#1565c0" stroke-width="4" stroke-dasharray="12,6"
+        marker-end="url(#arrowBlue)"/>
+
+  <!-- 蓝色虚线跑道（右竖） -->
+  <line x1="538" y1="260" x2="538" y2="390" stroke="#1565c0" stroke-width="4" stroke-dasharray="12,6"
+        marker-end="url(#arrowBlue)"/>
+  <line x1="538" y1="450" x2="538" y2="580" stroke="#1565c0" stroke-width="4" stroke-dasharray="12,6"
+        marker-end="url(#arrowBlue)"/>
+
+  <!-- ==================== 四角小三角装饰 ==================== -->
+  <!-- 左上角跑道区小三角 (240,0)-(360,0)-(300,120) -->
+  <polygon points="240,0 360,0 300,120" fill="#f9a825" stroke="#333" stroke-width="1" opacity="0.85"/>
+  <circle cx="300" cy="60" r="22" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 右上角跑道区小三角 -->
+  <polygon points="480,0 600,0 540,120" fill="#2e7d32" stroke="#333" stroke-width="1" opacity="0.85"/>
+  <circle cx="540" cy="60" r="22" fill="white" stroke="#333" stroke-width="2"/>
+
+  <!-- 小三角中的图标 -->
+  <text x="300" y="66" text-anchor="middle" font-size="14" fill="#f9a825">↓▼</text>
+  <text x="540" y="66" text-anchor="middle" font-size="16" fill="#2e7d32">↓</text>
+
+  <!-- 左下角小三角 -->
+  <polygon points="240,720 360,840 240,840" fill="#f9a825" stroke="#333" stroke-width="1" opacity="0.85"/>
+  <polygon points="240,720 360,720 300,840" fill="#c62828" stroke="#333" stroke-width="1" opacity="0.85"/>
+  <circle cx="300" cy="780" r="22" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="300" y="786" text-anchor="middle" font-size="16" fill="#2e7d32">▲▲</text>
+
+  <!-- 右下角小三角 -->
+  <polygon points="480,720 600,720 540,840" fill="#1565c0" stroke="#333" stroke-width="1" opacity="0.85"/>
+  <polygon points="480,840 600,840 540,720" fill="#f9a825" stroke="#333" stroke-width="1" opacity="0.85"/>
+  <circle cx="540" cy="780" r="22" fill="white" stroke="#333" stroke-width="2"/>
+  <text x="540" y="786" text-anchor="middle" font-size="16" fill="#f9a825">→</text>
+
+  <!-- ==================== 大本营角三角形（对角线切分） ==================== -->
+  <!-- 左上大本营右下三角 -->
+  <polygon points="240,0 240,240 0,240" fill="#1976d2" stroke="#333" stroke-width="1.5" opacity="0.3"/>
+  <!-- 右上大本营左下三角 -->
+  <polygon points="600,0 840,0 840,240" fill="#d32f2f" stroke="#333" stroke-width="1.5" opacity="0.3"/>
+  <!-- 左下大本营右上三角 -->
+  <polygon points="0,600 240,600 0,840" fill="#388e3c" stroke="#333" stroke-width="1.5" opacity="0.3"/>
+  <!-- 右下大本营左上三角 -->
+  <polygon points="600,840 840,840 840,600" fill="#fbc02d" stroke="#333" stroke-width="1.5" opacity="0.3"/>
+
+  <!-- ==================== 飞机图标（简化，4架在跑道起点） ==================== -->
+  <!-- 黄色飞机 向上 在左侧跑道 -->
+  <g transform="translate(302,430)">
+    <polygon points="0,-14 4,-4 14,-6 6,0 14,6 4,4 0,14 -4,4 -14,6 -6,0 -14,-6 -4,-4" fill="#f9a825" stroke="#333" stroke-width="1.2"/>
+    <circle cx="0" cy="0" r="4" fill="#333"/>
+  </g>
+  <g transform="translate(302,480)">
+    <polygon points="0,-14 4,-4 14,-6 6,0 14,6 4,4 0,14 -4,4 -14,6 -6,0 -14,-6 -4,-4" fill="#f9a825" stroke="#333" stroke-width="1.2"/>
+    <circle cx="0" cy="0" r="4" fill="#333"/>
+  </g>
+
+  <!-- 蓝色飞机 向下 在右侧跑道 -->
+  <g transform="translate(538,390)">
+    <polygon points="0,-14 4,-4 14,-6 6,0 14,6 4,4 0,14 -4,4 -14,6 -6,0 -14,-6 -4,-4" fill="#1565c0" stroke="#333" stroke-width="1.2"/>
+    <circle cx="0" cy="0" r="4" fill="#333"/>
+  </g>
+  <g transform="translate(538,450)">
+    <polygon points="0,-14 4,-4 14,-6 6,0 14,6 4,4 0,14 -4,4 -14,6 -6,0 -14,-6 -4,-4" fill="#1565c0" stroke="#333" stroke-width="1.2"/>
+    <circle cx="0" cy="0" r="4" fill="#333"/>
+  </g>
+
+  <!-- ==================== 边框 ==================== -->
+  <rect x="0" y="0" width="840" height="840" fill="none" stroke="#222" stroke-width="4"/>
+
+  <!-- ==================== 大本营内部格线 ==================== -->
+  <!-- 左上角 -->
+  <line x1="120" y1="0"   x2="120" y2="240" stroke="#333" stroke-width="1.5"/>
+  <line x1="0"   y1="120" x2="240" y2="120" stroke="#333" stroke-width="1.5"/>
+  <!-- 右上角 -->
+  <line x1="720" y1="0"   x2="720" y2="240" stroke="#333" stroke-width="1.5"/>
+  <line x1="600" y1="120" x2="840" y2="120" stroke="#333" stroke-width="1.5"/>
+  <!-- 左下角 -->
+  <line x1="120" y1="600" x2="120" y2="840" stroke="#333" stroke-width="1.5"/>
+  <line x1="0"   y1="720" x2="240" y2="720" stroke="#333" stroke-width="1.5"/>
+  <!-- 右下角 -->
+  <line x1="720" y1="600" x2="720" y2="840" stroke="#333" stroke-width="1.5"/>
+  <line x1="600" y1="720" x2="840" y2="720" stroke="#333" stroke-width="1.5"/>
+
+</svg>
