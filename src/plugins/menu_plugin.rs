@@ -45,6 +45,7 @@ struct ClickRect {
 }
 
 impl ClickRect {
+    /// 判断点击点是否落在当前矩形区域内。
     fn contains(self, point: Vec2) -> bool {
         point.x >= self.x
             && point.x <= self.x + self.w
@@ -92,6 +93,7 @@ const COLOR_SWATCH_W: f32 = 54.0;
 const COLOR_SWATCH_H: f32 = 34.0;
 
 fn spawn_main_menu(mut commands: Commands) {
+    // 主菜单：标题 + 开始按钮（支持点击与回车）。
     commands.spawn((
         Text::new("Aeroplane Chess"),
         TextFont {
@@ -137,6 +139,7 @@ fn spawn_main_menu(mut commands: Commands) {
 }
 
 fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
+    // 对局配置页：按“模式/颜色/棋子数/人机控制/开始返回”分区渲染。
     commands.spawn((
         Text::new(mode_select_content(&match_setup)),
         TextFont {
@@ -281,6 +284,7 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
 }
 
 fn spawn_section_label(commands: &mut Commands, label: &str, top: f32) {
+    // 左侧分区标题。
     commands.spawn((
         Text::new(label),
         TextFont {
@@ -306,6 +310,7 @@ fn spawn_option(
     label: &str,
     base_color: Color,
 ) {
+    // 每个可选项都对应一个可点击矩形与行为枚举。
     spawn_box_with_label(commands, rect, base_color, label, 24.0, Some(action));
 }
 
@@ -317,6 +322,7 @@ fn spawn_box_with_label(
     font_size: f32,
     action: Option<ModeSelectAction>,
 ) {
+    // 通用方块渲染器：用于按钮底板与色块选项。
     let mut entity = commands.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -361,6 +367,7 @@ fn spawn_box_with_label(
 }
 
 fn mode_select_content(match_setup: &MatchSetup) -> String {
+    // 顶部摘要文本，实时反映当前配置状态。
     let mode = if match_setup.mode == GameMode::OneVsOne {
         "1v1"
     } else {
@@ -394,6 +401,7 @@ fn update_mode_select_text(
     match_setup: Res<MatchSetup>,
     mut query: Query<&mut Text, With<ModeSelectText>>,
 ) {
+    // 配置变更后刷新顶部摘要。
     for mut text in &mut query {
         *text = Text::new(mode_select_content(&match_setup));
     }
@@ -403,12 +411,14 @@ fn update_mode_select_option_visuals(
     match_setup: Res<MatchSetup>,
     mut option_query: Query<(&ModeSelectOption, &mut BackgroundColor)>,
 ) {
+    // 配置变更后刷新所有选项的高亮/禁用态。
     for (option, mut color) in &mut option_query {
         *color = BackgroundColor(option_fill_color(option, &match_setup));
     }
 }
 
 fn option_fill_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> Color {
+    // 颜色优先级：禁用 > 选中 > 普通。
     if action_disabled(option.action, match_setup) {
         return option.base_color.with_alpha(0.15);
     }
@@ -419,6 +429,7 @@ fn option_fill_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> Col
 }
 
 fn action_disabled(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
+    // 1v1 模式下禁用 P3/P4 的人机控制项。
     match action {
         ModeSelectAction::SetPlayerControl { player_index, .. } => {
             player_index >= match_setup.active_player_count()
@@ -428,6 +439,7 @@ fn action_disabled(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
 }
 
 fn action_selected(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
+    // 判断某个选项是否与当前配置一致（用于高亮）。
     match action {
         ModeSelectAction::SetMode(mode) => match_setup.mode == mode,
         ModeSelectAction::SetColor(choice) => match_setup.human_color == choice,
@@ -444,6 +456,7 @@ fn handle_main_menu_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    // 键盘兜底：回车进入配置页。
     if keyboard.just_pressed(KeyCode::Enter) {
         next_state.set(AppState::ModeSelect);
     }
@@ -455,6 +468,7 @@ fn handle_main_menu_click(
     mut next_state: ResMut<NextState<AppState>>,
     query: Query<&ClickRect, With<MainMenuStartArea>>,
 ) {
+    // 鼠标主操作：点击开始区域进入配置页。
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
@@ -478,6 +492,7 @@ fn handle_mode_select_input(
     mut match_setup: ResMut<MatchSetup>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    // 键盘兜底操作：保留最常用快捷键。
     if keyboard.just_pressed(KeyCode::Escape) {
         apply_mode_select_action(ModeSelectAction::Back, &mut match_setup, &mut next_state);
         return;
@@ -548,6 +563,7 @@ fn handle_mode_select_click(
     mut next_state: ResMut<NextState<AppState>>,
     query: Query<(&ClickRect, &ModeSelectOption)>,
 ) {
+    // 鼠标主操作：点击命中对应配置项并立即生效。
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
@@ -572,6 +588,7 @@ fn apply_mode_select_action(
     match_setup: &mut MatchSetup,
     next_state: &mut NextState<AppState>,
 ) {
+    // 配置写入入口：集中处理模式切换、颜色选择、人机约束与页面跳转。
     if action_disabled(action, match_setup) {
         return;
     }
@@ -596,6 +613,7 @@ fn apply_mode_select_action(
 }
 
 fn cleanup_menu(mut commands: Commands, query: Query<Entity, With<MenuEntity>>) {
+    // 退出菜单状态时清理所有临时 UI 实体。
     for entity in &query {
         commands.entity(entity).despawn();
     }

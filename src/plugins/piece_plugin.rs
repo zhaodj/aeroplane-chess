@@ -35,6 +35,7 @@ pub struct HangarSlot(pub Vec2);
 struct PieceBaseColor(pub Color);
 
 fn spawn_pieces(mut commands: Commands, player_roster: Res<PlayerRoster>) {
+    // 按玩家机库槽位生成所有棋子实体，并初始化为 InHangar 状态。
     let mut piece_id = 1;
 
     for player in &player_roster.players {
@@ -86,6 +87,7 @@ fn update_piece_highlight(
         With<PieceEntity>,
     >,
 ) {
+    // 根据阶段与候选列表更新高亮：可行动作 > 技能选目标 > 当前玩家可选提示。
     let selectable = matches!(game_phase.get(), GamePhase::AwaitPieceSelect);
     let skill_selectable = matches!(game_phase.get(), GamePhase::ResolveSkillEffect);
     let current_player_control = player_roster

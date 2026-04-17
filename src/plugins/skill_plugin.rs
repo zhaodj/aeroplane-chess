@@ -30,12 +30,14 @@ pub struct SkillUiRequest {
 }
 
 impl SkillUiRequest {
+    /// 向技能请求队列写入一次动作（同一时刻只保留一个待处理请求）。
     pub fn queue(&mut self, action: SkillUiAction) {
         if self.pending.is_none() {
             self.pending = Some(action);
         }
     }
 
+    /// 取出并清空待处理技能请求。
     fn take(&mut self) -> Option<SkillUiAction> {
         self.pending.take()
     }
@@ -49,10 +51,12 @@ pub struct SkillTargetState {
 }
 
 impl SkillTargetState {
+    /// 当前技能（如 Snipe）可选目标列表。
     pub fn candidate_piece_ids(&self) -> &[u8] {
         &self.candidate_piece_ids
     }
 
+    /// 是否处于“等待技能目标选择”状态。
     pub fn is_active(&self) -> bool {
         self.active
     }
@@ -76,12 +80,14 @@ impl Plugin for SkillPlugin {
 }
 
 fn setup_skill_roster(mut commands: Commands, player_roster: Res<PlayerRoster>) {
+    // 进入对局时初始化技能资源与技能目标状态。
     commands.insert_resource(build_skill_roster(&player_roster));
     commands.insert_resource(SkillTargetState::default());
     commands.insert_resource(SkillUiRequest::default());
 }
 
 fn cleanup_skill_roster(mut commands: Commands) {
+    // 离开对局时回收技能相关资源。
     commands.remove_resource::<SkillRoster>();
     commands.remove_resource::<SkillTargetState>();
     commands.remove_resource::<SkillUiRequest>();
@@ -92,6 +98,7 @@ fn sync_skill_turn_state(
     mut skill_roster: ResMut<SkillRoster>,
     mut target_state: ResMut<SkillTargetState>,
 ) {
+    // 同步当前回合玩家技能状态；若玩家切换则清除旧目标选择。
     sync_turn_skill_usage(&mut skill_roster, turn_state.current_player);
     if target_state.is_active()
         && skill_roster.active_turn_player != Some(turn_state.current_player)
@@ -100,6 +107,7 @@ fn sync_skill_turn_state(
     }
 }
 
+/// 人类技能入口：统一处理按键与 HUD 点击触发的技能动作。
 fn handle_human_skill_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     match_config: Res<MatchConfig>,
@@ -333,6 +341,7 @@ fn handle_human_skill_input(
     }
 }
 
+/// Snipe 目标选择的键盘分支（数字键 + Esc 取消）。
 fn handle_human_snipe_key_select(
     keyboard: Res<ButtonInput<KeyCode>>,
     game_phase: Res<State<GamePhase>>,
@@ -371,6 +380,7 @@ fn handle_human_snipe_key_select(
     next_phase.set(GamePhase::AwaitDice);
 }
 
+/// Snipe 目标选择的鼠标分支（点击高亮目标棋子）。
 fn handle_human_snipe_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
@@ -426,12 +436,14 @@ fn handle_human_snipe_click(
     next_phase.set(GamePhase::AwaitDice);
 }
 
+/// 清理技能目标选择状态。
 fn clear_target_state(target_state: &mut SkillTargetState) {
     target_state.candidate_piece_ids.clear();
     target_state.prompt = None;
     target_state.active = false;
 }
 
+/// 选择 Shield 目标：优先无盾 Active，其次任意 Active，最后任意己方棋子。
 fn preferred_shield_target_for_full_query(
     player_id: u8,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -464,6 +476,7 @@ fn preferred_shield_target_for_full_query(
         .or_else(|| any_owned.into_iter().next())
 }
 
+/// 给目标棋子加盾（技能插件查询版本）。
 fn apply_shield_to_piece_for_full_query(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -479,6 +492,7 @@ fn apply_shield_to_piece_for_full_query(
     None
 }
 
+/// 收集 Snipe 候选：同规则层一致，优先无盾敌人。
 fn collect_snipe_targets_for_full_query(
     current_player: u8,
     current_team: u8,
@@ -509,6 +523,7 @@ fn collect_snipe_targets_for_full_query(
     unshielded
 }
 
+/// 执行 Snipe：优先削盾，若无盾则送回机库。
 fn execute_snipe(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -539,6 +554,7 @@ fn execute_snipe(
     "Snipe failed to resolve".to_string()
 }
 
+/// 判断当前玩家是否至少有一枚 Active 棋子（Swap 前置条件）。
 fn current_player_has_active_piece(
     current_player: u8,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -549,6 +565,7 @@ fn current_player_has_active_piece(
     })
 }
 
+/// 查找可用于 Swap 的队友 Active 棋子。
 fn find_active_teammate_piece_for_swap(
     current_player: u8,
     current_team: u8,
@@ -567,6 +584,7 @@ fn find_active_teammate_piece_for_swap(
     candidates.into_iter().next()
 }
 
+/// 执行 Swap：交换双方状态与世界坐标。
 fn execute_swap(
     current_player: u8,
     teammate_piece_id: u8,

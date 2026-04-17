@@ -29,6 +29,7 @@ pub struct MatchSetup {
 }
 
 impl MatchSetup {
+    /// 返回当前模式下参与对局的玩家数量（1v1=2，2v2=4）。
     pub fn active_player_count(&self) -> usize {
         match self.mode {
             GameMode::OneVsOne => 2,
@@ -36,6 +37,7 @@ impl MatchSetup {
         }
     }
 
+    /// 标准化人机配置：强制至少保留 1 名人类玩家。
     pub fn normalized_player_controls(&self) -> [PlayerControl; 4] {
         let mut controls = self.player_controls;
         let active_count = self.active_player_count();
@@ -48,14 +50,17 @@ impl MatchSetup {
         controls
     }
 
+    /// 读取指定序号玩家的人机类型。
     pub fn player_control(&self, player_index: usize) -> Option<PlayerControl> {
         self.player_controls.get(player_index).copied()
     }
 
+    /// 原地修正人机配置（主要在模式切换与开局前调用）。
     pub fn sanitize_player_controls(&mut self) {
         self.player_controls = self.normalized_player_controls();
     }
 
+    /// 切换指定玩家的人机类型；若会导致“全 AI”则拒绝本次切换。
     pub fn toggle_player_control(&mut self, player_index: usize) {
         if player_index >= self.active_player_count() {
             return;
@@ -79,6 +84,7 @@ impl MatchSetup {
         self.player_controls = controls;
     }
 
+    /// 直接设置指定玩家的人机类型；同样受“不能全 AI”约束。
     pub fn set_player_control(&mut self, player_index: usize, control: PlayerControl) {
         if player_index >= self.active_player_count() {
             return;
@@ -119,6 +125,7 @@ impl PlayerColorChoice {
         Self::Rose,
     ];
 
+    /// 循环到下一个可选颜色。
     pub fn next(self) -> Self {
         let index = Self::ALL
             .iter()
@@ -127,6 +134,7 @@ impl PlayerColorChoice {
         Self::ALL[(index + 1) % Self::ALL.len()]
     }
 
+    /// 返回颜色名称，供 UI 展示。
     pub fn label(self) -> &'static str {
         match self {
             Self::Crimson => "Crimson",
@@ -138,6 +146,7 @@ impl PlayerColorChoice {
         }
     }
 
+    /// 返回颜色值，供棋子与配置面板渲染使用。
     pub fn to_color(self) -> Color {
         match self {
             Self::Crimson => Color::srgb(0.88, 0.30, 0.26),
@@ -149,6 +158,7 @@ impl PlayerColorChoice {
         }
     }
 
+    /// 根据“人类主色”推导默认敌对阵营配色。
     fn enemy_colors(self) -> (Color, Color) {
         match self {
             Self::Crimson | Self::Amber | Self::Rose => {
@@ -167,16 +177,19 @@ pub struct BoardLayout {
 }
 
 impl BoardLayout {
+    /// 构建默认棋盘布局（主环道 + 特殊格）。
     pub fn default() -> Self {
         Self {
             tiles: default_board_tiles(),
         }
     }
 
+    /// 返回主环道长度。
     pub fn route_len(&self) -> usize {
         self.tiles.len()
     }
 
+    /// 根据环道索引查询世界坐标。
     pub fn world_pos_for_route_index(&self, route_index: u8) -> Option<Vec2> {
         self.tiles
             .iter()
@@ -184,6 +197,7 @@ impl BoardLayout {
             .map(|tile| tile.world_pos)
     }
 
+    /// 根据环道索引查询格子类型。
     pub fn tile_kind_for_route_index(&self, route_index: u8) -> Option<TileKind> {
         self.tiles
             .iter()
@@ -219,6 +233,7 @@ pub struct MatchResult {
     pub finished: bool,
 }
 
+/// 构建开局所需资源：棋盘、玩家列表、队伍列表。
 pub fn build_match_resources(setup: &MatchSetup) -> (BoardLayout, PlayerRoster, TeamRoster) {
     let (players, teams) = build_match_rosters(setup);
     (
@@ -228,6 +243,7 @@ pub fn build_match_resources(setup: &MatchSetup) -> (BoardLayout, PlayerRoster, 
     )
 }
 
+/// 根据开局配置生成玩家与队伍编排（包含颜色、起点、机库位置）。
 pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamState>) {
     let human_primary = setup.human_color.to_color();
     let human_secondary = human_primary.mix(&Color::WHITE, 0.25);
@@ -369,6 +385,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
     }
 }
 
+/// 生成机库停机位坐标（最多 4 格）。
 fn build_hangar_slots(anchor: Vec2, pieces_per_player: usize) -> Vec<Vec2> {
     let offsets = [
         Vec2::new(-30.0, 30.0),
@@ -383,6 +400,7 @@ fn build_hangar_slots(anchor: Vec2, pieces_per_player: usize) -> Vec<Vec2> {
         .collect()
 }
 
+/// 按队伍完成情况计算是否出现胜方。
 pub fn evaluate_match_result(
     team_roster: &TeamRoster,
     player_completion: &[(u8, bool)],

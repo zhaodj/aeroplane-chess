@@ -46,6 +46,7 @@ struct TurnAutomation {
 }
 
 fn setup_turn_automation(mut commands: Commands) {
+    // AI 行为节拍与人类输入缓存在进入对局时统一初始化。
     commands.insert_resource(TurnAutomation {
         timer: Timer::from_seconds(0.9, TimerMode::Repeating),
     });
@@ -53,10 +54,12 @@ fn setup_turn_automation(mut commands: Commands) {
 }
 
 fn cleanup_turn_automation(mut commands: Commands) {
+    // 离开对局时清理临时回合资源，避免下局残留。
     commands.remove_resource::<TurnAutomation>();
     commands.remove_resource::<TurnInputState>();
 }
 
+/// AI 回合驱动主循环：定时触发掷骰、选动作并执行完整结算。
 fn drive_ai_turn_loop(
     time: Res<Time>,
     mut automation: ResMut<TurnAutomation>,
@@ -148,6 +151,7 @@ fn drive_ai_turn_loop(
     clear_dash_arm(&mut skill_roster, current_player);
 }
 
+/// AI 技能策略：按 Snipe -> Shield -> Swap -> DoubleDice 的顺序尝试。
 fn maybe_use_ai_skills(
     current_player: u8,
     match_config: &MatchConfig,
@@ -220,6 +224,7 @@ fn maybe_use_ai_skills(
     }
 }
 
+/// AI 在掷骰后评估是否需要临时预备 Dash（仅当存在可移动动作）。
 fn maybe_arm_dash_for_ai_after_roll(
     current_player: u8,
     roll: DiceRoll,
@@ -253,6 +258,7 @@ fn maybe_arm_dash_for_ai_after_roll(
     }
 }
 
+/// 选择 AI 的 Snipe 目标：优先无盾、再有盾，且不攻击队友。
 fn preferred_ai_snipe_target(
     current_player: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -294,6 +300,7 @@ fn preferred_ai_snipe_target(
         .or_else(|| shielded.into_iter().next())
 }
 
+/// 选择 AI 的 Shield 目标：优先己方无盾 Active 棋子。
 fn preferred_ai_shield_target(
     current_player: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -309,6 +316,7 @@ fn preferred_ai_shield_target(
         .min()
 }
 
+/// 选择 AI 的 Swap 目标：优先与“更靠前的队友”换位。
 fn preferred_ai_swap_target(
     current_player: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -344,6 +352,7 @@ fn preferred_ai_swap_target(
     candidates.into_iter().map(|(piece_id, _)| piece_id).next()
 }
 
+/// 判断 AI 是否应预备 DoubleDice（典型场景：全员在机库等待起飞）。
 fn should_ai_arm_double_dice(
     current_player: u8,
     skill_roster: &SkillRoster,
@@ -373,6 +382,7 @@ fn should_ai_arm_double_dice(
     !has_active_piece && has_hangar_piece
 }
 
+/// 在 turn_query 上直接给目标棋子加盾（供 AI 路径调用）。
 fn apply_shield_to_piece_to_turn_query(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -390,6 +400,7 @@ fn apply_shield_to_piece_to_turn_query(
     None
 }
 
+/// 在 turn_query 上执行 Snipe 的完整效果（扣盾或送回机库）。
 fn execute_snipe_on_turn_query(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -426,6 +437,7 @@ fn execute_snipe_on_turn_query(
     }
 }
 
+/// 在 turn_query 上执行 Swap：交换两枚棋子的状态与位置。
 fn execute_swap_on_turn_query(
     current_player: u8,
     teammate_piece_id: u8,
@@ -475,6 +487,7 @@ fn execute_swap_on_turn_query(
     )
 }
 
+/// 人类玩家“掷骰阶段”输入处理（Space 掷骰）。
 fn handle_human_roll_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut input_state: ResMut<TurnInputState>,
@@ -571,6 +584,7 @@ fn handle_human_roll_input(
     }
 }
 
+/// 人类玩家“选棋阶段”键盘输入处理（1~4 选择动作）。
 fn handle_human_action_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut input_state: ResMut<TurnInputState>,
@@ -624,6 +638,7 @@ fn handle_human_action_input(
     clear_dash_arm(&mut skill_roster, turn_state.current_player);
 }
 
+/// 人类玩家“选棋阶段”鼠标点击处理（点击高亮棋子）。
 fn handle_human_action_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
@@ -712,6 +727,7 @@ fn handle_human_action_click(
     clear_dash_arm(&mut skill_roster, turn_state.current_player);
 }
 
+/// Dash 预备后刷新候选动作，确保 UI 与可选列表同步。
 fn refresh_pending_actions_for_dash(
     input_state: &mut TurnInputState,
     turn_state: &TurnState,

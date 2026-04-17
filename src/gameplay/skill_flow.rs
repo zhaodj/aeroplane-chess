@@ -35,6 +35,7 @@ pub struct RollResolution {
     pub used_double_dice: bool,
 }
 
+/// 根据玩家名单初始化技能资源（每名玩家各 1 次基础充能）。
 pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
     SkillRoster {
         players: player_roster
@@ -59,6 +60,7 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
     }
 }
 
+/// 读取指定玩家的技能状态快照。
 pub fn player_skill_state(skill_roster: &SkillRoster, player_id: u8) -> Option<&PlayerSkillState> {
     skill_roster
         .players
@@ -66,6 +68,7 @@ pub fn player_skill_state(skill_roster: &SkillRoster, player_id: u8) -> Option<&
         .find(|player| player.player_id == player_id)
 }
 
+/// 每次回合切换时同步“本回合技能是否已使用”与“跳过技能回合”标志。
 pub fn sync_turn_skill_usage(skill_roster: &mut SkillRoster, current_player: u8) {
     if skill_roster.active_turn_player != Some(current_player) {
         skill_roster.active_turn_player = Some(current_player);
@@ -85,6 +88,7 @@ pub fn sync_turn_skill_usage(skill_roster: &mut SkillRoster, current_player: u8)
     }
 }
 
+/// 判断当前玩家本回合是否仍可使用技能。
 pub fn can_use_skill_this_turn(skill_roster: &SkillRoster, current_player: u8) -> bool {
     skill_roster.active_turn_player == Some(current_player)
         && !skill_roster.skill_used_this_turn
@@ -93,11 +97,13 @@ pub fn can_use_skill_this_turn(skill_roster: &SkillRoster, current_player: u8) -
             .unwrap_or(false)
 }
 
+/// 标记当前玩家已在本回合消耗技能次数。
 pub fn mark_skill_used(skill_roster: &mut SkillRoster, current_player: u8) {
     skill_roster.active_turn_player = Some(current_player);
     skill_roster.skill_used_this_turn = true;
 }
 
+/// 消耗 1 次 Dash 充能并进入预备态。
 pub fn arm_dash(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     let Some(player_state) = skill_roster
         .players
@@ -116,12 +122,14 @@ pub fn arm_dash(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     true
 }
 
+/// 读取 Dash 的额外步数加成（仅预备态返回 +3）。
 pub fn dash_bonus(skill_roster: &SkillRoster, player_id: u8) -> u8 {
     player_skill_state(skill_roster, player_id)
         .map(|player| if player.dash_armed { 3 } else { 0 })
         .unwrap_or(0)
 }
 
+/// 清除 Dash 预备态（一般在动作执行后调用）。
 pub fn clear_dash_arm(skill_roster: &mut SkillRoster, player_id: u8) {
     if let Some(player_state) = skill_roster
         .players
@@ -132,6 +140,7 @@ pub fn clear_dash_arm(skill_roster: &mut SkillRoster, player_id: u8) {
     }
 }
 
+/// 消耗 1 次 Snipe 充能。
 pub fn spend_snipe_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     let Some(player_state) = skill_roster
         .players
@@ -149,6 +158,7 @@ pub fn spend_snipe_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool
     true
 }
 
+/// 消耗 1 次 Swap 充能。
 pub fn spend_swap_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     let Some(player_state) = skill_roster
         .players
@@ -166,6 +176,7 @@ pub fn spend_swap_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool 
     true
 }
 
+/// 收集可被 Snipe 的目标：优先无护盾敌人，再是有护盾敌人。
 pub fn collect_snipe_targets(
     current_player: u8,
     current_team: u8,
@@ -196,6 +207,7 @@ pub fn collect_snipe_targets(
     unshielded
 }
 
+/// 选择 Shield 的默认目标：优先无盾的己方 Active 棋子。
 pub fn preferred_shield_target(
     player_id: u8,
     piece_query: &Query<(&PieceId, &mut PieceState)>,
@@ -228,6 +240,7 @@ pub fn preferred_shield_target(
         })
 }
 
+/// AI 是否应当在当前回合使用 Shield。
 pub fn should_ai_use_shield(
     player_id: u8,
     skill_roster: &SkillRoster,
@@ -247,6 +260,7 @@ pub fn should_ai_use_shield(
     })
 }
 
+/// AI 是否应当预备 DoubleDice（用于开局起飞机会）。
 pub fn should_ai_arm_double_dice(
     player_id: u8,
     skill_roster: &SkillRoster,
@@ -269,6 +283,7 @@ pub fn should_ai_arm_double_dice(
     !has_active_piece && has_hangar_piece
 }
 
+/// 为目标棋子增加 1 层护盾（带上限）。
 pub fn apply_shield_to_piece(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &mut PieceState)>,
@@ -286,6 +301,7 @@ pub fn apply_shield_to_piece(
     None
 }
 
+/// 查询玩家的人机控制类型。
 pub fn current_player_type(player_roster: &PlayerRoster, player_id: u8) -> Option<PlayerControl> {
     player_roster
         .players
@@ -294,6 +310,7 @@ pub fn current_player_type(player_roster: &PlayerRoster, player_id: u8) -> Optio
         .map(|player| player.state.control)
 }
 
+/// 消耗 1 次 Shield 充能。
 pub fn spend_shield_charge(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     let Some(player_state) = skill_roster
         .players
@@ -311,6 +328,7 @@ pub fn spend_shield_charge(skill_roster: &mut SkillRoster, player_id: u8) -> boo
     true
 }
 
+/// 预备 DoubleDice：消耗充能并设置 armed 标记。
 pub fn arm_double_dice(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     let Some(player_state) = skill_roster
         .players
@@ -329,6 +347,7 @@ pub fn arm_double_dice(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     true
 }
 
+/// 根据当前技能状态解析最终掷骰值（包含 DoubleDice 逻辑）。
 pub fn resolve_roll_value(skill_roster: &mut SkillRoster, player_id: u8) -> RollResolution {
     let Some(player_state) = skill_roster
         .players
@@ -349,6 +368,7 @@ pub fn resolve_roll_value(skill_roster: &mut SkillRoster, player_id: u8) -> Roll
     resolve_roll_from_values(random_range(1..=6), 0, false)
 }
 
+/// 在给定骰面下计算最终点数（测试与回放友好）。
 pub fn resolve_roll_from_values(first: u8, second: u8, use_double_dice: bool) -> RollResolution {
     if use_double_dice {
         RollResolution {
@@ -363,6 +383,7 @@ pub fn resolve_roll_from_values(first: u8, second: u8, use_double_dice: bool) ->
     }
 }
 
+/// 随机给玩家补充 1 次技能充能；1v1 可禁用 Swap 池。
 pub fn grant_random_skill_charge(
     skill_roster: &mut SkillRoster,
     player_id: u8,
@@ -420,6 +441,7 @@ pub fn grant_random_skill_charge(
     }
 }
 
+/// 给目标玩家打上“下回合禁止用技能”的标记。
 pub fn disable_next_skill_turn(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     let Some(player_state) = skill_roster
         .players

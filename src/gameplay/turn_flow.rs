@@ -36,6 +36,7 @@ pub struct TurnState {
 }
 
 impl TurnState {
+    /// 创建对局首回合状态：默认从 P1 开始，无历史掷骰与动作。
     pub fn opening_turn() -> Self {
         Self {
             current_player: 1,
@@ -57,6 +58,7 @@ pub struct TurnInputState {
 }
 
 impl TurnInputState {
+    /// 返回当前阶段可供玩家选择的棋子列表（用于 UI 高亮与点击判定）。
     pub fn candidate_piece_ids(&self) -> &[u8] {
         &self.candidate_piece_ids
     }
@@ -69,12 +71,14 @@ pub enum PlannedAction {
 }
 
 impl PlannedAction {
+    /// 获取动作对应的棋子 ID，便于统一处理 Launch/Move 两类动作。
     pub fn piece_id(&self) -> u8 {
         match *self {
             Self::Launch { piece_id, .. } | Self::Move { piece_id, .. } => piece_id,
         }
     }
 
+    /// 判断动作是否为“移动”而非“起飞”。
     pub fn is_move(&self) -> bool {
         matches!(self, Self::Move { .. })
     }
@@ -106,10 +110,12 @@ struct ActionOrigin {
     new_progress: u8,
 }
 
+/// 掷六面骰，结果范围固定为 1..=6。
 pub fn roll_die() -> u8 {
     random_range(1..=6)
 }
 
+/// 查询当前回合玩家的人机控制类型。
 pub fn current_player_control(
     current_player: u8,
     player_roster: &PlayerRoster,
@@ -121,6 +127,7 @@ pub fn current_player_control(
         .map(|player| player.state.control)
 }
 
+/// 读取 1~4 数字键，返回合法的动作序号。
 pub fn pressed_selection_key(keyboard: &ButtonInput<KeyCode>, max_actions: usize) -> Option<usize> {
     let keys = [
         KeyCode::Digit1,
@@ -133,6 +140,7 @@ pub fn pressed_selection_key(keyboard: &ButtonInput<KeyCode>, max_actions: usize
     })
 }
 
+/// 写入本回合掷骰结果，并同步处理“连续 6 点额外回合”计数。
 pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
     turn_state.current_roll = Some(roll_value);
     turn_state.last_roll = Some(roll_value);
@@ -147,6 +155,10 @@ pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
     }
 }
 
+/// AI 自动决策动作：
+/// 1) 优先尝试带收益的起飞/撞击；
+/// 2) 再选择普通可行动作；
+/// 3) 无动作时返回 None。
 pub fn choose_action(
     current_player: u8,
     roll: DiceRoll,
@@ -267,6 +279,7 @@ pub fn choose_action(
     None
 }
 
+/// 收集当前玩家在本次掷骰下的全部合法动作，供人类选择或 AI 评估。
 pub fn collect_actions(
     current_player: u8,
     roll: DiceRoll,
@@ -332,6 +345,8 @@ pub fn collect_actions(
     actions
 }
 
+/// 执行一次完整动作结算流水：
+/// 起飞/移动 -> 飞跃 -> 撞击 -> 落点效果 -> 叠加 -> 胜负检查 -> 回合推进。
 pub fn execute_action(
     action: PlannedAction,
     roll_value: u8,
@@ -346,6 +361,7 @@ pub fn execute_action(
     input_state: &mut TurnInputState,
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
+    // 先清理出发格叠加态，避免“离开后仍共享护盾”的残留状态。
     clear_stack_from_origin(&action, player_roster, piece_query);
     let action_origin = apply_action(&action, board_layout, player_roster, piece_query);
     let mut notes = Vec::new();
@@ -365,6 +381,7 @@ pub fn execute_action(
         piece_query,
         &mut notes,
     );
+    // 只有攻击方最终留在落点，才继续结算格子效果与队友叠加。
     if attacker_landed {
         apply_post_collision_tile_effects(
             &action,
@@ -419,6 +436,7 @@ pub fn execute_action(
     next_phase.set(GamePhase::AwaitDice);
 }
 
+/// 当玩家无合法动作时，直接结束当前行动并切换到下一掷骰阶段。
 pub fn finish_turn_without_action(
     turn_state: &mut TurnState,
     input_state: &mut TurnInputState,
@@ -430,6 +448,7 @@ pub fn finish_turn_without_action(
     next_phase.set(GamePhase::AwaitDice);
 }
 
+/// 记录候选动作与提示文案，并切换到“等待选棋子”阶段。
 pub fn set_pending_actions(
     input_state: &mut TurnInputState,
     roll_value: u8,
@@ -449,10 +468,12 @@ pub fn set_pending_actions(
     next_phase.set(GamePhase::AwaitPieceSelect);
 }
 
+/// 通过序号读取候选动作。
 pub fn get_pending_action(input_state: &TurnInputState, selection: usize) -> Option<PlannedAction> {
     input_state.pending_actions.get(selection).copied()
 }
 
+/// 通过棋子 ID 反查其对应的候选动作（用于点击棋子时命中动作）。
 pub fn find_pending_action_by_piece_id(
     input_state: &TurnInputState,
     piece_id: u8,
@@ -464,18 +485,21 @@ pub fn find_pending_action_by_piece_id(
         .find(|action| action.piece_id() == piece_id)
 }
 
+/// 清理本轮输入缓存，避免跨回合污染。
 pub fn clear_pending_input(input_state: &mut TurnInputState) {
     input_state.pending_actions.clear();
     input_state.candidate_piece_ids.clear();
     input_state.prompt = None;
 }
 
+/// 计算移动后的目标进度；若超终点则返回 None（精确到达规则）。
 pub fn compute_target_distance(current_distance: u8, roll_value: u8) -> Option<u8> {
     current_distance
         .checked_add(roll_value)
         .filter(|next_distance| *next_distance <= FINISH_DISTANCE)
 }
 
+/// 将“逻辑进度”映射成棋盘位置（主环道/冲线道/终点）。
 pub fn board_position_for_distance(
     player_profile: &PlayerProfile,
     distance: u8,
@@ -495,6 +519,7 @@ pub fn board_position_for_distance(
     }
 }
 
+/// 将棋子状态映射到世界坐标，供渲染层更新 Transform。
 pub fn world_position_for_piece(
     owner_player_id: u8,
     distance: u8,
@@ -517,6 +542,7 @@ pub fn world_position_for_piece(
     }
 }
 
+/// 提取棋子快照，避免在决策阶段反复遍历可变查询。
 fn collect_piece_snapshots(
     player_roster: &PlayerRoster,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -544,6 +570,7 @@ fn collect_piece_snapshots(
         .collect()
 }
 
+/// 判断某目标位置上是否存在敌方棋子（用于起飞/移动优先级决策）。
 fn is_enemy_on_progress(
     snapshots: &[PieceSnapshot],
     current_player: u8,
@@ -559,6 +586,7 @@ fn is_enemy_on_progress(
     })
 }
 
+/// 实际写入棋子状态与坐标，返回动作前状态快照（供“反弹恢复”使用）。
 fn apply_action(
     action: &PlannedAction,
     board_layout: &BoardLayout,
@@ -615,6 +643,7 @@ fn apply_action(
     None
 }
 
+/// 飞跃结算：仅在落点是 Jump 格时触发，按固定步数推进。
 fn apply_jump_effect(
     action: &PlannedAction,
     board_layout: &BoardLayout,
@@ -651,6 +680,7 @@ fn apply_jump_effect(
     notes.push(format!("jumped to tile {final_progress}"));
 }
 
+/// 撞击结算后的落点效果（防御格、事件格等）。
 fn apply_post_collision_tile_effects(
     action: &PlannedAction,
     board_layout: &BoardLayout,
@@ -695,6 +725,10 @@ fn apply_post_collision_tile_effects(
     }
 }
 
+/// 撞击主逻辑：
+/// - 先判定共享护盾；
+/// - 再判定单体护盾；
+/// - 无护盾则送回机库。
 fn resolve_collision(
     action: &PlannedAction,
     action_origin: Option<ActionOrigin>,
@@ -799,6 +833,7 @@ fn resolve_collision(
     true
 }
 
+/// 若撞击发生在攻击格，补充一条强化撞击说明。
 fn append_attack_tile_collision_note(
     board_layout: &BoardLayout,
     target_tile_index: u8,
@@ -809,6 +844,7 @@ fn append_attack_tile_collision_note(
     }
 }
 
+/// 护盾阻挡撞击时，将攻击方回退到动作前状态。
 fn restore_attacker_origin(
     action: &PlannedAction,
     action_origin: Option<ActionOrigin>,
@@ -829,6 +865,7 @@ fn restore_attacker_origin(
     }
 }
 
+/// 更新棋子进度与状态，并同步刷新棋子坐标。
 fn update_piece_progress(
     action: &PlannedAction,
     target_progress: u8,
@@ -863,6 +900,7 @@ fn update_piece_progress(
     }
 }
 
+/// 调整棋子护盾层数（带上限钳制）。
 fn modify_piece_shield(
     action: &PlannedAction,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -885,6 +923,7 @@ fn modify_piece_shield(
     None
 }
 
+/// 棋子离开原位置时，清理原叠加体共享护盾。
 fn clear_stack_from_origin(
     action: &PlannedAction,
     player_roster: &PlayerRoster,
@@ -934,6 +973,7 @@ fn clear_stack_from_origin(
     }
 }
 
+/// 2v2 队友叠加判定：同格两枚及以上队友棋子获得共享护盾。
 fn apply_team_stack(
     action: &PlannedAction,
     player_roster: &PlayerRoster,
@@ -991,6 +1031,7 @@ fn apply_team_stack(
     notes.push("stacked with teammate (shared shield 1)".to_string());
 }
 
+/// 消耗叠加体共享护盾。
 fn consume_stack_shield(
     defender_piece_ids: &[u8],
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -1002,6 +1043,7 @@ fn consume_stack_shield(
     }
 }
 
+/// 随机事件总入口：抽事件类型后交给具体效果函数执行。
 fn apply_event_effect(
     action: &PlannedAction,
     final_progress: &mut u8,
@@ -1021,6 +1063,7 @@ fn apply_event_effect(
     )
 }
 
+/// 随机选取一个事件类型。
 fn random_event_kind() -> TileEventKind {
     match random_range(0..=4) {
         0 => TileEventKind::GainShield,
@@ -1031,6 +1074,7 @@ fn random_event_kind() -> TileEventKind {
     }
 }
 
+/// 按事件类型执行对应效果，并返回可读日志。
 fn apply_event_kind_effect(
     event_kind: TileEventKind,
     action: &PlannedAction,
@@ -1126,6 +1170,7 @@ fn apply_event_kind_effect(
     }
 }
 
+/// 读取当前动作所属玩家 ID。
 fn owner_player_id_for_action(
     action: &PlannedAction,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -1138,6 +1183,7 @@ fn owner_player_id_for_action(
     None
 }
 
+/// 将棋子状态换算为棋盘位置（内部工具函数）。
 fn piece_board_position(
     piece_state: PieceState,
     player_roster: &PlayerRoster,
@@ -1149,6 +1195,7 @@ fn piece_board_position(
     board_position_for_distance(player_profile, piece_state.progress, piece_state.status)
 }
 
+/// 获取攻击方当前位置（用于飞跃/撞击/格子效果结算）。
 fn attacker_position(
     action: &PlannedAction,
     player_roster: &PlayerRoster,
@@ -1165,6 +1212,7 @@ fn attacker_position(
     None
 }
 
+/// 获取攻击方当前逻辑进度。
 fn attacker_progress(
     action: &PlannedAction,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -1178,6 +1226,7 @@ fn attacker_progress(
     None
 }
 
+/// 将动作与附加说明拼接成 HUD 可读日志。
 fn describe_action(action: &PlannedAction, roll_value: u8, notes: &[String]) -> String {
     let base = match *action {
         PlannedAction::Launch { piece_id, .. } => {
@@ -1196,6 +1245,7 @@ fn describe_action(action: &PlannedAction, roll_value: u8, notes: &[String]) -> 
     }
 }
 
+/// 推进回合：优先消耗额外掷骰，否则切换到下一位玩家。
 pub fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
     if turn_state.extra_rolls_remaining > 0 {
         turn_state.extra_rolls_remaining -= 1;
