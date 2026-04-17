@@ -6,6 +6,7 @@ use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
 use crate::states::AppState;
 
+/// 启动插件：初始化相机与默认 MatchSetup，并跳转主菜单。
 pub struct BootPlugin;
 
 impl Plugin for BootPlugin {

@@ -5,6 +5,7 @@ use crate::gameplay::turn_flow::TurnState;
 use crate::states::AppState;
 use crate::states::GamePhase;
 
+/// 对局生命周期插件：负责装配对局资源与结果页跳转。
 pub struct GamePlugin;
 
 impl Plugin for GamePlugin {

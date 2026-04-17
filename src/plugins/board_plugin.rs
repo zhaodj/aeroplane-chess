@@ -5,6 +5,7 @@ use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
 use crate::states::AppState;
 
+/// 棋盘渲染插件：负责绘制底板、环道、终点与机场区域。
 pub struct BoardPlugin;
 
 impl Plugin for BoardPlugin {
@@ -15,6 +16,7 @@ impl Plugin for BoardPlugin {
 }
 
 #[derive(Component)]
+/// 棋盘场景实体标记，用于状态切换时统一清理。
 struct BoardSceneEntity;
 
 fn spawn_board(

@@ -8,6 +8,7 @@ use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
 use crate::plugins::piece_plugin::PieceId;
 
 #[derive(Clone, Debug, Default, Resource)]
+/// 全体玩家技能资源与本回合技能使用状态。
 pub struct SkillRoster {
     pub players: Vec<PlayerSkillState>,
     pub last_skill_action: Option<String>,
@@ -16,6 +17,7 @@ pub struct SkillRoster {
 }
 
 #[derive(Clone, Debug)]
+/// 单个玩家的技能充能与技能标志位。
 pub struct PlayerSkillState {
     pub player_id: u8,
     pub dash_charges: u8,
@@ -30,6 +32,7 @@ pub struct PlayerSkillState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// 掷骰解析结果（是否消耗了 DoubleDice）。
 pub struct RollResolution {
     pub value: u8,
     pub used_double_dice: bool,

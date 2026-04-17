@@ -9,6 +9,7 @@ use crate::domain::victory::all_pieces_finished;
 use crate::gameplay::ai::AiDifficulty;
 
 #[derive(Clone, Debug, Resource)]
+/// 对局运行时配置（进入 InGame 后使用的不可变快照）。
 pub struct MatchConfig {
     pub mode: GameMode,
     pub ai_difficulty: AiDifficulty,
@@ -19,6 +20,7 @@ pub struct MatchConfig {
 }
 
 #[derive(Clone, Debug, Resource)]
+/// 对局开始前可编辑的配置（菜单页使用）。
 pub struct MatchSetup {
     pub mode: GameMode,
     pub ai_difficulty: AiDifficulty,
@@ -172,6 +174,7 @@ impl PlayerColorChoice {
 }
 
 #[derive(Clone, Debug, Resource)]
+/// 棋盘布局资源：包含主环道格子定义。
 pub struct BoardLayout {
     pub tiles: Vec<TileConfig>,
 }
@@ -207,11 +210,13 @@ impl BoardLayout {
 }
 
 #[derive(Clone, Debug, Resource)]
+/// 玩家列表资源。
 pub struct PlayerRoster {
     pub players: Vec<PlayerProfile>,
 }
 
 #[derive(Clone, Debug)]
+/// 单个玩家的完整对局档案（颜色、机库、起点、冲线道等）。
 pub struct PlayerProfile {
     pub state: PlayerState,
     pub color: Color,
@@ -222,11 +227,13 @@ pub struct PlayerProfile {
 }
 
 #[derive(Clone, Debug, Resource)]
+/// 队伍列表资源。
 pub struct TeamRoster {
     pub teams: Vec<TeamState>,
 }
 
 #[derive(Clone, Debug, Default, Resource)]
+/// 对局胜负结果资源。
 pub struct MatchResult {
     pub winner_team_id: Option<u8>,
     pub winner_player_ids: Vec<u8>,

@@ -9,6 +9,7 @@ use crate::plugins::skill_plugin::SkillTargetState;
 use crate::states::AppState;
 use crate::states::GamePhase;
 
+/// 棋子渲染与高亮插件。
 pub struct PiecePlugin;
 
 impl Plugin for PiecePlugin {
@@ -23,15 +24,19 @@ impl Plugin for PiecePlugin {
 }
 
 #[derive(Component)]
+/// 棋子实体标记，用于清理与查询分组。
 struct PieceEntity;
 
 #[derive(Component)]
+/// 棋子唯一编号。
 pub struct PieceId(pub u8);
 
 #[derive(Component, Clone, Copy)]
+/// 机库槽位坐标（棋子回家时复位位置）。
 pub struct HangarSlot(pub Vec2);
 
 #[derive(Component, Clone, Copy)]
+/// 棋子基础颜色缓存（高亮结束后恢复原色用）。
 struct PieceBaseColor(pub Color);
 
 fn spawn_pieces(mut commands: Commands, player_roster: Res<PlayerRoster>) {

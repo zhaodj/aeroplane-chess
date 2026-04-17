@@ -21,6 +21,7 @@ use crate::gameplay::turn_flow::{
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
 
+/// 回合驱动插件：整合 AI/人类输入并推进回合结算流程。
 pub struct TurnPlugin;
 
 impl Plugin for TurnPlugin {
@@ -41,6 +42,7 @@ impl Plugin for TurnPlugin {
 }
 
 #[derive(Resource)]
+/// AI 自动执行节拍器（用于模拟思考间隔）。
 struct TurnAutomation {
     timer: Timer,
 }

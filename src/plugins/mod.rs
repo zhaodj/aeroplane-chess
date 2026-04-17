@@ -24,6 +24,7 @@ use self::skill_plugin::SkillPlugin;
 use self::turn_plugin::TurnPlugin;
 use self::ui_plugin::UiPlugin;
 
+/// 游戏插件集合：统一注册所有子系统插件。
 pub struct AeroplaneChessPlugins;
 
 impl Plugin for AeroplaneChessPlugins {

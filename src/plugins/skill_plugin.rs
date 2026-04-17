@@ -13,6 +13,7 @@ use crate::gameplay::turn_flow::TurnState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
 
+/// 技能插件：处理技能输入、目标选择与技能效果执行。
 pub struct SkillPlugin;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +26,7 @@ pub enum SkillUiAction {
 }
 
 #[derive(Resource, Default)]
+/// 技能 UI 动作请求队列（键盘与点击入口共用）。
 pub struct SkillUiRequest {
     pending: Option<SkillUiAction>,
 }
@@ -44,6 +46,7 @@ impl SkillUiRequest {
 }
 
 #[derive(Resource, Default)]
+/// 技能目标选择状态（如 Snipe 多目标时的暂存）。
 pub struct SkillTargetState {
     candidate_piece_ids: Vec<u8>,
     pub prompt: Option<String>,

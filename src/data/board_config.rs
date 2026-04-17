@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::domain::tile::TileKind;
 
 #[derive(Clone, Debug)]
+/// 单个环道格子的静态配置（ID、类型、索引与坐标）。
 pub struct TileConfig {
     pub id: String,
     pub kind: TileKind,

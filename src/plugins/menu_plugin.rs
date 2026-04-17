@@ -5,6 +5,7 @@ use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
 use crate::states::AppState;
 
+/// 菜单插件：主菜单与开局配置页的渲染和交互。
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
@@ -28,15 +29,19 @@ impl Plugin for MenuPlugin {
 }
 
 #[derive(Component)]
+/// 菜单实体分组标记。
 struct MenuEntity;
 
 #[derive(Component)]
+/// 主菜单开始按钮点击区域标记。
 struct MainMenuStartArea;
 
 #[derive(Component)]
+/// 配置页顶部摘要文本节点。
 struct ModeSelectText;
 
 #[derive(Clone, Copy, Component)]
+/// 通用点击矩形（屏幕坐标）。
 struct ClickRect {
     x: f32,
     y: f32,
@@ -68,6 +73,7 @@ enum ModeSelectAction {
 }
 
 #[derive(Component)]
+/// 配置项节点元数据（动作 + 基础色）。
 struct ModeSelectOption {
     action: ModeSelectAction,
     base_color: Color,

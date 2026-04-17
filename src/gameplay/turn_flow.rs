@@ -25,6 +25,7 @@ pub const MAX_CHAIN_EXTRA_ROLLS: u8 = 3;
 pub const MAX_PIECE_SHIELD: u8 = 2;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Resource)]
+/// 回合状态资源：当前玩家、掷骰状态与最近一次动作日志。
 pub struct TurnState {
     pub current_player: u8,
     pub extra_rolls_remaining: u8,
@@ -51,6 +52,7 @@ impl TurnState {
 }
 
 #[derive(Resource, Default)]
+/// 回合输入缓存：候选动作、可点击棋子和提示文案。
 pub struct TurnInputState {
     pending_actions: Vec<PlannedAction>,
     candidate_piece_ids: Vec<u8>,
@@ -65,6 +67,7 @@ impl TurnInputState {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// 执行动作描述：起飞或移动。
 pub enum PlannedAction {
     Launch { piece_id: u8, target_progress: u8 },
     Move { piece_id: u8, target_progress: u8 },
@@ -85,6 +88,7 @@ impl PlannedAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// 棋盘逻辑位置：主环道、冲线道或终点。
 pub enum BoardPosition {
     Main(u8),
     Home(u8),
@@ -92,6 +96,7 @@ pub enum BoardPosition {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// 供决策阶段使用的棋子快照。
 struct PieceSnapshot {
     piece_id: u8,
     owner_player_id: u8,
@@ -103,6 +108,7 @@ struct PieceSnapshot {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// 动作执行前状态快照（用于护盾反弹回退）。
 struct ActionOrigin {
     status: PieceStatus,
     progress: u8,

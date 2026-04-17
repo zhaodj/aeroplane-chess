@@ -8,6 +8,7 @@ use crate::gameplay::turn_flow::{TurnInputState, TurnState};
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
 use crate::states::{AppState, GamePhase};
 
+/// UI 插件：负责 HUD 与结果页渲染及交互。
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
@@ -30,32 +31,41 @@ impl Plugin for UiPlugin {
 }
 
 #[derive(Component)]
+/// HUD 实体分组标记。
 struct HudEntity;
 
 #[derive(Component)]
+/// HUD 可折叠区标记。
 struct HudCollapsible;
 
 #[derive(Component)]
+/// 结果页实体分组标记。
 struct ResultEntity;
 
 #[derive(Component)]
+/// HUD 主状态文本节点。
 struct HudPrimaryText;
 
 #[derive(Component)]
+/// HUD 技能文本节点。
 struct HudSkillsText;
 
 #[derive(Component)]
+/// HUD 提示文本节点。
 struct HudPromptText;
 
 #[derive(Component)]
+/// HUD 技能按钮元数据。
 struct HudSkillButton {
     action: SkillUiAction,
 }
 
 #[derive(Component)]
+/// HUD 折叠提示文本节点。
 struct HudToggleHintText;
 
 #[derive(Resource, Default)]
+/// HUD 折叠状态。
 struct HudFoldState {
     collapsed: bool,
 }
