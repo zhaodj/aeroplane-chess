@@ -9,42 +9,59 @@ pub struct TileConfig {
     pub kind: TileKind,
     pub route_index: Option<u8>,
     pub world_pos: Vec2,
+    pub jump_shortcut_to: Option<u8>,
 }
 
 pub fn default_board_tiles() -> Vec<TileConfig> {
     let route = [
-        (-2.0, 4.0),
-        (-1.0, 4.0),
-        (0.0, 4.0),
-        (1.0, 4.0),
-        (2.0, 4.0),
-        (2.0, 3.0),
-        (2.0, 2.0),
-        (3.0, 2.0),
-        (4.0, 2.0),
-        (4.0, 1.0),
-        (4.0, 0.0),
-        (4.0, -1.0),
-        (4.0, -2.0),
-        (3.0, -2.0),
-        (2.0, -2.0),
-        (2.0, -3.0),
-        (2.0, -4.0),
-        (1.0, -4.0),
-        (0.0, -4.0),
-        (-1.0, -4.0),
-        (-2.0, -4.0),
-        (-2.0, -3.0),
-        (-2.0, -2.0),
-        (-3.0, -2.0),
-        (-4.0, -2.0),
-        (-4.0, -1.0),
-        (-4.0, 0.0),
-        (-4.0, 1.0),
-        (-4.0, 2.0),
-        (-3.0, 2.0),
-        (-2.0, 2.0),
-        (-2.0, 3.0),
+        (-5.0, 6.0),
+        (-4.0, 6.0),
+        (-3.0, 6.0),
+        (-2.0, 6.0),
+        (-1.0, 6.0),
+        (0.0, 6.0),
+        (1.0, 6.0),
+        (2.0, 6.0),
+        (3.0, 6.0),
+        (4.0, 6.0),
+        (5.0, 6.0),
+        (6.0, 6.0),
+        (6.0, 5.0),
+        (6.0, 4.0),
+        (6.0, 3.0),
+        (6.0, 2.0),
+        (6.0, 1.0),
+        (6.0, 0.0),
+        (6.0, -1.0),
+        (6.0, -2.0),
+        (6.0, -3.0),
+        (6.0, -4.0),
+        (6.0, -5.0),
+        (6.0, -6.0),
+        (5.0, -6.0),
+        (4.0, -6.0),
+        (3.0, -6.0),
+        (2.0, -6.0),
+        (1.0, -6.0),
+        (0.0, -6.0),
+        (-1.0, -6.0),
+        (-2.0, -6.0),
+        (-3.0, -6.0),
+        (-4.0, -6.0),
+        (-5.0, -6.0),
+        (-6.0, -6.0),
+        (-6.0, -5.0),
+        (-6.0, -4.0),
+        (-6.0, -3.0),
+        (-6.0, -2.0),
+        (-6.0, -1.0),
+        (-6.0, 0.0),
+        (-6.0, 1.0),
+        (-6.0, 2.0),
+        (-6.0, 3.0),
+        (-6.0, 4.0),
+        (-6.0, 5.0),
+        (-6.0, 6.0),
     ];
 
     route
@@ -55,16 +72,49 @@ pub fn default_board_tiles() -> Vec<TileConfig> {
             kind: tile_kind_for_index(index),
             route_index: Some(index as u8),
             world_pos: Vec2::new(x * 64.0, y * 64.0),
+            jump_shortcut_to: jump_shortcut_target_for_index(index),
         })
         .collect()
 }
 
 fn tile_kind_for_index(index: usize) -> TileKind {
     match index {
-        2 | 10 | 18 | 26 => TileKind::Jump,
-        5 | 13 | 21 | 29 => TileKind::Attack,
-        7 | 15 | 23 | 31 => TileKind::Defense,
-        0 | 8 | 16 | 24 => TileKind::Event,
+        5 | 18 | 28 | 39 => TileKind::Jump,
+        2 | 14 | 26 | 38 => TileKind::Attack,
+        8 | 20 | 32 | 44 => TileKind::Defense,
+        0 | 12 | 24 | 36 => TileKind::Event,
         _ => TileKind::Normal,
+    }
+}
+
+fn jump_shortcut_target_for_index(index: usize) -> Option<u8> {
+    match index {
+        5 => Some(17),
+        18 => Some(30),
+        28 => Some(40),
+        39 => Some(3),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_board_route_has_48_nodes() {
+        let tiles = default_board_tiles();
+        assert_eq!(tiles.len(), 48);
+    }
+
+    #[test]
+    fn shortcut_jump_nodes_are_configured() {
+        let tiles = default_board_tiles();
+        let shortcuts = tiles
+            .iter()
+            .filter_map(|tile| tile.route_index.zip(tile.jump_shortcut_to))
+            .collect::<Vec<_>>();
+
+        assert_eq!(shortcuts, vec![(5, 17), (18, 30), (28, 40), (39, 3)]);
     }
 }

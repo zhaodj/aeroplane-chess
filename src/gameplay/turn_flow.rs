@@ -18,8 +18,8 @@ use crate::gameplay::skill_flow::{
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::GamePhase;
 
-pub const MAIN_ROUTE_STEPS: u8 = 32;
-pub const HOME_LANE_STEPS: u8 = 4;
+pub const MAIN_ROUTE_STEPS: u8 = 48;
+pub const HOME_LANE_STEPS: u8 = 6;
 pub const FINISH_DISTANCE: u8 = MAIN_ROUTE_STEPS + HOME_LANE_STEPS;
 pub const MAX_CHAIN_EXTRA_ROLLS: u8 = 3;
 pub const MAX_PIECE_SHIELD: u8 = 2;
@@ -649,7 +649,9 @@ fn apply_action(
     None
 }
 
-/// 飞跃结算：仅在落点是 Jump 格时触发，按固定步数推进。
+/// 飞跃结算：
+/// 1) 落在与当前棋子同色的主环道格会触发同色飞跃；
+/// 2) 若该格存在虚线快捷路径，则优先走快捷路径。
 fn apply_jump_effect(
     action: &PlannedAction,
     board_layout: &BoardLayout,
@@ -667,15 +669,29 @@ fn apply_jump_effect(
         return;
     };
 
-    let Some(tile_kind) = board_layout.tile_kind_for_route_index(tile_index) else {
+    let Some(owner_player_id) = owner_player_id_for_action(action, piece_query) else {
         return;
     };
-    if tile_kind != TileKind::Jump {
+
+    if !is_same_color_route_tile(owner_player_id, tile_index) {
         return;
     }
 
     let current_progress = attacker_progress(action, piece_query).unwrap_or_default();
-    let final_progress = (current_progress + 4).min(FINISH_DISTANCE);
+
+    let jump_delta = if let Some(shortcut_target_index) =
+        board_layout.jump_shortcut_target_for_route_index(tile_index)
+    {
+        circular_forward_steps(tile_index, shortcut_target_index, MAIN_ROUTE_STEPS)
+    } else {
+        next_same_color_jump_steps(owner_player_id, tile_index)
+    };
+
+    if jump_delta == 0 {
+        return;
+    }
+
+    let final_progress = current_progress.saturating_add(jump_delta).min(FINISH_DISTANCE);
     update_piece_progress(
         action,
         final_progress,
@@ -683,7 +699,59 @@ fn apply_jump_effect(
         player_roster,
         piece_query,
     );
-    notes.push(format!("jumped to tile {final_progress}"));
+    if board_layout
+        .jump_shortcut_target_for_route_index(tile_index)
+        .is_some()
+    {
+        notes.push(format!(
+            "took shortcut jump to tile {final_progress}"
+        ));
+    } else {
+        notes.push(format!(
+            "jumped to next same-color tile {final_progress}"
+        ));
+    }
+}
+
+/// 将玩家 ID 映射为主环道颜色序号：
+/// 0=Green, 1=Blue, 2=Red, 3=Yellow。
+fn player_route_color_mod(player_id: u8) -> u8 {
+    match player_id {
+        1 => 1,
+        2 => 2,
+        3 => 0,
+        4 => 3,
+        _ => 0,
+    }
+}
+
+/// 主环道当前格是否为该玩家的同色格。
+fn is_same_color_route_tile(player_id: u8, tile_index: u8) -> bool {
+    tile_index % 4 == player_route_color_mod(player_id)
+}
+
+/// 计算主环道上从 current 到 target 的顺时针前进步数。
+fn circular_forward_steps(current: u8, target: u8, route_len: u8) -> u8 {
+    if route_len == 0 {
+        return 0;
+    }
+    if target >= current {
+        target - current
+    } else {
+        route_len - (current - target)
+    }
+}
+
+/// 同色飞跃默认跳到下一处同色格（主环道配色按 4 格循环）。
+fn next_same_color_jump_steps(player_id: u8, tile_index: u8) -> u8 {
+    let owner_mod = player_route_color_mod(player_id);
+    for step in 1..MAIN_ROUTE_STEPS {
+        let next_index = (tile_index + step) % MAIN_ROUTE_STEPS;
+        if next_index % 4 == owner_mod {
+            return step;
+        }
+    }
+    0
 }
 
 /// 撞击结算后的落点效果（防御格、事件格等）。
@@ -1313,11 +1381,11 @@ mod tests {
 
         assert_eq!(
             board_position_for_distance(player_one, 0, PieceStatus::Active),
-            Some(BoardPosition::Main(30))
+            Some(BoardPosition::Main(4))
         );
         assert_eq!(
             board_position_for_distance(player_two, 0, PieceStatus::Active),
-            Some(BoardPosition::Main(6))
+            Some(BoardPosition::Main(16))
         );
         assert_eq!(
             board_position_for_distance(player_one, MAIN_ROUTE_STEPS, PieceStatus::Active),
@@ -1385,7 +1453,7 @@ mod tests {
 
         assert_eq!(
             world_position_for_piece(1, 0, PieceStatus::Active, &board_layout, &player_roster),
-            board_layout.world_pos_for_route_index(30)
+            board_layout.world_pos_for_route_index(4)
         );
         assert_eq!(
             world_position_for_piece(
@@ -1395,7 +1463,7 @@ mod tests {
                 &board_layout,
                 &player_roster
             ),
-            Some(Vec2::new(-128.0, 192.0))
+            Some(Vec2::new(-128.0, 320.0))
         );
         assert_eq!(
             world_position_for_piece(
@@ -1407,6 +1475,104 @@ mod tests {
             ),
             Some(Vec2::new(-64.0, 0.0))
         );
+    }
+
+    #[test]
+    fn same_color_jump_advances_to_next_same_color_node() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster { players };
+        let board_layout = BoardLayout::default();
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 5,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        apply_jump_effect(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 5,
+            },
+            &board_layout,
+            &player_roster,
+            &mut query,
+            &mut notes,
+        );
+
+        let progress = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 1)
+            .map(|(_, _, piece_state, _)| piece_state.progress)
+            .unwrap_or_default();
+        assert_eq!(progress, 9);
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("next same-color tile")));
+    }
+
+    #[test]
+    fn same_color_jump_uses_shortcut_when_defined() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster { players };
+        let board_layout = BoardLayout::default();
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 1,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        apply_jump_effect(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 1,
+            },
+            &board_layout,
+            &player_roster,
+            &mut query,
+            &mut notes,
+        );
+
+        let progress = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 1)
+            .map(|(_, _, piece_state, _)| piece_state.progress)
+            .unwrap_or_default();
+        assert_eq!(progress, 13);
+        assert!(notes.iter().any(|note| note.contains("shortcut jump")));
     }
 
     #[test]
