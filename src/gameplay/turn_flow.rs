@@ -691,7 +691,9 @@ fn apply_jump_effect(
         return;
     }
 
-    let final_progress = current_progress.saturating_add(jump_delta).min(FINISH_DISTANCE);
+    let final_progress = current_progress
+        .saturating_add(jump_delta)
+        .min(FINISH_DISTANCE);
     update_piece_progress(
         action,
         final_progress,
@@ -703,13 +705,9 @@ fn apply_jump_effect(
         .jump_shortcut_target_for_route_index(tile_index)
         .is_some()
     {
-        notes.push(format!(
-            "took shortcut jump to tile {final_progress}"
-        ));
+        notes.push(format!("took shortcut jump to tile {final_progress}"));
     } else {
-        notes.push(format!(
-            "jumped to next same-color tile {final_progress}"
-        ));
+        notes.push(format!("jumped to next same-color tile {final_progress}"));
     }
 }
 
@@ -1522,9 +1520,11 @@ mod tests {
             .map(|(_, _, piece_state, _)| piece_state.progress)
             .unwrap_or_default();
         assert_eq!(progress, 9);
-        assert!(notes
-            .iter()
-            .any(|note| note.contains("next same-color tile")));
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("next same-color tile"))
+        );
     }
 
     #[test]
