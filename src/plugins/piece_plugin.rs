@@ -46,7 +46,7 @@ fn spawn_pieces(mut commands: Commands, player_roster: Res<PlayerRoster>) {
     for player in &player_roster.players {
         for &hangar_slot in &player.hangar_slots {
             commands.spawn((
-                Sprite::from_color(player.color, Vec2::splat(34.0)),
+                Sprite::from_color(player.color, Vec2::splat(28.0)),
                 Transform::from_xyz(hangar_slot.x, hangar_slot.y, BOARD_Z_LAYER + 1.0),
                 player.state.clone(),
                 PieceId(piece_id),

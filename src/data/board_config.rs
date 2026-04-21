@@ -71,7 +71,7 @@ pub fn default_board_tiles() -> Vec<TileConfig> {
             id: format!("tile_{index:02}"),
             kind: tile_kind_for_index(index),
             route_index: Some(index as u8),
-            world_pos: Vec2::new(x * 64.0, y * 64.0),
+            world_pos: Vec2::new(x * 40.0, y * 40.0),
             jump_shortcut_to: jump_shortcut_target_for_index(index),
         })
         .collect()
