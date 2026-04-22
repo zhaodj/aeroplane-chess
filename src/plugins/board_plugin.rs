@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::constants::BOARD_Z_LAYER;
 use crate::domain::tile::TileKind;
-use crate::gameplay::match_flow::BoardLayout;
+use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
 use crate::states::AppState;
 
 /// 棋盘渲染插件：按 SVG 的几何元素重建棋盘外观。
@@ -41,6 +41,7 @@ fn spawn_board(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
 ) {
     spawn_square_with_border(
         &mut commands,
@@ -83,33 +84,37 @@ fn spawn_board(
         );
     }
 
-    // 按 40 网格在轨道/冲线矩形内部补白圆点。
-    for rect in SVG_RECTS {
-        if rect.size.x > 80.1 || rect.size.y > 80.1 {
-            continue;
-        }
+    // 主环道圆点：严格按逻辑路径坐标绘制，保证棋子与圆心对齐。
+    for tile in &board_layout.tiles {
+        spawn_circle_with_border(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            tile.world_pos,
+            16.0,
+            Color::WHITE,
+            Color::srgb(0.48, 0.48, 0.48),
+            1.2,
+            BOARD_Z_LAYER + 0.05,
+            "TrackDot",
+        );
+    }
 
-        let dots_x = (rect.size.x / 40.0).round() as i32;
-        let dots_y = (rect.size.y / 40.0).round() as i32;
-        let start_x = rect.center.x - ((dots_x - 1) as f32 * 20.0);
-        let start_y = rect.center.y - ((dots_y - 1) as f32 * 20.0);
-
-        for x in 0..dots_x {
-            for y in 0..dots_y {
-                let dot_pos = Vec2::new(start_x + x as f32 * 40.0, start_y + y as f32 * 40.0);
-                spawn_circle_with_border(
-                    &mut commands,
-                    &mut meshes,
-                    &mut materials,
-                    dot_pos,
-                    16.0,
-                    Color::WHITE,
-                    Color::srgb(0.48, 0.48, 0.48),
-                    1.2,
-                    BOARD_Z_LAYER + 0.05,
-                    "TrackDot",
-                );
-            }
+    // 冲线支路圆点：同样按逻辑坐标绘制，避免出现“一格双圆圈”。
+    for player in &player_roster.players {
+        for &lane_pos in &player.home_lane_positions {
+            spawn_circle_with_border(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                lane_pos,
+                16.0,
+                Color::WHITE,
+                Color::srgb(0.48, 0.48, 0.48),
+                1.2,
+                BOARD_Z_LAYER + 0.05,
+                "HomeLaneDot",
+            );
         }
     }
 

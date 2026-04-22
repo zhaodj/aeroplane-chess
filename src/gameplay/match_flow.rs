@@ -279,7 +279,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, 260.0), pieces_per_player),
                     launch_tile_index: 40,
                     home_lane_positions: vec![
-                        Vec2::new(-280.0, 0.0),
+                        Vec2::new(-300.0, 0.0),
                         Vec2::new(-240.0, 0.0),
                         Vec2::new(-200.0, 0.0),
                         Vec2::new(-160.0, 0.0),
@@ -298,7 +298,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, 260.0), pieces_per_player),
                     launch_tile_index: 4,
                     home_lane_positions: vec![
-                        Vec2::new(0.0, 280.0),
+                        Vec2::new(0.0, 300.0),
                         Vec2::new(0.0, 240.0),
                         Vec2::new(0.0, 200.0),
                         Vec2::new(0.0, 160.0),
@@ -331,7 +331,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, 260.0), pieces_per_player),
                     launch_tile_index: 40,
                     home_lane_positions: vec![
-                        Vec2::new(-280.0, 0.0),
+                        Vec2::new(-300.0, 0.0),
                         Vec2::new(-240.0, 0.0),
                         Vec2::new(-200.0, 0.0),
                         Vec2::new(-160.0, 0.0),
@@ -350,7 +350,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, 260.0), pieces_per_player),
                     launch_tile_index: 4,
                     home_lane_positions: vec![
-                        Vec2::new(0.0, 280.0),
+                        Vec2::new(0.0, 300.0),
                         Vec2::new(0.0, 240.0),
                         Vec2::new(0.0, 200.0),
                         Vec2::new(0.0, 160.0),
@@ -369,7 +369,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, -260.0), pieces_per_player),
                     launch_tile_index: 28,
                     home_lane_positions: vec![
-                        Vec2::new(0.0, -280.0),
+                        Vec2::new(0.0, -300.0),
                         Vec2::new(0.0, -240.0),
                         Vec2::new(0.0, -200.0),
                         Vec2::new(0.0, -160.0),
@@ -388,7 +388,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, -260.0), pieces_per_player),
                     launch_tile_index: 16,
                     home_lane_positions: vec![
-                        Vec2::new(280.0, 0.0),
+                        Vec2::new(300.0, 0.0),
                         Vec2::new(240.0, 0.0),
                         Vec2::new(200.0, 0.0),
                         Vec2::new(160.0, 0.0),

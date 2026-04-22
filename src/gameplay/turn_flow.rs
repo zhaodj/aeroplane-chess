@@ -1379,11 +1379,11 @@ mod tests {
 
         assert_eq!(
             board_position_for_distance(player_one, 0, PieceStatus::Active),
-            Some(BoardPosition::Main(4))
+            Some(BoardPosition::Main(40))
         );
         assert_eq!(
             board_position_for_distance(player_two, 0, PieceStatus::Active),
-            Some(BoardPosition::Main(16))
+            Some(BoardPosition::Main(4))
         );
         assert_eq!(
             board_position_for_distance(player_one, MAIN_ROUTE_STEPS, PieceStatus::Active),
@@ -1451,7 +1451,7 @@ mod tests {
 
         assert_eq!(
             world_position_for_piece(1, 0, PieceStatus::Active, &board_layout, &player_roster),
-            board_layout.world_pos_for_route_index(4)
+            board_layout.world_pos_for_route_index(40)
         );
         assert_eq!(
             world_position_for_piece(
@@ -1461,7 +1461,7 @@ mod tests {
                 &board_layout,
                 &player_roster
             ),
-            Some(Vec2::new(-128.0, 320.0))
+            Some(Vec2::new(-300.0, 0.0))
         );
         assert_eq!(
             world_position_for_piece(
@@ -1471,7 +1471,7 @@ mod tests {
                 &board_layout,
                 &player_roster
             ),
-            Some(Vec2::new(-64.0, 0.0))
+            Some(Vec2::new(-36.0, 0.0))
         );
     }
 
@@ -1542,7 +1542,7 @@ mod tests {
                 owner_player_id: 1,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 1,
+                progress: 13,
                 shield: 0,
                 stack_shield: 0,
             },
@@ -1558,7 +1558,7 @@ mod tests {
         apply_jump_effect(
             &PlannedAction::Move {
                 piece_id: 1,
-                target_progress: 1,
+                target_progress: 13,
             },
             &board_layout,
             &player_roster,
@@ -1571,7 +1571,7 @@ mod tests {
             .find(|(piece_id, _, _, _)| piece_id.0 == 1)
             .map(|(_, _, piece_state, _)| piece_state.progress)
             .unwrap_or_default();
-        assert_eq!(progress, 13);
+        assert_eq!(progress, 25);
         assert!(notes.iter().any(|note| note.contains("shortcut jump")));
     }
 
