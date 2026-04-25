@@ -36,6 +36,60 @@ struct SvgTriangle {
     fill: &'static str,
 }
 
+#[derive(Clone, Copy)]
+/// 棋盘四色槽位：SVG 里的四个固定色只用于定位到 P1~P4。
+struct BoardPalette {
+    player_colors: [Color; 4],
+}
+
+impl BoardPalette {
+    fn from_player_roster(player_roster: &PlayerRoster) -> Self {
+        let mut player_colors = [
+            Color::srgb(0.0, 0.50, 1.0),
+            Color::srgb(1.0, 0.0, 0.0),
+            Color::srgb(0.0, 0.50, 0.0),
+            Color::srgb(0.95, 0.85, 0.29),
+        ];
+
+        for player in &player_roster.players {
+            let index = player.state.player_id.saturating_sub(1) as usize;
+            if let Some(slot) = player_colors.get_mut(index) {
+                *slot = player.color;
+            }
+        }
+
+        Self { player_colors }
+    }
+
+    fn player_color(&self, player_id: u8) -> Color {
+        self.player_colors
+            .get(player_id.saturating_sub(1) as usize)
+            .copied()
+            .unwrap_or(Color::srgb(0.90, 0.90, 0.90))
+    }
+
+    fn color_for_svg_fill(&self, fill: &str) -> Color {
+        match fill {
+            "#0080FF" => self.player_color(1),
+            "#FF0000" => self.player_color(2),
+            "#008000" => self.player_color(3),
+            "#F3D849" => self.player_color(4),
+            "#F5F5F5" | "white" => Color::srgb(0.96, 0.96, 0.96),
+            "black" => Color::BLACK,
+            _ => Color::srgb(0.90, 0.90, 0.90),
+        }
+    }
+
+    fn color_for_route_index(&self, route_index: u8) -> Color {
+        match route_index % 4 {
+            0 => self.player_color(3),
+            1 => self.player_color(1),
+            2 => self.player_color(2),
+            _ => self.player_color(4),
+        }
+    }
+}
+
 fn spawn_board(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -43,6 +97,8 @@ fn spawn_board(
     board_layout: Res<BoardLayout>,
     player_roster: Res<PlayerRoster>,
 ) {
+    let board_palette = BoardPalette::from_player_roster(&player_roster);
+
     spawn_square_with_border(
         &mut commands,
         Vec2::ZERO,
@@ -60,7 +116,7 @@ fn spawn_board(
             &mut commands,
             rect.center,
             rect.size,
-            svg_color(rect.fill),
+            board_palette.color_for_svg_fill(rect.fill),
             Color::BLACK,
             1.8,
             BOARD_Z_LAYER - 1.0,
@@ -76,7 +132,7 @@ fn spawn_board(
             tri.a,
             tri.b,
             tri.c,
-            svg_color(tri.fill),
+            board_palette.color_for_svg_fill(tri.fill),
             Color::BLACK,
             1.8,
             BOARD_Z_LAYER - 0.9,
@@ -185,6 +241,7 @@ fn spawn_board(
                 tile.world_pos,
                 tile.kind,
                 route_index,
+                &board_palette,
             );
         }
     }
@@ -204,6 +261,7 @@ fn spawn_tile_marker(
     pos: Vec2,
     kind: TileKind,
     route_index: u8,
+    board_palette: &BoardPalette,
 ) {
     let marker_z = BOARD_Z_LAYER + 0.50;
     match kind {
@@ -249,13 +307,15 @@ fn spawn_tile_marker(
             ));
         }
         TileKind::Jump => {
+            let marker_color = board_palette.color_for_route_index(route_index);
+            let marker_border = marker_color.mix(&Color::BLACK, 0.55);
             let direction = jump_arrow_direction(route_index);
             let tail = pos - direction * 5.0;
             let head = pos + direction * 8.5;
             let angle = direction.y.atan2(direction.x);
 
             commands.spawn((
-                Sprite::from_color(Color::srgb(0.16, 0.55, 0.95), Vec2::new(10.0, 3.6)),
+                Sprite::from_color(marker_color, Vec2::new(10.0, 3.6)),
                 Transform {
                     translation: Vec3::new(tail.x, tail.y, marker_z),
                     rotation: Quat::from_rotation_z(angle),
@@ -273,8 +333,8 @@ fn spawn_tile_marker(
                 head,
                 head - direction * 7.5 + perp * 4.0,
                 head - direction * 7.5 - perp * 4.0,
-                Color::srgb(0.16, 0.55, 0.95),
-                Color::srgb(0.06, 0.20, 0.35),
+                marker_color,
+                marker_border,
                 1.0,
                 marker_z + 0.01,
                 format!("JumpHead_{route_index}"),
@@ -409,19 +469,6 @@ fn spawn_plus_icon(
         Name::new(format!("{name}_v")),
         BoardSceneEntity,
     ));
-}
-
-/// 将 SVG 色值映射为 Bevy 颜色。
-fn svg_color(fill: &str) -> Color {
-    match fill {
-        "#0080FF" => Color::srgb(0.0, 0.50, 1.0),
-        "#FF0000" => Color::srgb(1.0, 0.0, 0.0),
-        "#008000" => Color::srgb(0.0, 0.50, 0.0),
-        "#F3D849" => Color::srgb(0.95, 0.85, 0.29),
-        "#F5F5F5" | "white" => Color::srgb(0.96, 0.96, 0.96),
-        "black" => Color::BLACK,
-        _ => Color::srgb(0.90, 0.90, 0.90),
-    }
 }
 
 /// 跳跃格箭头朝向（按四象限顺时针）。
