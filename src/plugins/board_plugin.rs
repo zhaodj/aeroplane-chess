@@ -36,10 +36,11 @@ struct SvgTriangle {
     fill: &'static str,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 /// 棋盘四色槽位：SVG 里的四个固定色只用于定位到 P1~P4。
 struct BoardPalette {
     player_colors: [Color; 4],
+    active_player_colors: Vec<Color>,
 }
 
 impl BoardPalette {
@@ -51,19 +52,29 @@ impl BoardPalette {
             Color::srgb(0.95, 0.85, 0.29),
         ];
 
+        let mut active_player_colors = Vec::with_capacity(player_roster.players.len());
         for player in &player_roster.players {
+            active_player_colors.push(player.color);
             let index = player.state.player_id.saturating_sub(1) as usize;
             if let Some(slot) = player_colors.get_mut(index) {
                 *slot = player.color;
             }
         }
 
-        Self { player_colors }
+        Self {
+            player_colors,
+            active_player_colors,
+        }
     }
 
     fn player_color(&self, player_id: u8) -> Color {
-        self.player_colors
-            .get(player_id.saturating_sub(1) as usize)
+        let player_index = player_id.saturating_sub(1) as usize;
+        if player_index < self.active_player_colors.len() {
+            return self.player_colors[player_index];
+        }
+
+        self.active_player_colors
+            .get(player_index % self.active_player_colors.len().max(1))
             .copied()
             .unwrap_or(Color::srgb(0.90, 0.90, 0.90))
     }
@@ -81,12 +92,58 @@ impl BoardPalette {
     }
 
     fn color_for_route_index(&self, route_index: u8) -> Color {
-        match route_index % 4 {
-            0 => self.player_color(3),
-            1 => self.player_color(1),
-            2 => self.player_color(2),
-            _ => self.player_color(4),
+        self.active_player_colors
+            .get(route_index as usize % self.active_player_colors.len().max(1))
+            .copied()
+            .unwrap_or(Color::srgb(0.90, 0.90, 0.90))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::player::{PlayerControl, PlayerState};
+    use crate::gameplay::match_flow::PlayerProfile;
+
+    fn player(player_id: u8, color: Color) -> PlayerProfile {
+        PlayerProfile {
+            state: PlayerState {
+                player_id,
+                team_id: player_id,
+                control: PlayerControl::Human,
+            },
+            color,
+            hangar_slots: Vec::new(),
+            launch_tile_index: 0,
+            home_lane_positions: Vec::new(),
+            goal_position: Vec2::ZERO,
         }
+    }
+
+    #[test]
+    fn route_colors_cycle_by_active_player_order() {
+        let red = Color::srgb(1.0, 0.0, 0.0);
+        let blue = Color::srgb(0.0, 0.0, 1.0);
+        let palette = BoardPalette::from_player_roster(&PlayerRoster {
+            players: vec![player(1, red), player(2, blue)],
+        });
+
+        assert_eq!(palette.color_for_route_index(0), red);
+        assert_eq!(palette.color_for_route_index(1), blue);
+        assert_eq!(palette.color_for_route_index(2), red);
+        assert_eq!(palette.color_for_route_index(3), blue);
+    }
+
+    #[test]
+    fn inactive_svg_slots_reuse_active_player_cycle() {
+        let red = Color::srgb(1.0, 0.0, 0.0);
+        let blue = Color::srgb(0.0, 0.0, 1.0);
+        let palette = BoardPalette::from_player_roster(&PlayerRoster {
+            players: vec![player(1, red), player(2, blue)],
+        });
+
+        assert_eq!(palette.color_for_svg_fill("#008000"), red);
+        assert_eq!(palette.color_for_svg_fill("#F3D849"), blue);
     }
 }
 
@@ -474,10 +531,10 @@ fn spawn_plus_icon(
 /// 跳跃格箭头朝向（按四象限顺时针）。
 fn jump_arrow_direction(route_index: u8) -> Vec2 {
     match route_index {
-        5 => Vec2::new(1.0, 0.0),
-        18 => Vec2::new(0.0, -1.0),
-        28 => Vec2::new(-1.0, 0.0),
-        39 => Vec2::new(0.0, 1.0),
+        4 => Vec2::new(1.0, 0.0),
+        17 => Vec2::new(0.0, -1.0),
+        30 => Vec2::new(-1.0, 0.0),
+        43 => Vec2::new(0.0, 1.0),
         _ => Vec2::new(1.0, 0.0),
     }
 }
