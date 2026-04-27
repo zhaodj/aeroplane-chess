@@ -157,6 +157,20 @@ mod tests {
         assert_eq!(palette.color_for_svg_fill("#008000"), red);
         assert_eq!(palette.color_for_svg_fill("#F3D849"), blue);
     }
+
+    #[test]
+    fn launch_triangles_use_corner_consistent_right_angles() {
+        for triangle in LAUNCH_TRIANGLES {
+            assert!(
+                (triangle.a.x - triangle.b.x).abs() < 0.001
+                    || (triangle.a.y - triangle.b.y).abs() < 0.001
+            );
+            assert!(
+                (triangle.a.x - triangle.c.x).abs() < 0.001
+                    || (triangle.a.y - triangle.c.y).abs() < 0.001
+            );
+        }
+    }
 }
 
 fn spawn_board(
@@ -664,7 +678,7 @@ const LAUNCH_TRIANGLES: &[LaunchTriangle] = &[
         player_id: 4,
         center: Vec2::new(315.896, -155.896),
         a: Vec2::new(340.104, -180.104),
-        b: Vec2::new(260.104, -100.104),
+        b: Vec2::new(260.104, -180.104),
         c: Vec2::new(340.104, -100.104),
         arrow_direction: Vec2::new(-1.0, 0.0),
     },
