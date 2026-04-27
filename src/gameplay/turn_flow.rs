@@ -1350,7 +1350,12 @@ mod tests {
             mode,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
-            human_color: PlayerColorChoice::Crimson,
+            player_colors: [
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
             pieces_per_player: 2,
             player_controls: [
                 PlayerControl::Human,
@@ -1681,7 +1686,12 @@ mod tests {
             mode: GameMode::TwoVsTwo,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
-            human_color: PlayerColorChoice::Crimson,
+            player_colors: [
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
             pieces_per_player: 2,
             player_controls: [
                 PlayerControl::Human,
@@ -1812,7 +1822,12 @@ mod tests {
             mode: GameMode::TwoVsTwo,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
-            human_color: PlayerColorChoice::Crimson,
+            player_colors: [
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
             pieces_per_player: 2,
             player_controls: [
                 PlayerControl::Human,
@@ -1913,7 +1928,12 @@ mod tests {
             mode: GameMode::TwoVsTwo,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
-            human_color: PlayerColorChoice::Crimson,
+            player_colors: [
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
             pieces_per_player: 2,
             player_controls: [
                 PlayerControl::Human,
