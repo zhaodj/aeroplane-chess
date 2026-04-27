@@ -465,36 +465,34 @@ mod tests {
     use bevy::ecs::system::SystemState;
 
     fn sample_roster() -> PlayerRoster {
-        PlayerRoster {
-            players: vec![
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 1,
-                        team_id: 1,
-                        control: PlayerControl::Human,
-                    },
-                    color: Color::WHITE,
-                    hangar_slots: vec![],
-                    launch_position: Vec2::ZERO,
-                    launch_tile_index: 0,
-                    home_lane_positions: vec![],
-                    goal_position: Vec2::ZERO,
+        PlayerRoster::from_players(vec![
+            PlayerProfile {
+                state: PlayerState {
+                    player_id: 1,
+                    team_id: 1,
+                    control: PlayerControl::Human,
                 },
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 2,
-                        team_id: 2,
-                        control: PlayerControl::Ai,
-                    },
-                    color: Color::BLACK,
-                    hangar_slots: vec![],
-                    launch_position: Vec2::ZERO,
-                    launch_tile_index: 0,
-                    home_lane_positions: vec![],
-                    goal_position: Vec2::ZERO,
+                color: Color::WHITE,
+                hangar_slots: vec![],
+                launch_position: Vec2::ZERO,
+                launch_tile_index: 0,
+                home_lane_positions: vec![],
+                goal_position: Vec2::ZERO,
+            },
+            PlayerProfile {
+                state: PlayerState {
+                    player_id: 2,
+                    team_id: 2,
+                    control: PlayerControl::Ai,
                 },
-            ],
-        }
+                color: Color::BLACK,
+                hangar_slots: vec![],
+                launch_position: Vec2::ZERO,
+                launch_tile_index: 0,
+                home_lane_positions: vec![],
+                goal_position: Vec2::ZERO,
+            },
+        ])
     }
 
     #[test]

@@ -825,7 +825,7 @@ mod tests {
             ],
         };
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
         if let Some(state) = skill_roster
@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn maybe_arm_dash_for_ai_after_roll_arms_dash_when_move_exists() {
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
         if let Some(state) = skill_roster

@@ -51,41 +51,19 @@ struct LaunchTriangle {
 /// 棋盘四色槽位：SVG 里的四个固定色只用于定位到 P1~P4。
 struct BoardPalette {
     player_colors: [Color; 4],
-    active_player_colors: Vec<Color>,
 }
 
 impl BoardPalette {
     fn from_player_roster(player_roster: &PlayerRoster) -> Self {
-        let mut player_colors = [
-            Color::srgb(0.0, 0.50, 1.0),
-            Color::srgb(1.0, 0.0, 0.0),
-            Color::srgb(0.0, 0.50, 0.0),
-            Color::srgb(0.95, 0.85, 0.29),
-        ];
-
-        let mut active_player_colors = Vec::with_capacity(player_roster.players.len());
-        for player in &player_roster.players {
-            active_player_colors.push(player.color);
-            let index = player.state.player_id.saturating_sub(1) as usize;
-            if let Some(slot) = player_colors.get_mut(index) {
-                *slot = player.color;
-            }
-        }
-
         Self {
-            player_colors,
-            active_player_colors,
+            player_colors: player_roster.player_colors,
         }
     }
 
     fn player_color(&self, player_id: u8) -> Color {
         let player_index = player_id.saturating_sub(1) as usize;
-        if player_index < self.active_player_colors.len() {
-            return self.player_colors[player_index];
-        }
-
-        self.active_player_colors
-            .get(player_index % self.active_player_colors.len().max(1))
+        self.player_colors
+            .get(player_index)
             .copied()
             .unwrap_or(Color::srgb(0.90, 0.90, 0.90))
     }
@@ -103,10 +81,7 @@ impl BoardPalette {
     }
 
     fn color_for_route_index(&self, route_index: u8) -> Color {
-        self.active_player_colors
-            .get(route_index as usize % self.active_player_colors.len().max(1))
-            .copied()
-            .unwrap_or(Color::srgb(0.90, 0.90, 0.90))
+        self.player_colors[route_index as usize % self.player_colors.len()]
     }
 }
 
@@ -133,29 +108,35 @@ mod tests {
     }
 
     #[test]
-    fn route_colors_cycle_by_active_player_order() {
+    fn route_colors_keep_full_four_color_palette_in_one_vs_one() {
         let red = Color::srgb(1.0, 0.0, 0.0);
-        let blue = Color::srgb(0.0, 0.0, 1.0);
+        let blue = Color::srgb(0.0, 128.0 / 255.0, 1.0);
+        let green = Color::srgb(0.0, 128.0 / 255.0, 0.0);
+        let yellow = Color::srgb(243.0 / 255.0, 216.0 / 255.0, 73.0 / 255.0);
         let palette = BoardPalette::from_player_roster(&PlayerRoster {
             players: vec![player(1, red), player(2, blue)],
+            player_colors: [red, blue, green, yellow],
         });
 
         assert_eq!(palette.color_for_route_index(0), red);
         assert_eq!(palette.color_for_route_index(1), blue);
-        assert_eq!(palette.color_for_route_index(2), red);
-        assert_eq!(palette.color_for_route_index(3), blue);
+        assert_eq!(palette.color_for_route_index(2), green);
+        assert_eq!(palette.color_for_route_index(3), yellow);
     }
 
     #[test]
-    fn inactive_svg_slots_reuse_active_player_cycle() {
+    fn inactive_svg_slots_keep_configured_palette_colors() {
         let red = Color::srgb(1.0, 0.0, 0.0);
-        let blue = Color::srgb(0.0, 0.0, 1.0);
+        let blue = Color::srgb(0.0, 128.0 / 255.0, 1.0);
+        let green = Color::srgb(0.0, 128.0 / 255.0, 0.0);
+        let yellow = Color::srgb(243.0 / 255.0, 216.0 / 255.0, 73.0 / 255.0);
         let palette = BoardPalette::from_player_roster(&PlayerRoster {
             players: vec![player(1, red), player(2, blue)],
+            player_colors: [red, blue, green, yellow],
         });
 
-        assert_eq!(palette.color_for_svg_fill("#008000"), red);
-        assert_eq!(palette.color_for_svg_fill("#F3D849"), blue);
+        assert_eq!(palette.color_for_svg_fill("#008000"), green);
+        assert_eq!(palette.color_for_svg_fill("#F3D849"), yellow);
     }
 
     #[test]

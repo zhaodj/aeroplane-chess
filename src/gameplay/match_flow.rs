@@ -245,6 +245,17 @@ impl BoardLayout {
 /// 玩家列表资源。
 pub struct PlayerRoster {
     pub players: Vec<PlayerProfile>,
+    pub player_colors: [Color; 4],
+}
+
+impl PlayerRoster {
+    /// 构建测试或临时玩家列表：保留默认四色棋盘调色板。
+    pub fn from_players(players: Vec<PlayerProfile>) -> Self {
+        Self {
+            players,
+            player_colors: PlayerColorChoice::ALL.map(PlayerColorChoice::to_color),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -276,9 +287,15 @@ pub struct MatchResult {
 /// 构建开局所需资源：棋盘、玩家列表、队伍列表。
 pub fn build_match_resources(setup: &MatchSetup) -> (BoardLayout, PlayerRoster, TeamRoster) {
     let (players, teams) = build_match_rosters(setup);
+    let player_colors = setup
+        .normalized_player_colors()
+        .map(PlayerColorChoice::to_color);
     (
         BoardLayout::default(),
-        PlayerRoster { players },
+        PlayerRoster {
+            players,
+            player_colors,
+        },
         TeamRoster { teams },
     )
 }
@@ -519,6 +536,29 @@ mod tests {
         assert_eq!(teams.len(), 2);
         assert_eq!(players[0].hangar_slots.len(), 2);
         assert_eq!(players[1].hangar_slots.len(), 2);
+    }
+
+    #[test]
+    fn one_vs_one_resources_keep_full_board_palette() {
+        let (_, player_roster, _) = build_match_resources(&setup(GameMode::OneVsOne));
+
+        assert_eq!(player_roster.players.len(), 2);
+        assert_eq!(
+            player_roster.player_colors[0],
+            PlayerColorChoice::Red.to_color()
+        );
+        assert_eq!(
+            player_roster.player_colors[1],
+            PlayerColorChoice::Blue.to_color()
+        );
+        assert_eq!(
+            player_roster.player_colors[2],
+            PlayerColorChoice::Green.to_color()
+        );
+        assert_eq!(
+            player_roster.player_colors[3],
+            PlayerColorChoice::Yellow.to_color()
+        );
     }
 
     #[test]

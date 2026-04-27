@@ -1481,7 +1481,7 @@ mod tests {
     fn world_position_for_piece_uses_home_lane_and_goal_positions() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let board_layout = BoardLayout {
             tiles: crate::data::board_config::default_board_tiles(),
         };
@@ -1520,7 +1520,7 @@ mod tests {
     fn launch_action_places_piece_on_launch_point_not_main_route() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let board_layout = BoardLayout::default();
 
         let mut world = World::new();
@@ -1566,7 +1566,7 @@ mod tests {
     fn same_color_jump_advances_to_next_same_color_node() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let board_layout = BoardLayout::default();
 
         let mut world = World::new();
@@ -1618,7 +1618,7 @@ mod tests {
     fn same_color_jump_uses_shortcut_when_defined() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let board_layout = BoardLayout::default();
 
         let mut world = World::new();
@@ -1666,7 +1666,7 @@ mod tests {
     fn collect_actions_returns_launch_and_move_options_for_human_player() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
 
         let mut world = World::new();
         world.spawn((
@@ -1719,36 +1719,34 @@ mod tests {
 
     #[test]
     fn current_player_control_reads_player_roster() {
-        let player_roster = PlayerRoster {
-            players: vec![
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 1,
-                        team_id: 1,
-                        control: PlayerControl::Human,
-                    },
-                    color: Color::srgb(1.0, 0.0, 0.0),
-                    hangar_slots: vec![],
-                    launch_position: Vec2::ZERO,
-                    launch_tile_index: 0,
-                    home_lane_positions: vec![],
-                    goal_position: Vec2::ZERO,
+        let player_roster = PlayerRoster::from_players(vec![
+            PlayerProfile {
+                state: PlayerState {
+                    player_id: 1,
+                    team_id: 1,
+                    control: PlayerControl::Human,
                 },
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 2,
-                        team_id: 2,
-                        control: PlayerControl::Ai,
-                    },
-                    color: Color::srgb(0.0, 0.0, 1.0),
-                    hangar_slots: vec![],
-                    launch_position: Vec2::ZERO,
-                    launch_tile_index: 0,
-                    home_lane_positions: vec![],
-                    goal_position: Vec2::ZERO,
+                color: Color::srgb(1.0, 0.0, 0.0),
+                hangar_slots: vec![],
+                launch_position: Vec2::ZERO,
+                launch_tile_index: 0,
+                home_lane_positions: vec![],
+                goal_position: Vec2::ZERO,
+            },
+            PlayerProfile {
+                state: PlayerState {
+                    player_id: 2,
+                    team_id: 2,
+                    control: PlayerControl::Ai,
                 },
-            ],
-        };
+                color: Color::srgb(0.0, 0.0, 1.0),
+                hangar_slots: vec![],
+                launch_position: Vec2::ZERO,
+                launch_tile_index: 0,
+                home_lane_positions: vec![],
+                goal_position: Vec2::ZERO,
+            },
+        ]);
 
         assert_eq!(
             current_player_control(1, &player_roster),
@@ -1765,7 +1763,7 @@ mod tests {
     fn apply_team_stack_grants_shared_shield_in_two_vs_two() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
             ai_difficulty: AiDifficulty::Normal,
@@ -1846,7 +1844,7 @@ mod tests {
     fn clear_stack_from_origin_removes_shared_shield_from_remaining_stack() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
 
         let mut world = World::new();
         world.spawn((
@@ -1901,7 +1899,7 @@ mod tests {
     fn resolve_collision_consumes_shared_stack_shield_before_returning_to_hangar() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
             ai_difficulty: AiDifficulty::Normal,
@@ -2007,7 +2005,7 @@ mod tests {
     fn resolve_collision_with_shield_bounces_attacker_to_origin() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let match_config = MatchConfig {
             mode: GameMode::TwoVsTwo,
             ai_difficulty: AiDifficulty::Normal,
@@ -2100,7 +2098,7 @@ mod tests {
     fn gain_skill_charge_event_adds_exactly_one_charge() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();
 
@@ -2170,7 +2168,7 @@ mod tests {
     fn disable_next_skill_event_blocks_next_turn_only() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();
 
@@ -2221,7 +2219,7 @@ mod tests {
     fn remove_enemy_shield_event_hits_the_only_valid_enemy_target() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         let board_layout = BoardLayout::default();
 
