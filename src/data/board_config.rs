@@ -18,7 +18,6 @@ pub fn default_board_tiles() -> Vec<TileConfig> {
         (40.317, 300.104),
         (80.317, 300.104),
         (124.317, 284.104),
-        (155.896, 316.104),
         (140.317, 240.104),
         (140.317, 200.104),
         (124.317, 156.104),
@@ -31,7 +30,6 @@ pub fn default_board_tiles() -> Vec<TileConfig> {
         (300.104, -40.104),
         (300.104, -80.104),
         (284.104, -124.104),
-        (315.896, -155.896),
         (240.104, -140.104),
         (200.104, -140.104),
         (156.104, -124.104),
@@ -44,7 +42,6 @@ pub fn default_board_tiles() -> Vec<TileConfig> {
         (-40.104, -300.104),
         (-80.104, -300.104),
         (-124.104, -284.104),
-        (-156.104, -315.896),
         (-140.104, -240.104),
         (-140.104, -200.104),
         (-124.104, -156.104),
@@ -57,7 +54,6 @@ pub fn default_board_tiles() -> Vec<TileConfig> {
         (-300.104, 40.104),
         (-300.104, 80.104),
         (-284.104, 124.104),
-        (-316.104, 156.104),
         (-240.104, 140.104),
         (-200.104, 140.104),
         (-156.104, 124.104),
@@ -83,20 +79,20 @@ pub fn default_board_tiles() -> Vec<TileConfig> {
 
 fn tile_kind_for_index(index: usize) -> TileKind {
     match index {
-        4 | 17 | 30 | 43 => TileKind::Jump,
-        7 | 20 | 33 | 46 => TileKind::Attack,
-        10 | 23 | 36 | 49 => TileKind::Defense,
-        0 | 13 | 26 | 39 => TileKind::Event,
+        5 | 18 | 28 | 39 => TileKind::Jump,
+        2 | 14 | 26 | 38 => TileKind::Attack,
+        8 | 20 | 32 | 44 => TileKind::Defense,
+        0 | 12 | 24 | 36 => TileKind::Event,
         _ => TileKind::Normal,
     }
 }
 
 fn jump_shortcut_target_for_index(index: usize) -> Option<u8> {
     match index {
-        4 => Some(17),
-        17 => Some(30),
-        30 => Some(43),
-        43 => Some(4),
+        5 => Some(17),
+        18 => Some(30),
+        28 => Some(40),
+        39 => Some(3),
         _ => None,
     }
 }
@@ -106,9 +102,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_board_route_has_52_nodes() {
+    fn default_board_route_has_48_nodes() {
         let tiles = default_board_tiles();
-        assert_eq!(tiles.len(), 52);
+        assert_eq!(tiles.len(), 48);
     }
 
     #[test]
@@ -119,6 +115,6 @@ mod tests {
             .filter_map(|tile| tile.route_index.zip(tile.jump_shortcut_to))
             .collect::<Vec<_>>();
 
-        assert_eq!(shortcuts, vec![(4, 17), (17, 30), (30, 43), (43, 4)]);
+        assert_eq!(shortcuts, vec![(5, 17), (18, 30), (28, 40), (39, 3)]);
     }
 }

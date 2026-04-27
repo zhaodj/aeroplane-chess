@@ -18,7 +18,7 @@ use crate::gameplay::skill_flow::{
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::GamePhase;
 
-pub const MAIN_ROUTE_STEPS: u8 = 52;
+pub const MAIN_ROUTE_STEPS: u8 = 48;
 pub const HOME_LANE_STEPS: u8 = 6;
 pub const FINISH_DISTANCE: u8 = MAIN_ROUTE_STEPS + HOME_LANE_STEPS;
 pub const MAX_CHAIN_EXTRA_ROLLS: u8 = 3;
@@ -90,6 +90,7 @@ impl PlannedAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// 棋盘逻辑位置：主环道、冲线道或终点。
 pub enum BoardPosition {
+    Launch,
     Main(u8),
     Home(u8),
     Goal,
@@ -192,18 +193,6 @@ pub fn choose_action(
                 continue;
             }
 
-            if is_enemy_on_progress(
-                &snapshots,
-                current_player,
-                player_profile.state.team_id,
-                board_position_for_distance(player_profile, 0, PieceStatus::Active),
-            ) {
-                return Some(PlannedAction::Launch {
-                    piece_id: piece.piece_id,
-                    target_progress: 0,
-                });
-            }
-
             if can_launch(
                 &PieceState {
                     owner_player_id: piece.owner_player_id,
@@ -227,13 +216,15 @@ pub fn choose_action(
         .iter()
         .filter(|piece| piece.owner_player_id == current_player)
     {
-        if piece.status != PieceStatus::Active {
+        if !matches!(piece.status, PieceStatus::AtLaunch | PieceStatus::Active) {
             continue;
         }
 
-        let Some(target_progress) =
-            compute_target_distance(piece.distance, roll.0.saturating_add(move_bonus))
-        else {
+        let Some(target_progress) = compute_move_target_distance(
+            piece.status,
+            piece.distance,
+            roll.0.saturating_add(move_bonus),
+        ) else {
             continue;
         };
 
@@ -268,10 +259,12 @@ pub fn choose_action(
         .iter()
         .filter(|piece| piece.owner_player_id == current_player)
     {
-        if piece.status == PieceStatus::Active {
-            let Some(target_progress) =
-                compute_target_distance(piece.distance, roll.0.saturating_add(move_bonus))
-            else {
+        if matches!(piece.status, PieceStatus::AtLaunch | PieceStatus::Active) {
+            let Some(target_progress) = compute_move_target_distance(
+                piece.status,
+                piece.distance,
+                roll.0.saturating_add(move_bonus),
+            ) else {
                 continue;
             };
 
@@ -334,13 +327,15 @@ pub fn collect_actions(
         .iter()
         .filter(|piece| piece.owner_player_id == current_player)
     {
-        if piece.status != PieceStatus::Active {
+        if !matches!(piece.status, PieceStatus::AtLaunch | PieceStatus::Active) {
             continue;
         }
 
-        if let Some(target_progress) =
-            compute_target_distance(piece.distance, roll.0.saturating_add(move_bonus))
-        {
+        if let Some(target_progress) = compute_move_target_distance(
+            piece.status,
+            piece.distance,
+            roll.0.saturating_add(move_bonus),
+        ) {
             actions.push(PlannedAction::Move {
                 piece_id: piece.piece_id,
                 target_progress,
@@ -368,27 +363,33 @@ pub fn execute_action(
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
     // 先清理出发格叠加态，避免“离开后仍共享护盾”的残留状态。
-    clear_stack_from_origin(&action, player_roster, piece_query);
+    if action.is_move() {
+        clear_stack_from_origin(&action, player_roster, piece_query);
+    }
     let action_origin = apply_action(&action, board_layout, player_roster, piece_query);
     let mut notes = Vec::new();
-    apply_jump_effect(
-        &action,
-        board_layout,
-        player_roster,
-        piece_query,
-        &mut notes,
-    );
-    let attacker_landed = resolve_collision(
-        &action,
-        action_origin,
-        board_layout,
-        player_roster,
-        match_config,
-        piece_query,
-        &mut notes,
-    );
+    let attacker_landed = if action.is_move() {
+        apply_jump_effect(
+            &action,
+            board_layout,
+            player_roster,
+            piece_query,
+            &mut notes,
+        );
+        resolve_collision(
+            &action,
+            action_origin,
+            board_layout,
+            player_roster,
+            match_config,
+            piece_query,
+            &mut notes,
+        )
+    } else {
+        true
+    };
     // 只有攻击方最终留在落点，才继续结算格子效果与队友叠加。
-    if attacker_landed {
+    if attacker_landed && action.is_move() {
         apply_post_collision_tile_effects(
             &action,
             board_layout,
@@ -505,6 +506,19 @@ pub fn compute_target_distance(current_distance: u8, roll_value: u8) -> Option<u
         .filter(|next_distance| *next_distance <= FINISH_DISTANCE)
 }
 
+/// 计算棋子移动后的目标进度；起飞点视为主环道前一格。
+pub fn compute_move_target_distance(
+    status: PieceStatus,
+    current_distance: u8,
+    roll_value: u8,
+) -> Option<u8> {
+    match status {
+        PieceStatus::AtLaunch => roll_value.checked_sub(1),
+        PieceStatus::Active => compute_target_distance(current_distance, roll_value),
+        _ => None,
+    }
+}
+
 /// 将“逻辑进度”映射成棋盘位置（主环道/冲线道/终点）。
 pub fn board_position_for_distance(
     player_profile: &PlayerProfile,
@@ -513,6 +527,7 @@ pub fn board_position_for_distance(
 ) -> Option<BoardPosition> {
     match status {
         PieceStatus::InHangar => None,
+        PieceStatus::AtLaunch => Some(BoardPosition::Launch),
         PieceStatus::Finished => Some(BoardPosition::Goal),
         PieceStatus::Active if distance < MAIN_ROUTE_STEPS => Some(BoardPosition::Main(
             (player_profile.launch_tile_index + distance) % MAIN_ROUTE_STEPS,
@@ -539,6 +554,7 @@ pub fn world_position_for_piece(
         .find(|player| player.state.player_id == owner_player_id)?;
 
     match board_position_for_distance(player_profile, distance, status)? {
+        BoardPosition::Launch => Some(player_profile.launch_position),
         BoardPosition::Main(tile_index) => board_layout.world_pos_for_route_index(tile_index),
         BoardPosition::Home(home_index) => player_profile
             .home_lane_positions
@@ -604,7 +620,7 @@ fn apply_action(
             PlannedAction::Launch {
                 piece_id,
                 target_progress,
-            } => (piece_id, target_progress, PieceStatus::Active),
+            } => (piece_id, target_progress, PieceStatus::AtLaunch),
             PlannedAction::Move {
                 piece_id,
                 target_progress,
@@ -1376,6 +1392,18 @@ mod tests {
     }
 
     #[test]
+    fn launch_point_moves_to_first_main_tile_on_one() {
+        assert_eq!(
+            compute_move_target_distance(PieceStatus::AtLaunch, 0, 1),
+            Some(0)
+        );
+        assert_eq!(
+            compute_move_target_distance(PieceStatus::AtLaunch, 0, 6),
+            Some(5)
+        );
+    }
+
+    #[test]
     fn board_position_uses_player_launch_offset_on_main_route() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
@@ -1383,12 +1411,16 @@ mod tests {
         let player_two = &players[1];
 
         assert_eq!(
+            board_position_for_distance(player_one, 0, PieceStatus::AtLaunch),
+            Some(BoardPosition::Launch)
+        );
+        assert_eq!(
             board_position_for_distance(player_one, 0, PieceStatus::Active),
-            Some(BoardPosition::Main(39))
+            Some(BoardPosition::Main(40))
         );
         assert_eq!(
             board_position_for_distance(player_two, 0, PieceStatus::Active),
-            Some(BoardPosition::Main(0))
+            Some(BoardPosition::Main(4))
         );
         assert_eq!(
             board_position_for_distance(player_one, MAIN_ROUTE_STEPS, PieceStatus::Active),
@@ -1455,8 +1487,12 @@ mod tests {
         };
 
         assert_eq!(
+            world_position_for_piece(1, 0, PieceStatus::AtLaunch, &board_layout, &player_roster),
+            Some(Vec2::new(-316.104, 156.104))
+        );
+        assert_eq!(
             world_position_for_piece(1, 0, PieceStatus::Active, &board_layout, &player_roster),
-            board_layout.world_pos_for_route_index(39)
+            board_layout.world_pos_for_route_index(40)
         );
         assert_eq!(
             world_position_for_piece(
@@ -1481,6 +1517,52 @@ mod tests {
     }
 
     #[test]
+    fn launch_action_places_piece_on_launch_point_not_main_route() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster { players };
+        let board_layout = BoardLayout::default();
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::InHangar,
+                progress: 0,
+                shield: 0,
+                stack_shield: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        apply_action(
+            &PlannedAction::Launch {
+                piece_id: 1,
+                target_progress: 0,
+            },
+            &board_layout,
+            &player_roster,
+            &mut query,
+        );
+
+        let (_, _, piece_state, transform) = query.iter_mut().next().unwrap();
+        assert_eq!(piece_state.status, PieceStatus::AtLaunch);
+        assert_eq!(piece_state.progress, 0);
+        assert_eq!(
+            transform.translation.truncate(),
+            Vec2::new(-316.104, 156.104)
+        );
+    }
+
+    #[test]
     fn same_color_jump_advances_to_next_same_color_node() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
@@ -1495,7 +1577,7 @@ mod tests {
                 owner_player_id: 1,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 6,
+                progress: 5,
                 shield: 0,
                 stack_shield: 0,
             },
@@ -1511,7 +1593,7 @@ mod tests {
         apply_jump_effect(
             &PlannedAction::Move {
                 piece_id: 1,
-                target_progress: 6,
+                target_progress: 5,
             },
             &board_layout,
             &player_roster,
@@ -1524,7 +1606,7 @@ mod tests {
             .find(|(piece_id, _, _, _)| piece_id.0 == 1)
             .map(|(_, _, piece_state, _)| piece_state.progress)
             .unwrap_or_default();
-        assert_eq!(progress, 10);
+        assert_eq!(progress, 9);
         assert!(
             notes
                 .iter()
@@ -1547,7 +1629,7 @@ mod tests {
                 owner_player_id: 1,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 30,
+                progress: 13,
                 shield: 0,
                 stack_shield: 0,
             },
@@ -1563,7 +1645,7 @@ mod tests {
         apply_jump_effect(
             &PlannedAction::Move {
                 piece_id: 1,
-                target_progress: 30,
+                target_progress: 13,
             },
             &board_layout,
             &player_roster,
@@ -1576,7 +1658,7 @@ mod tests {
             .find(|(piece_id, _, _, _)| piece_id.0 == 1)
             .map(|(_, _, piece_state, _)| piece_state.progress)
             .unwrap_or_default();
-        assert_eq!(progress, 43);
+        assert_eq!(progress, 25);
         assert!(notes.iter().any(|note| note.contains("shortcut jump")));
     }
 
@@ -1647,6 +1729,7 @@ mod tests {
                     },
                     color: Color::srgb(1.0, 0.0, 0.0),
                     hangar_slots: vec![],
+                    launch_position: Vec2::ZERO,
                     launch_tile_index: 0,
                     home_lane_positions: vec![],
                     goal_position: Vec2::ZERO,
@@ -1659,6 +1742,7 @@ mod tests {
                     },
                     color: Color::srgb(0.0, 0.0, 1.0),
                     hangar_slots: vec![],
+                    launch_position: Vec2::ZERO,
                     launch_tile_index: 0,
                     home_lane_positions: vec![],
                     goal_position: Vec2::ZERO,
@@ -1722,7 +1806,7 @@ mod tests {
                 owner_player_id: 3,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 15,
+                progress: 14,
                 shield: 0,
                 stack_shield: 0,
             },
@@ -1785,7 +1869,7 @@ mod tests {
                 owner_player_id: 3,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 15,
+                progress: 14,
                 shield: 0,
                 stack_shield: 1,
             },
@@ -1859,7 +1943,7 @@ mod tests {
                 owner_player_id: 1,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 15,
+                progress: 14,
                 shield: 0,
                 stack_shield: 1,
             },
@@ -1872,7 +1956,7 @@ mod tests {
                 owner_player_id: 3,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 28,
+                progress: 26,
                 shield: 0,
                 stack_shield: 1,
             },
@@ -1965,7 +2049,7 @@ mod tests {
                 owner_player_id: 1,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 15,
+                progress: 14,
                 shield: 1,
                 stack_shield: 0,
             },
@@ -2008,7 +2092,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(states, vec![(1, 1, 0, -50.0, -70.0), (2, 15, 0, 0.0, 0.0)]);
+        assert_eq!(states, vec![(1, 1, 0, -50.0, -70.0), (2, 14, 0, 0.0, 0.0)]);
         assert!(notes.iter().any(|note| note.contains("bounced back")));
     }
 

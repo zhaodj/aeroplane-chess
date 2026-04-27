@@ -36,6 +36,17 @@ struct SvgTriangle {
     fill: &'static str,
 }
 
+#[derive(Clone, Copy)]
+/// 机场旁起飞点三角图元。
+struct LaunchTriangle {
+    player_id: u8,
+    center: Vec2,
+    a: Vec2,
+    b: Vec2,
+    c: Vec2,
+    arrow_direction: Vec2,
+}
+
 #[derive(Clone)]
 /// 棋盘四色槽位：SVG 里的四个固定色只用于定位到 P1~P4。
 struct BoardPalette {
@@ -114,6 +125,7 @@ mod tests {
             },
             color,
             hangar_slots: Vec::new(),
+            launch_position: Vec2::ZERO,
             launch_tile_index: 0,
             home_lane_positions: Vec::new(),
             goal_position: Vec2::ZERO,
@@ -194,6 +206,46 @@ fn spawn_board(
             1.8,
             BOARD_Z_LAYER - 0.9,
             "SvgTri",
+        );
+    }
+
+    // 起飞点三角：背景与箭头统一绑定机场/玩家颜色。
+    for launch in LAUNCH_TRIANGLES {
+        let launch_color = board_palette.player_color(launch.player_id);
+        spawn_triangle_with_border(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            launch.a,
+            launch.b,
+            launch.c,
+            launch_color,
+            Color::BLACK,
+            1.8,
+            BOARD_Z_LAYER - 0.75,
+            format!("LaunchTriangle_P{}", launch.player_id),
+        );
+        spawn_circle_with_border(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            launch.center,
+            16.0,
+            Color::WHITE,
+            Color::srgb(0.48, 0.48, 0.48),
+            1.2,
+            BOARD_Z_LAYER + 0.08,
+            format!("LaunchDot_P{}", launch.player_id),
+        );
+        spawn_arrow_icon(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            launch.center,
+            launch.arrow_direction,
+            launch_color,
+            BOARD_Z_LAYER + 0.55,
+            format!("LaunchArrow_P{}", launch.player_id),
         );
     }
 
@@ -528,16 +580,95 @@ fn spawn_plus_icon(
     ));
 }
 
+/// 绘制方向箭头图标。
+fn spawn_arrow_icon(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    center: Vec2,
+    direction: Vec2,
+    color: Color,
+    z: f32,
+    name: impl Into<String>,
+) {
+    let name = name.into();
+    let direction = direction.normalize_or_zero();
+    let angle = direction.y.atan2(direction.x);
+    let tail = center - direction * 4.0;
+    let head = center + direction * 7.0;
+    let perp = Vec2::new(-direction.y, direction.x);
+
+    commands.spawn((
+        Sprite::from_color(color, Vec2::new(15.0, 3.0)),
+        Transform {
+            translation: Vec3::new(tail.x, tail.y, z),
+            rotation: Quat::from_rotation_z(angle),
+            ..default()
+        },
+        Name::new(format!("{name}_shaft")),
+        BoardSceneEntity,
+    ));
+
+    spawn_triangle_with_border(
+        commands,
+        meshes,
+        materials,
+        head + direction * 4.0,
+        head - direction * 5.5 + perp * 5.0,
+        head - direction * 5.5 - perp * 5.0,
+        color,
+        color,
+        0.0,
+        z + 0.01,
+        format!("{name}_head"),
+    );
+}
+
 /// 跳跃格箭头朝向（按四象限顺时针）。
 fn jump_arrow_direction(route_index: u8) -> Vec2 {
     match route_index {
-        4 => Vec2::new(1.0, 0.0),
-        17 => Vec2::new(0.0, -1.0),
-        30 => Vec2::new(-1.0, 0.0),
-        43 => Vec2::new(0.0, 1.0),
+        5 => Vec2::new(1.0, 0.0),
+        18 => Vec2::new(0.0, -1.0),
+        28 => Vec2::new(-1.0, 0.0),
+        39 => Vec2::new(0.0, 1.0),
         _ => Vec2::new(1.0, 0.0),
     }
 }
+
+const LAUNCH_TRIANGLES: &[LaunchTriangle] = &[
+    LaunchTriangle {
+        player_id: 1,
+        center: Vec2::new(-316.104, 156.104),
+        a: Vec2::new(-340.104, 180.104),
+        b: Vec2::new(-260.104, 180.104),
+        c: Vec2::new(-340.104, 100.104),
+        arrow_direction: Vec2::new(1.0, 0.0),
+    },
+    LaunchTriangle {
+        player_id: 2,
+        center: Vec2::new(155.896, 316.104),
+        a: Vec2::new(180.317, 340.104),
+        b: Vec2::new(100.317, 340.104),
+        c: Vec2::new(180.317, 260.104),
+        arrow_direction: Vec2::new(0.0, -1.0),
+    },
+    LaunchTriangle {
+        player_id: 3,
+        center: Vec2::new(-156.104, -315.896),
+        a: Vec2::new(-180.104, -340.104),
+        b: Vec2::new(-100.104, -340.104),
+        c: Vec2::new(-180.104, -260.104),
+        arrow_direction: Vec2::new(0.0, 1.0),
+    },
+    LaunchTriangle {
+        player_id: 4,
+        center: Vec2::new(315.896, -155.896),
+        a: Vec2::new(340.104, -180.104),
+        b: Vec2::new(260.104, -100.104),
+        c: Vec2::new(340.104, -100.104),
+        arrow_direction: Vec2::new(-1.0, 0.0),
+    },
+];
 
 const SVG_RECTS: &[SvgRect] = &[
     SvgRect {
