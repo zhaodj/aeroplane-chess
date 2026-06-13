@@ -62,7 +62,10 @@ impl ClickRect {
 #[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
 enum ModeSelectAction {
     SetMode(GameMode),
-    SetColor(PlayerColorChoice),
+    SetPlayerColor {
+        player_index: usize,
+        color: PlayerColorChoice,
+    },
     SetPieces(u8),
     SetPlayerControl {
         player_index: usize,
@@ -86,15 +89,16 @@ const MAIN_START_HEIGHT: f32 = 62.0;
 
 const SECTION_LABEL_X: f32 = 96.0;
 const OPTION_LEFT: f32 = 350.0;
-const OPTION_W: f32 = 132.0;
+const OPTION_W: f32 = 108.0;
 const OPTION_H: f32 = 40.0;
 const OPTION_GAP: f32 = 12.0;
-const MODE_ROW_TOP: f32 = 176.0;
-const COLOR_ROW_TOP: f32 = 238.0;
-const PIECES_ROW_TOP: f32 = 300.0;
-const CONTROL_ROW_START_TOP: f32 = 362.0;
-const CONTROL_ROW_GAP: f32 = 52.0;
-const BOTTOM_ROW_TOP: f32 = 588.0;
+const MODE_ROW_TOP: f32 = 150.0;
+const COLOR_ROW_START_TOP: f32 = 208.0;
+const COLOR_ROW_GAP: f32 = 42.0;
+const PIECES_ROW_TOP: f32 = 388.0;
+const CONTROL_ROW_START_TOP: f32 = 444.0;
+const CONTROL_ROW_GAP: f32 = 42.0;
+const BOTTOM_ROW_TOP: f32 = 618.0;
 const COLOR_SWATCH_W: f32 = 54.0;
 const COLOR_SWATCH_H: f32 = 34.0;
 
@@ -190,21 +194,31 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
         Color::srgba(0.53, 0.77, 0.96, 0.26),
     );
 
-    spawn_section_label(&mut commands, "Human Color", COLOR_ROW_TOP + 7.0);
-    for (index, choice) in PlayerColorChoice::ALL.iter().enumerate() {
-        let x = OPTION_LEFT + index as f32 * (COLOR_SWATCH_W + OPTION_GAP);
-        spawn_option(
+    for player_index in 0..4usize {
+        let row_top = COLOR_ROW_START_TOP + player_index as f32 * COLOR_ROW_GAP;
+        spawn_section_label(
             &mut commands,
-            ModeSelectAction::SetColor(*choice),
-            ClickRect {
-                x,
-                y: COLOR_ROW_TOP,
-                w: COLOR_SWATCH_W,
-                h: COLOR_SWATCH_H,
-            },
-            "",
-            choice.to_color(),
+            &format!("P{} Color", player_index + 1),
+            row_top + 5.0,
         );
+        for (color_index, choice) in PlayerColorChoice::ALL.iter().enumerate() {
+            let x = OPTION_LEFT + color_index as f32 * (COLOR_SWATCH_W + OPTION_GAP);
+            spawn_option(
+                &mut commands,
+                ModeSelectAction::SetPlayerColor {
+                    player_index,
+                    color: *choice,
+                },
+                ClickRect {
+                    x,
+                    y: row_top,
+                    w: COLOR_SWATCH_W,
+                    h: COLOR_SWATCH_H,
+                },
+                "",
+                choice.to_color(),
+            );
+        }
     }
 
     spawn_section_label(&mut commands, "Pieces / Player", PIECES_ROW_TOP + 7.0);
@@ -388,14 +402,20 @@ fn mode_select_content(match_setup: &MatchSetup) -> String {
         }
     };
 
+    let colors = match_setup.normalized_player_colors();
+
     format!(
         "Match Setup\n\
 Direct-select options (no cycle toggle)\n\
-Current: Mode {mode}, Color {}, Pieces {}\n\
+Current: Mode {mode}, Pieces {}\n\
+Colors: P1:{}  P2:{}  P3:{}  P4:{}\n\
 Players: P1:{}  P2:{}  P3:{}  P4:{}\n\
-Constraint: At least 1 Human",
-        match_setup.human_color.label(),
+Constraint: At least 1 Human; colors cannot repeat",
         match_setup.pieces_per_player,
+        colors[0].label(),
+        colors[1].label(),
+        colors[2].label(),
+        colors[3].label(),
         c(controls[0]),
         c(controls[1]),
         c(controls[2]),
@@ -448,7 +468,10 @@ fn action_selected(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
     // 判断某个选项是否与当前配置一致（用于高亮）。
     match action {
         ModeSelectAction::SetMode(mode) => match_setup.mode == mode,
-        ModeSelectAction::SetColor(choice) => match_setup.human_color == choice,
+        ModeSelectAction::SetPlayerColor {
+            player_index,
+            color,
+        } => match_setup.player_color_choice(player_index) == Some(color),
         ModeSelectAction::SetPieces(pieces) => match_setup.pieces_per_player == pieces,
         ModeSelectAction::SetPlayerControl {
             player_index,
@@ -603,8 +626,12 @@ fn apply_mode_select_action(
         ModeSelectAction::SetMode(mode) => {
             match_setup.mode = mode;
             match_setup.sanitize_player_controls();
+            match_setup.sanitize_player_colors();
         }
-        ModeSelectAction::SetColor(choice) => match_setup.human_color = choice,
+        ModeSelectAction::SetPlayerColor {
+            player_index,
+            color,
+        } => match_setup.set_player_color(player_index, color),
         ModeSelectAction::SetPieces(pieces) => match_setup.pieces_per_player = pieces.clamp(1, 4),
         ModeSelectAction::SetPlayerControl {
             player_index,
@@ -612,6 +639,7 @@ fn apply_mode_select_action(
         } => match_setup.set_player_control(player_index, control),
         ModeSelectAction::StartMatch => {
             match_setup.sanitize_player_controls();
+            match_setup.sanitize_player_colors();
             next_state.set(AppState::LoadingGame);
         }
         ModeSelectAction::Back => next_state.set(AppState::MainMenu),

@@ -3,6 +3,7 @@ use bevy::prelude::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PieceStatus {
     InHangar,
+    AtLaunch,
     Active,
     Finished,
 }

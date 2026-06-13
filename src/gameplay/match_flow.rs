@@ -14,7 +14,7 @@ pub struct MatchConfig {
     pub mode: GameMode,
     pub ai_difficulty: AiDifficulty,
     pub fast_mode: bool,
-    pub human_color: PlayerColorChoice,
+    pub player_colors: [PlayerColorChoice; 4],
     pub pieces_per_player: u8,
     pub player_controls: [PlayerControl; 4],
 }
@@ -25,7 +25,7 @@ pub struct MatchSetup {
     pub mode: GameMode,
     pub ai_difficulty: AiDifficulty,
     pub fast_mode: bool,
-    pub human_color: PlayerColorChoice,
+    pub player_colors: [PlayerColorChoice; 4],
     pub pieces_per_player: u8,
     pub player_controls: [PlayerControl; 4],
 }
@@ -60,6 +60,55 @@ impl MatchSetup {
     /// 原地修正人机配置（主要在模式切换与开局前调用）。
     pub fn sanitize_player_controls(&mut self) {
         self.player_controls = self.normalized_player_controls();
+    }
+
+    /// 返回去重后的玩家颜色；若配置异常则按默认四色补齐。
+    pub fn normalized_player_colors(&self) -> [PlayerColorChoice; 4] {
+        let mut colors = self.player_colors;
+        let mut used = Vec::with_capacity(colors.len());
+
+        for (index, color) in colors.iter_mut().enumerate() {
+            if used.contains(color) {
+                *color = PlayerColorChoice::ALL
+                    .iter()
+                    .copied()
+                    .find(|choice| !used.contains(choice))
+                    .unwrap_or(PlayerColorChoice::ALL[index]);
+            }
+            used.push(*color);
+        }
+
+        colors
+    }
+
+    /// 原地修正玩家颜色，保证四名玩家颜色不重复。
+    pub fn sanitize_player_colors(&mut self) {
+        self.player_colors = self.normalized_player_colors();
+    }
+
+    /// 读取指定序号玩家颜色。
+    pub fn player_color_choice(&self, player_index: usize) -> Option<PlayerColorChoice> {
+        self.player_colors.get(player_index).copied()
+    }
+
+    /// 设置指定玩家颜色；若颜色已被其它玩家使用，则两名玩家交换颜色。
+    pub fn set_player_color(&mut self, player_index: usize, color: PlayerColorChoice) {
+        if player_index >= self.player_colors.len() {
+            return;
+        }
+
+        if let Some(owner_index) =
+            self.player_colors
+                .iter()
+                .enumerate()
+                .find_map(|(index, selected)| {
+                    (index != player_index && *selected == color).then_some(index)
+                })
+        {
+            self.player_colors[owner_index] = self.player_colors[player_index];
+        }
+
+        self.player_colors[player_index] = color;
     }
 
     /// 切换指定玩家的人机类型；若会导致“全 AI”则拒绝本次切换。
@@ -109,23 +158,14 @@ impl MatchSetup {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlayerColorChoice {
-    Crimson,
-    Amber,
-    Lime,
-    Cyan,
-    Violet,
-    Rose,
+    Red,
+    Blue,
+    Green,
+    Yellow,
 }
 
 impl PlayerColorChoice {
-    pub const ALL: [Self; 6] = [
-        Self::Crimson,
-        Self::Amber,
-        Self::Lime,
-        Self::Cyan,
-        Self::Violet,
-        Self::Rose,
-    ];
+    pub const ALL: [Self; 4] = [Self::Red, Self::Blue, Self::Green, Self::Yellow];
 
     /// 循环到下一个可选颜色。
     pub fn next(self) -> Self {
@@ -139,36 +179,20 @@ impl PlayerColorChoice {
     /// 返回颜色名称，供 UI 展示。
     pub fn label(self) -> &'static str {
         match self {
-            Self::Crimson => "Crimson",
-            Self::Amber => "Amber",
-            Self::Lime => "Lime",
-            Self::Cyan => "Cyan",
-            Self::Violet => "Violet",
-            Self::Rose => "Rose",
+            Self::Red => "Red",
+            Self::Blue => "Blue",
+            Self::Green => "Green",
+            Self::Yellow => "Yellow",
         }
     }
 
     /// 返回颜色值，供棋子与配置面板渲染使用。
     pub fn to_color(self) -> Color {
         match self {
-            Self::Crimson => Color::srgb(0.88, 0.30, 0.26),
-            Self::Amber => Color::srgb(0.96, 0.66, 0.22),
-            Self::Lime => Color::srgb(0.52, 0.78, 0.28),
-            Self::Cyan => Color::srgb(0.24, 0.72, 0.86),
-            Self::Violet => Color::srgb(0.53, 0.44, 0.92),
-            Self::Rose => Color::srgb(0.94, 0.43, 0.62),
-        }
-    }
-
-    /// 根据“人类主色”推导默认敌对阵营配色。
-    fn enemy_colors(self) -> (Color, Color) {
-        match self {
-            Self::Crimson | Self::Amber | Self::Rose => {
-                (Color::srgb(0.28, 0.50, 0.90), Color::srgb(0.26, 0.74, 0.47))
-            }
-            Self::Lime | Self::Cyan | Self::Violet => {
-                (Color::srgb(0.88, 0.30, 0.26), Color::srgb(0.96, 0.66, 0.22))
-            }
+            Self::Red => Color::srgb(1.0, 0.0, 0.0),
+            Self::Blue => Color::srgb(0.0, 128.0 / 255.0, 1.0),
+            Self::Green => Color::srgb(0.0, 128.0 / 255.0, 0.0),
+            Self::Yellow => Color::srgb(243.0 / 255.0, 216.0 / 255.0, 73.0 / 255.0),
         }
     }
 }
@@ -221,6 +245,17 @@ impl BoardLayout {
 /// 玩家列表资源。
 pub struct PlayerRoster {
     pub players: Vec<PlayerProfile>,
+    pub player_colors: [Color; 4],
+}
+
+impl PlayerRoster {
+    /// 构建测试或临时玩家列表：保留默认四色棋盘调色板。
+    pub fn from_players(players: Vec<PlayerProfile>) -> Self {
+        Self {
+            players,
+            player_colors: PlayerColorChoice::ALL.map(PlayerColorChoice::to_color),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +264,7 @@ pub struct PlayerProfile {
     pub state: PlayerState,
     pub color: Color,
     pub hangar_slots: Vec<Vec2>,
+    pub launch_position: Vec2,
     pub launch_tile_index: u8,
     pub home_lane_positions: Vec<Vec2>,
     pub goal_position: Vec2,
@@ -251,18 +287,22 @@ pub struct MatchResult {
 /// 构建开局所需资源：棋盘、玩家列表、队伍列表。
 pub fn build_match_resources(setup: &MatchSetup) -> (BoardLayout, PlayerRoster, TeamRoster) {
     let (players, teams) = build_match_rosters(setup);
+    let player_colors = setup
+        .normalized_player_colors()
+        .map(PlayerColorChoice::to_color);
     (
         BoardLayout::default(),
-        PlayerRoster { players },
+        PlayerRoster {
+            players,
+            player_colors,
+        },
         TeamRoster { teams },
     )
 }
 
 /// 根据开局配置生成玩家与队伍编排（包含颜色、起点、机库位置）。
 pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamState>) {
-    let human_primary = setup.human_color.to_color();
-    let human_secondary = human_primary.mix(&Color::WHITE, 0.25);
-    let (enemy_primary, enemy_secondary) = setup.human_color.enemy_colors();
+    let player_colors = setup.normalized_player_colors();
     let pieces_per_player = setup.pieces_per_player.clamp(1, 4) as usize;
     let player_controls = setup.normalized_player_controls();
 
@@ -275,18 +315,19 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         team_id: 1,
                         control: player_controls[0],
                     },
-                    color: human_primary,
+                    color: player_colors[0].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, 260.0), pieces_per_player),
+                    launch_position: Vec2::new(-316.104, 156.104),
                     launch_tile_index: 40,
                     home_lane_positions: vec![
-                        Vec2::new(-300.0, 0.0),
-                        Vec2::new(-240.0, 0.0),
-                        Vec2::new(-200.0, 0.0),
-                        Vec2::new(-160.0, 0.0),
-                        Vec2::new(-120.0, 0.0),
-                        Vec2::new(-80.0, 0.0),
+                        Vec2::new(-300.104, -0.104),
+                        Vec2::new(-240.104, -0.104),
+                        Vec2::new(-200.104, -0.104),
+                        Vec2::new(-160.104, -0.104),
+                        Vec2::new(-120.104, -0.104),
+                        Vec2::new(-80.104, -0.104),
                     ],
-                    goal_position: Vec2::new(-36.0, 0.0),
+                    goal_position: Vec2::new(-35.958, 0.0),
                 },
                 PlayerProfile {
                     state: PlayerState {
@@ -294,18 +335,19 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         team_id: 2,
                         control: player_controls[1],
                     },
-                    color: enemy_primary,
+                    color: player_colors[1].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, 260.0), pieces_per_player),
+                    launch_position: Vec2::new(155.896, 316.104),
                     launch_tile_index: 4,
                     home_lane_positions: vec![
-                        Vec2::new(0.0, 300.0),
-                        Vec2::new(0.0, 240.0),
-                        Vec2::new(0.0, 200.0),
-                        Vec2::new(0.0, 160.0),
-                        Vec2::new(0.0, 120.0),
-                        Vec2::new(0.0, 80.0),
+                        Vec2::new(-0.104, 300.104),
+                        Vec2::new(-0.104, 240.104),
+                        Vec2::new(-0.104, 200.104),
+                        Vec2::new(-0.104, 160.104),
+                        Vec2::new(-0.104, 120.104),
+                        Vec2::new(-0.104, 80.104),
                     ],
-                    goal_position: Vec2::new(0.0, 36.0),
+                    goal_position: Vec2::new(0.0, 35.958),
                 },
             ],
             vec![
@@ -327,18 +369,19 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         team_id: 1,
                         control: player_controls[0],
                     },
-                    color: human_primary,
+                    color: player_colors[0].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, 260.0), pieces_per_player),
+                    launch_position: Vec2::new(-316.104, 156.104),
                     launch_tile_index: 40,
                     home_lane_positions: vec![
-                        Vec2::new(-300.0, 0.0),
-                        Vec2::new(-240.0, 0.0),
-                        Vec2::new(-200.0, 0.0),
-                        Vec2::new(-160.0, 0.0),
-                        Vec2::new(-120.0, 0.0),
-                        Vec2::new(-80.0, 0.0),
+                        Vec2::new(-300.104, -0.104),
+                        Vec2::new(-240.104, -0.104),
+                        Vec2::new(-200.104, -0.104),
+                        Vec2::new(-160.104, -0.104),
+                        Vec2::new(-120.104, -0.104),
+                        Vec2::new(-80.104, -0.104),
                     ],
-                    goal_position: Vec2::new(-36.0, 0.0),
+                    goal_position: Vec2::new(-35.958, 0.0),
                 },
                 PlayerProfile {
                     state: PlayerState {
@@ -346,18 +389,19 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         team_id: 2,
                         control: player_controls[1],
                     },
-                    color: enemy_primary,
+                    color: player_colors[1].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, 260.0), pieces_per_player),
+                    launch_position: Vec2::new(155.896, 316.104),
                     launch_tile_index: 4,
                     home_lane_positions: vec![
-                        Vec2::new(0.0, 300.0),
-                        Vec2::new(0.0, 240.0),
-                        Vec2::new(0.0, 200.0),
-                        Vec2::new(0.0, 160.0),
-                        Vec2::new(0.0, 120.0),
-                        Vec2::new(0.0, 80.0),
+                        Vec2::new(-0.104, 300.104),
+                        Vec2::new(-0.104, 240.104),
+                        Vec2::new(-0.104, 200.104),
+                        Vec2::new(-0.104, 160.104),
+                        Vec2::new(-0.104, 120.104),
+                        Vec2::new(-0.104, 80.104),
                     ],
-                    goal_position: Vec2::new(0.0, 36.0),
+                    goal_position: Vec2::new(0.0, 35.958),
                 },
                 PlayerProfile {
                     state: PlayerState {
@@ -365,18 +409,19 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         team_id: 1,
                         control: player_controls[2],
                     },
-                    color: human_secondary,
+                    color: player_colors[2].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, -260.0), pieces_per_player),
+                    launch_position: Vec2::new(-156.104, -315.896),
                     launch_tile_index: 28,
                     home_lane_positions: vec![
-                        Vec2::new(0.0, -300.0),
-                        Vec2::new(0.0, -240.0),
-                        Vec2::new(0.0, -200.0),
-                        Vec2::new(0.0, -160.0),
-                        Vec2::new(0.0, -120.0),
-                        Vec2::new(0.0, -80.0),
+                        Vec2::new(0.104, -300.104),
+                        Vec2::new(0.104, -240.104),
+                        Vec2::new(0.104, -200.104),
+                        Vec2::new(0.104, -160.104),
+                        Vec2::new(0.104, -120.104),
+                        Vec2::new(0.104, -80.104),
                     ],
-                    goal_position: Vec2::new(0.0, -36.0),
+                    goal_position: Vec2::new(0.0, -35.958),
                 },
                 PlayerProfile {
                     state: PlayerState {
@@ -384,18 +429,19 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         team_id: 2,
                         control: player_controls[3],
                     },
-                    color: enemy_secondary,
+                    color: player_colors[3].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, -260.0), pieces_per_player),
+                    launch_position: Vec2::new(315.896, -155.896),
                     launch_tile_index: 16,
                     home_lane_positions: vec![
-                        Vec2::new(300.0, 0.0),
-                        Vec2::new(240.0, 0.0),
-                        Vec2::new(200.0, 0.0),
-                        Vec2::new(160.0, 0.0),
-                        Vec2::new(120.0, 0.0),
-                        Vec2::new(80.0, 0.0),
+                        Vec2::new(300.317, 0.104),
+                        Vec2::new(240.317, 0.104),
+                        Vec2::new(200.317, 0.104),
+                        Vec2::new(160.317, 0.104),
+                        Vec2::new(120.317, 0.104),
+                        Vec2::new(80.317, 0.104),
                     ],
-                    goal_position: Vec2::new(36.0, 0.0),
+                    goal_position: Vec2::new(35.959, 0.0),
                 },
             ],
             vec![
@@ -466,7 +512,12 @@ mod tests {
             mode,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
-            human_color: PlayerColorChoice::Crimson,
+            player_colors: [
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
             pieces_per_player: 2,
             player_controls: [
                 PlayerControl::Human,
@@ -488,6 +539,29 @@ mod tests {
     }
 
     #[test]
+    fn one_vs_one_resources_keep_full_board_palette() {
+        let (_, player_roster, _) = build_match_resources(&setup(GameMode::OneVsOne));
+
+        assert_eq!(player_roster.players.len(), 2);
+        assert_eq!(
+            player_roster.player_colors[0],
+            PlayerColorChoice::Red.to_color()
+        );
+        assert_eq!(
+            player_roster.player_colors[1],
+            PlayerColorChoice::Blue.to_color()
+        );
+        assert_eq!(
+            player_roster.player_colors[2],
+            PlayerColorChoice::Green.to_color()
+        );
+        assert_eq!(
+            player_roster.player_colors[3],
+            PlayerColorChoice::Yellow.to_color()
+        );
+    }
+
+    #[test]
     fn two_vs_two_roster_has_four_players_and_shared_teams() {
         let mut two_vs_two_setup = setup(GameMode::TwoVsTwo);
         two_vs_two_setup.pieces_per_player = 3;
@@ -498,6 +572,40 @@ mod tests {
         assert_eq!(teams[0].player_ids, vec![1, 3]);
         assert_eq!(teams[1].player_ids, vec![2, 4]);
         assert!(players.iter().all(|player| player.hangar_slots.len() == 3));
+    }
+
+    #[test]
+    fn roster_uses_configured_unique_player_colors() {
+        let mut two_vs_two_setup = setup(GameMode::TwoVsTwo);
+        two_vs_two_setup.player_colors = [
+            PlayerColorChoice::Yellow,
+            PlayerColorChoice::Green,
+            PlayerColorChoice::Blue,
+            PlayerColorChoice::Red,
+        ];
+        let (players, _) = build_match_rosters(&two_vs_two_setup);
+
+        assert_eq!(players[0].color, PlayerColorChoice::Yellow.to_color());
+        assert_eq!(players[1].color, PlayerColorChoice::Green.to_color());
+        assert_eq!(players[2].color, PlayerColorChoice::Blue.to_color());
+        assert_eq!(players[3].color, PlayerColorChoice::Red.to_color());
+    }
+
+    #[test]
+    fn setting_an_used_player_color_swaps_colors() {
+        let mut two_vs_two_setup = setup(GameMode::TwoVsTwo);
+
+        two_vs_two_setup.set_player_color(0, PlayerColorChoice::Blue);
+
+        assert_eq!(
+            two_vs_two_setup.player_colors,
+            [
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ]
+        );
     }
 
     #[test]

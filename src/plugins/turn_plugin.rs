@@ -866,7 +866,12 @@ mod tests {
             mode,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
-            human_color: PlayerColorChoice::Crimson,
+            player_colors: [
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
             pieces_per_player: 2,
             player_controls: [
                 PlayerControl::Human,
@@ -882,7 +887,12 @@ mod tests {
             mode,
             ai_difficulty,
             fast_mode: false,
-            human_color: PlayerColorChoice::Crimson,
+            player_colors: [
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
             pieces_per_player: 2,
             player_controls: [
                 PlayerControl::Human,
@@ -944,7 +954,7 @@ mod tests {
     fn maybe_use_ai_skills_does_not_arm_dash_before_roll() {
         let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Normal);
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
         set_ai_skill_charges(&mut skill_roster, 2, 0, 0, 0, 0, 1);
@@ -966,7 +976,7 @@ mod tests {
     fn easy_ai_does_not_use_skills_even_with_targets() {
         let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Easy);
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
 
@@ -990,7 +1000,7 @@ mod tests {
     fn normal_ai_prefers_shield_over_opening_snipe() {
         let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Normal);
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
 
@@ -1019,7 +1029,7 @@ mod tests {
     fn hard_ai_snipe_requires_target_progress_threshold() {
         let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Hard);
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
         set_ai_skill_charges(&mut skill_roster, 2, 1, 0, 0, 0, 0);
@@ -1043,7 +1053,7 @@ mod tests {
     fn hard_ai_uses_snipe_on_advanced_target() {
         let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Hard);
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
         set_ai_skill_charges(&mut skill_roster, 2, 1, 0, 0, 0, 0);
@@ -1066,7 +1076,7 @@ mod tests {
     #[test]
     fn maybe_arm_dash_for_ai_after_roll_arms_dash_when_move_exists() {
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
+        let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
         set_ai_skill_charges(&mut skill_roster, 2, 0, 0, 0, 0, 1);
