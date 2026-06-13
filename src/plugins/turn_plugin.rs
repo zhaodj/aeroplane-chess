@@ -1,20 +1,23 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
 use crate::domain::dice::DiceRoll;
 use crate::domain::piece::PieceState;
 use crate::domain::player::PlayerControl;
+use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{
     BoardLayout, MatchConfig, MatchResult, PlayerRoster, TeamRoster,
 };
 use crate::gameplay::skill_flow::{
-    SkillRoster, arm_dash, arm_double_dice, can_use_skill_this_turn, clear_dash_arm, dash_bonus,
-    mark_skill_used, player_skill_state, resolve_roll_value, spend_shield_charge,
-    spend_snipe_charge, spend_swap_charge,
+    MAX_PIECE_SHIELD, SkillRoster, arm_dash, arm_double_dice, can_use_skill_this_turn,
+    clear_dash_arm, dash_bonus, is_active_teammate_piece, is_legal_shield_target,
+    is_legal_snipe_target, mark_skill_used, player_skill_state, resolve_roll_value,
+    spend_shield_charge, spend_snipe_charge, spend_swap_charge,
 };
 use crate::gameplay::turn_flow::{
-    MAIN_ROUTE_STEPS, PlannedAction, TurnInputState, TurnState, choose_action, collect_actions,
-    current_player_control, execute_action, find_pending_action_by_piece_id,
+    ActionResources, ActionState, PlannedAction, TurnInputState, TurnState, choose_action,
+    collect_actions, current_player_control, execute_action, find_pending_action_by_piece_id,
     finish_turn_without_action, get_pending_action, pressed_selection_key, set_pending_actions,
     set_roll,
 };
@@ -47,41 +50,102 @@ struct TurnAutomation {
     timer: Timer,
 }
 
+#[derive(Resource, Default)]
+/// HUD/鼠标入口写入的回合动作请求。
+pub struct TurnUiRequest {
+    roll_requested: bool,
+}
+
+impl TurnUiRequest {
+    pub fn queue_roll(&mut self) {
+        self.roll_requested = true;
+    }
+
+    fn take_roll(&mut self) -> bool {
+        let requested = self.roll_requested;
+        self.roll_requested = false;
+        requested
+    }
+}
+
+#[derive(SystemParam)]
+struct TurnActionParams<'w, 's> {
+    input_state: ResMut<'w, TurnInputState>,
+    turn_ui_request: ResMut<'w, TurnUiRequest>,
+    turn_state: ResMut<'w, TurnState>,
+    next_phase: ResMut<'w, NextState<GamePhase>>,
+    board_layout: Res<'w, BoardLayout>,
+    match_config: Res<'w, MatchConfig>,
+    player_roster: Res<'w, PlayerRoster>,
+    team_roster: Res<'w, TeamRoster>,
+    skill_roster: ResMut<'w, SkillRoster>,
+    match_result: ResMut<'w, MatchResult>,
+    piece_query: Query<
+        'w,
+        's,
+        (
+            &'static PieceId,
+            &'static HangarSlot,
+            &'static mut PieceState,
+            &'static mut Transform,
+        ),
+    >,
+}
+
+fn execute_action_from_params(
+    action: PlannedAction,
+    roll_value: u8,
+    params: &mut TurnActionParams,
+) {
+    execute_action(
+        action,
+        roll_value,
+        ActionResources {
+            player_roster: &params.player_roster,
+            team_roster: &params.team_roster,
+            match_config: &params.match_config,
+            board_layout: &params.board_layout,
+        },
+        ActionState {
+            skill_roster: &mut params.skill_roster,
+            match_result: &mut params.match_result,
+            turn_state: &mut params.turn_state,
+            input_state: &mut params.input_state,
+            next_phase: &mut params.next_phase,
+        },
+        &mut params.piece_query,
+    );
+}
+
 fn setup_turn_automation(mut commands: Commands) {
     // AI 行为节拍与人类输入缓存在进入对局时统一初始化。
     commands.insert_resource(TurnAutomation {
         timer: Timer::from_seconds(0.9, TimerMode::Repeating),
     });
     commands.insert_resource(TurnInputState::default());
+    commands.insert_resource(TurnUiRequest::default());
 }
 
 fn cleanup_turn_automation(mut commands: Commands) {
     // 离开对局时清理临时回合资源，避免下局残留。
     commands.remove_resource::<TurnAutomation>();
     commands.remove_resource::<TurnInputState>();
+    commands.remove_resource::<TurnUiRequest>();
 }
 
 /// AI 回合驱动主循环：定时触发掷骰、选动作并执行完整结算。
 fn drive_ai_turn_loop(
     time: Res<Time>,
     mut automation: ResMut<TurnAutomation>,
-    mut input_state: ResMut<TurnInputState>,
-    mut turn_state: ResMut<TurnState>,
-    mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
-    board_layout: Res<BoardLayout>,
-    match_config: Res<MatchConfig>,
-    player_roster: Res<PlayerRoster>,
-    team_roster: Res<TeamRoster>,
-    mut skill_roster: ResMut<SkillRoster>,
-    mut match_result: ResMut<MatchResult>,
-    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    mut params: TurnActionParams,
 ) {
-    if !matches!(game_phase.get(), GamePhase::AwaitDice) || match_result.finished {
+    if !matches!(game_phase.get(), GamePhase::AwaitDice) || params.match_result.finished {
         return;
     }
 
-    if current_player_control(turn_state.current_player, &player_roster) != Some(PlayerControl::Ai)
+    if current_player_control(params.turn_state.current_player, &params.player_roster)
+        != Some(PlayerControl::Ai)
     {
         return;
     }
@@ -91,130 +155,191 @@ fn drive_ai_turn_loop(
     }
 
     maybe_use_ai_skills(
-        turn_state.current_player,
-        &match_config,
-        &mut skill_roster,
-        &mut piece_query,
+        params.turn_state.current_player,
+        &params.match_config,
+        &mut params.skill_roster,
+        &mut params.piece_query,
     );
 
-    let roll_resolution = resolve_roll_value(&mut skill_roster, turn_state.current_player);
+    let roll_resolution =
+        resolve_roll_value(&mut params.skill_roster, params.turn_state.current_player);
     let roll_value = roll_resolution.value;
     let roll = DiceRoll(roll_value);
-    set_roll(&mut turn_state, roll_value);
+    set_roll(&mut params.turn_state, roll_value);
     if roll_resolution.used_double_dice {
-        skill_roster.last_skill_action = Some(format!(
+        params.skill_roster.last_skill_action = Some(format!(
             "P{} resolved DoubleDice into {}",
-            turn_state.current_player, roll_value
+            params.turn_state.current_player, roll_value
         ));
     }
 
-    let current_player = turn_state.current_player;
+    let current_player = params.turn_state.current_player;
     maybe_arm_dash_for_ai_after_roll(
         current_player,
+        params.match_config.ai_difficulty,
         roll,
-        &player_roster,
-        &mut skill_roster,
-        &mut piece_query,
+        &params.player_roster,
+        &mut params.skill_roster,
+        &mut params.piece_query,
     );
     let Some(action) = choose_action(
         current_player,
         roll,
-        dash_bonus(&skill_roster, current_player),
-        &board_layout,
-        &player_roster,
-        &piece_query,
+        dash_bonus(&params.skill_roster, current_player),
+        &params.board_layout,
+        &params.player_roster,
+        &params.piece_query,
     ) else {
-        turn_state.last_action = Some(format!(
+        params.turn_state.last_action = Some(format!(
             "P{current_player} rolled {roll_value} but had no legal action"
         ));
         finish_turn_without_action(
-            &mut turn_state,
-            &mut input_state,
-            &player_roster,
-            &mut next_phase,
+            &mut params.turn_state,
+            &mut params.input_state,
+            &params.player_roster,
+            &mut params.next_phase,
         );
         return;
     };
 
-    execute_action(
-        action,
-        roll_value,
-        &player_roster,
-        &team_roster,
-        &match_config,
-        &board_layout,
-        &mut piece_query,
-        &mut skill_roster,
-        &mut match_result,
-        &mut turn_state,
-        &mut input_state,
-        &mut next_phase,
-    );
-    clear_dash_arm(&mut skill_roster, current_player);
+    execute_action_from_params(action, roll_value, &mut params);
+    clear_dash_arm(&mut params.skill_roster, current_player);
 }
 
-/// AI 技能策略：按 Snipe -> Shield -> Swap -> DoubleDice 的顺序尝试。
+const HARD_AI_SNIPE_MIN_PROGRESS: u8 = 8;
+
+/// AI 技能策略：Easy 不主动用技能，Normal 偏防御/起飞，Hard 才主动攻击与换位。
 fn maybe_use_ai_skills(
     current_player: u8,
     match_config: &MatchConfig,
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
-    if can_use_skill_this_turn(skill_roster, current_player)
-        && let Some(target_piece_id) = preferred_ai_snipe_target(current_player, piece_query)
-    {
-        let can_use_snipe = player_skill_state(skill_roster, current_player)
-            .map(|skills| skills.snipe_charges > 0)
-            .unwrap_or(false);
-
-        if can_use_snipe && spend_snipe_charge(skill_roster, current_player) {
-            mark_skill_used(skill_roster, current_player);
-            skill_roster.last_skill_action = Some(execute_snipe_on_turn_query(
-                target_piece_id,
-                piece_query,
-                true,
-            ));
-            return;
-        }
+    if !can_use_skill_this_turn(skill_roster, current_player) {
+        return;
     }
 
-    if let Some(target_piece_id) = preferred_ai_shield_target(current_player, piece_query) {
-        let can_use_shield = player_skill_state(skill_roster, current_player)
-            .map(|skills| skills.shield_charges > 0)
-            .unwrap_or(false);
-
-        if can_use_shield
-            && spend_shield_charge(skill_roster, current_player)
-            && let Some(shield_value) =
-                apply_shield_to_piece_to_turn_query(target_piece_id, piece_query)
-        {
-            mark_skill_used(skill_roster, current_player);
-            skill_roster.last_skill_action = Some(format!(
-                "P{} (AI) used Shield on piece #{} ({})",
-                current_player, target_piece_id, shield_value
-            ));
-            return;
+    match match_config.ai_difficulty {
+        AiDifficulty::Easy => {}
+        AiDifficulty::Normal => {
+            let _ = try_ai_shield(current_player, skill_roster, piece_query)
+                || try_ai_double_dice(current_player, skill_roster, piece_query);
         }
-    }
-
-    if match_config.mode == GameMode::TwoVsTwo
-        && can_use_skill_this_turn(skill_roster, current_player)
-        && let Some(teammate_piece_id) = preferred_ai_swap_target(current_player, piece_query)
-    {
-        let can_use_swap = player_skill_state(skill_roster, current_player)
-            .map(|skills| skills.swap_charges > 0)
-            .unwrap_or(false);
-        if can_use_swap && spend_swap_charge(skill_roster, current_player) {
-            mark_skill_used(skill_roster, current_player);
-            skill_roster.last_skill_action = Some(execute_swap_on_turn_query(
+        AiDifficulty::Hard => {
+            let _ = try_ai_snipe(
                 current_player,
-                teammate_piece_id,
+                HARD_AI_SNIPE_MIN_PROGRESS,
+                skill_roster,
                 piece_query,
-            ));
-            return;
+            ) || try_ai_shield(current_player, skill_roster, piece_query)
+                || try_ai_swap(current_player, match_config.mode, skill_roster, piece_query)
+                || try_ai_double_dice(current_player, skill_roster, piece_query);
         }
     }
+}
 
+fn try_ai_snipe(
+    current_player: u8,
+    minimum_target_progress: u8,
+    skill_roster: &mut SkillRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    let can_use_snipe = player_skill_state(skill_roster, current_player)
+        .map(|skills| skills.snipe_charges > 0)
+        .unwrap_or(false);
+    if !can_use_snipe {
+        return false;
+    }
+
+    let Some(target_piece_id) =
+        preferred_ai_snipe_target(current_player, minimum_target_progress, piece_query)
+    else {
+        return false;
+    };
+
+    if !spend_snipe_charge(skill_roster, current_player) {
+        return false;
+    }
+
+    mark_skill_used(skill_roster, current_player);
+    skill_roster.last_skill_action = Some(execute_snipe_on_turn_query(
+        target_piece_id,
+        piece_query,
+        true,
+    ));
+    true
+}
+
+fn try_ai_shield(
+    current_player: u8,
+    skill_roster: &mut SkillRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    let can_use_shield = player_skill_state(skill_roster, current_player)
+        .map(|skills| skills.shield_charges > 0)
+        .unwrap_or(false);
+    if !can_use_shield {
+        return false;
+    }
+
+    let Some(target_piece_id) = preferred_ai_shield_target(current_player, piece_query) else {
+        return false;
+    };
+
+    if spend_shield_charge(skill_roster, current_player)
+        && let Some(shield_value) =
+            apply_shield_to_piece_to_turn_query(target_piece_id, piece_query)
+    {
+        mark_skill_used(skill_roster, current_player);
+        skill_roster.last_skill_action = Some(format!(
+            "P{} (AI) used Shield on piece #{} ({})",
+            current_player, target_piece_id, shield_value
+        ));
+        return true;
+    }
+
+    false
+}
+
+fn try_ai_swap(
+    current_player: u8,
+    mode: GameMode,
+    skill_roster: &mut SkillRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    if mode != GameMode::TwoVsTwo {
+        return false;
+    }
+
+    let can_use_swap = player_skill_state(skill_roster, current_player)
+        .map(|skills| skills.swap_charges > 0)
+        .unwrap_or(false);
+    if !can_use_swap {
+        return false;
+    }
+
+    let Some(teammate_piece_id) = preferred_ai_swap_target(current_player, piece_query) else {
+        return false;
+    };
+
+    if !spend_swap_charge(skill_roster, current_player) {
+        return false;
+    }
+
+    mark_skill_used(skill_roster, current_player);
+    skill_roster.last_skill_action = Some(execute_swap_on_turn_query(
+        current_player,
+        teammate_piece_id,
+        piece_query,
+    ));
+    true
+}
+
+fn try_ai_double_dice(
+    current_player: u8,
+    skill_roster: &mut SkillRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
     if should_ai_arm_double_dice(current_player, skill_roster, piece_query)
         && arm_double_dice(skill_roster, current_player)
     {
@@ -223,17 +348,25 @@ fn maybe_use_ai_skills(
             "P{} (AI) armed DoubleDice for launch pressure",
             current_player
         ));
+        return true;
     }
+
+    false
 }
 
 /// AI 在掷骰后评估是否需要临时预备 Dash（仅当存在可移动动作）。
 fn maybe_arm_dash_for_ai_after_roll(
     current_player: u8,
+    ai_difficulty: AiDifficulty,
     roll: DiceRoll,
     player_roster: &PlayerRoster,
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
+    if ai_difficulty == AiDifficulty::Easy {
+        return;
+    }
+
     if !can_use_skill_this_turn(skill_roster, current_player) {
         return;
     }
@@ -263,6 +396,7 @@ fn maybe_arm_dash_for_ai_after_roll(
 /// 选择 AI 的 Snipe 目标：优先无盾、再有盾，且不攻击队友。
 fn preferred_ai_snipe_target(
     current_player: u8,
+    minimum_target_progress: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
     let mut attacker_team = None;
@@ -272,17 +406,13 @@ fn preferred_ai_snipe_target(
             break;
         }
     }
-    let Some(attacker_team) = attacker_team else {
-        return None;
-    };
+    let attacker_team = attacker_team?;
 
     let mut unshielded = Vec::new();
     let mut shielded = Vec::new();
     for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
-        if piece_state.owner_player_id == current_player
-            || piece_state.team_id == attacker_team
-            || piece_state.status != crate::domain::piece::PieceStatus::Active
-            || piece_state.progress >= MAIN_ROUTE_STEPS
+        if !is_legal_snipe_target(current_player, attacker_team, &piece_state)
+            || piece_state.progress < minimum_target_progress
         {
             continue;
         }
@@ -309,11 +439,7 @@ fn preferred_ai_shield_target(
 ) -> Option<u8> {
     piece_query
         .iter_mut()
-        .filter(|(_, _, piece_state, _)| {
-            piece_state.owner_player_id == current_player
-                && piece_state.status == crate::domain::piece::PieceStatus::Active
-                && piece_state.shield == 0
-        })
+        .filter(|(_, _, piece_state, _)| is_legal_shield_target(current_player, piece_state))
         .map(|(piece_id, _, _, _)| piece_id.0)
         .min()
 }
@@ -343,9 +469,7 @@ fn preferred_ai_swap_target(
     let mut candidates = piece_query
         .iter_mut()
         .filter(|(_, _, piece_state, _)| {
-            piece_state.owner_player_id != current_player
-                && piece_state.team_id == own_team
-                && piece_state.status == crate::domain::piece::PieceStatus::Active
+            is_active_teammate_piece(current_player, own_team, piece_state)
                 && piece_state.progress >= own_progress.saturating_add(6)
         })
         .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.progress))
@@ -389,7 +513,6 @@ fn apply_shield_to_piece_to_turn_query(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
-    const MAX_PIECE_SHIELD: u8 = 2;
     for (query_piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
         if query_piece_id.0 != piece_id {
             continue;
@@ -492,93 +615,83 @@ fn execute_swap_on_turn_query(
 /// 人类玩家“掷骰阶段”输入处理（Space 掷骰）。
 fn handle_human_roll_input(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut input_state: ResMut<TurnInputState>,
-    mut turn_state: ResMut<TurnState>,
-    mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
-    board_layout: Res<BoardLayout>,
-    match_config: Res<MatchConfig>,
-    player_roster: Res<PlayerRoster>,
-    team_roster: Res<TeamRoster>,
-    mut skill_roster: ResMut<SkillRoster>,
-    mut match_result: ResMut<MatchResult>,
-    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    mut params: TurnActionParams,
 ) {
-    if !matches!(game_phase.get(), GamePhase::AwaitDice) || match_result.finished {
+    if !matches!(game_phase.get(), GamePhase::AwaitDice) || params.match_result.finished {
         return;
     }
 
-    if current_player_control(turn_state.current_player, &player_roster)
+    if current_player_control(params.turn_state.current_player, &params.player_roster)
         != Some(PlayerControl::Human)
     {
         return;
     }
 
-    input_state.prompt = Some("Press Space to roll".to_string());
+    params.input_state.prompt = Some("Press Space to roll".to_string());
 
-    if !keyboard.just_pressed(KeyCode::Space) {
+    if !keyboard.just_pressed(KeyCode::Space) && !params.turn_ui_request.take_roll() {
         return;
     }
 
-    let roll_resolution = resolve_roll_value(&mut skill_roster, turn_state.current_player);
+    let roll_resolution =
+        resolve_roll_value(&mut params.skill_roster, params.turn_state.current_player);
     let roll_value = roll_resolution.value;
     let roll = DiceRoll(roll_value);
-    set_roll(&mut turn_state, roll_value);
+    set_roll(&mut params.turn_state, roll_value);
     if roll_resolution.used_double_dice {
-        skill_roster.last_skill_action = Some(format!(
+        params.skill_roster.last_skill_action = Some(format!(
             "P{} resolved DoubleDice into {}",
-            turn_state.current_player, roll_value
+            params.turn_state.current_player, roll_value
         ));
     }
 
-    let current_player = turn_state.current_player;
-    let actions = collect_actions(current_player, roll, 0, &player_roster, &piece_query);
+    let current_player = params.turn_state.current_player;
+    let actions = collect_actions(
+        current_player,
+        roll,
+        0,
+        &params.player_roster,
+        &params.piece_query,
+    );
 
     if actions.is_empty() {
-        turn_state.last_action = Some(format!(
+        params.turn_state.last_action = Some(format!(
             "P{} rolled {} but had no legal action",
-            turn_state.current_player, roll_value
+            params.turn_state.current_player, roll_value
         ));
         finish_turn_without_action(
-            &mut turn_state,
-            &mut input_state,
-            &player_roster,
-            &mut next_phase,
+            &mut params.turn_state,
+            &mut params.input_state,
+            &params.player_roster,
+            &mut params.next_phase,
         );
         return;
     }
 
-    let can_offer_dash = can_use_skill_this_turn(&skill_roster, current_player)
-        && dash_bonus(&skill_roster, current_player) == 0
-        && player_skill_state(&skill_roster, current_player)
+    let can_offer_dash = can_use_skill_this_turn(&params.skill_roster, current_player)
+        && dash_bonus(&params.skill_roster, current_player) == 0
+        && player_skill_state(&params.skill_roster, current_player)
             .map(|skills| skills.dash_charges > 0)
             .unwrap_or(false)
         && actions.iter().any(PlannedAction::is_move);
 
     if actions.len() == 1 && !can_offer_dash {
-        execute_action(
-            actions[0],
-            roll_value,
-            &player_roster,
-            &team_roster,
-            &match_config,
-            &board_layout,
-            &mut piece_query,
-            &mut skill_roster,
-            &mut match_result,
-            &mut turn_state,
-            &mut input_state,
-            &mut next_phase,
-        );
+        execute_action_from_params(actions[0], roll_value, &mut params);
         return;
     }
 
-    set_pending_actions(&mut input_state, roll_value, actions, &mut next_phase);
+    set_pending_actions(
+        &mut params.input_state,
+        roll_value,
+        actions,
+        &mut params.next_phase,
+    );
     if can_offer_dash {
-        input_state.prompt = Some(format!(
+        params.input_state.prompt = Some(format!(
             "Rolled {}. Press E for Dash (+3), then click a highlighted piece or press {}",
             roll_value,
-            (1..=input_state.candidate_piece_ids().len())
+            (1..=params.input_state.candidate_piece_ids().len())
                 .map(|index| index.to_string())
                 .collect::<Vec<_>>()
                 .join("/")
@@ -589,55 +702,35 @@ fn handle_human_roll_input(
 /// 人类玩家“选棋阶段”键盘输入处理（1~4 选择动作）。
 fn handle_human_action_input(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut input_state: ResMut<TurnInputState>,
-    mut turn_state: ResMut<TurnState>,
-    mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
-    board_layout: Res<BoardLayout>,
-    match_config: Res<MatchConfig>,
-    player_roster: Res<PlayerRoster>,
-    team_roster: Res<TeamRoster>,
-    mut skill_roster: ResMut<SkillRoster>,
-    mut match_result: ResMut<MatchResult>,
-    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    mut params: TurnActionParams,
 ) {
-    if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || match_result.finished {
+    if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || params.match_result.finished {
         return;
     }
 
     refresh_pending_actions_for_dash(
-        &mut input_state,
-        &turn_state,
-        &player_roster,
-        &mut piece_query,
-        &skill_roster,
-        &mut next_phase,
+        &mut params.input_state,
+        &params.turn_state,
+        &params.player_roster,
+        &mut params.piece_query,
+        &params.skill_roster,
+        &mut params.next_phase,
     );
 
-    let Some(selection) = pressed_selection_key(&keyboard, input_state.candidate_piece_ids().len())
+    let Some(selection) =
+        pressed_selection_key(&keyboard, params.input_state.candidate_piece_ids().len())
     else {
         return;
     };
-    let Some(action) = get_pending_action(&input_state, selection) else {
+    let Some(action) = get_pending_action(&params.input_state, selection) else {
         return;
     };
 
-    let roll_value = turn_state.last_roll.unwrap_or_default();
-    execute_action(
-        action,
-        roll_value,
-        &player_roster,
-        &team_roster,
-        &match_config,
-        &board_layout,
-        &mut piece_query,
-        &mut skill_roster,
-        &mut match_result,
-        &mut turn_state,
-        &mut input_state,
-        &mut next_phase,
-    );
-    clear_dash_arm(&mut skill_roster, turn_state.current_player);
+    let roll_value = params.turn_state.last_roll.unwrap_or_default();
+    let current_player = params.turn_state.current_player;
+    execute_action_from_params(action, roll_value, &mut params);
+    clear_dash_arm(&mut params.skill_roster, current_player);
 }
 
 /// 人类玩家“选棋阶段”鼠标点击处理（点击高亮棋子）。
@@ -645,19 +738,10 @@ fn handle_human_action_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
-    mut input_state: ResMut<TurnInputState>,
-    mut turn_state: ResMut<TurnState>,
-    mut next_phase: ResMut<NextState<GamePhase>>,
     game_phase: Res<State<GamePhase>>,
-    board_layout: Res<BoardLayout>,
-    match_config: Res<MatchConfig>,
-    player_roster: Res<PlayerRoster>,
-    team_roster: Res<TeamRoster>,
-    mut skill_roster: ResMut<SkillRoster>,
-    mut match_result: ResMut<MatchResult>,
-    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    mut params: TurnActionParams,
 ) {
-    if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || match_result.finished {
+    if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || params.match_result.finished {
         return;
     }
 
@@ -679,18 +763,22 @@ fn handle_human_action_click(
     };
 
     refresh_pending_actions_for_dash(
-        &mut input_state,
-        &turn_state,
-        &player_roster,
-        &mut piece_query,
-        &skill_roster,
-        &mut next_phase,
+        &mut params.input_state,
+        &params.turn_state,
+        &params.player_roster,
+        &mut params.piece_query,
+        &params.skill_roster,
+        &mut params.next_phase,
     );
 
     let mut selected_piece_id = None;
     let mut best_distance_sq = f32::MAX;
-    for (piece_id, _, _, transform) in &mut piece_query {
-        if !input_state.candidate_piece_ids().contains(&piece_id.0) {
+    for (piece_id, _, _, transform) in &mut params.piece_query {
+        if !params
+            .input_state
+            .candidate_piece_ids()
+            .contains(&piece_id.0)
+        {
             continue;
         }
 
@@ -707,26 +795,15 @@ fn handle_human_action_click(
     let Some(selected_piece_id) = selected_piece_id else {
         return;
     };
-    let Some(action) = find_pending_action_by_piece_id(&input_state, selected_piece_id) else {
+    let Some(action) = find_pending_action_by_piece_id(&params.input_state, selected_piece_id)
+    else {
         return;
     };
 
-    let roll_value = turn_state.last_roll.unwrap_or_default();
-    execute_action(
-        action,
-        roll_value,
-        &player_roster,
-        &team_roster,
-        &match_config,
-        &board_layout,
-        &mut piece_query,
-        &mut skill_roster,
-        &mut match_result,
-        &mut turn_state,
-        &mut input_state,
-        &mut next_phase,
-    );
-    clear_dash_arm(&mut skill_roster, turn_state.current_player);
+    let roll_value = params.turn_state.last_roll.unwrap_or_default();
+    let current_player = params.turn_state.current_player;
+    execute_action_from_params(action, roll_value, &mut params);
+    clear_dash_arm(&mut params.skill_roster, current_player);
 }
 
 /// Dash 预备后刷新候选动作，确保 UI 与可选列表同步。
@@ -773,6 +850,7 @@ fn refresh_pending_actions_for_dash(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::piece::PieceStatus;
     use crate::domain::player::PlayerControl;
     use crate::gameplay::ai::AiDifficulty;
     use crate::gameplay::match_flow::{
@@ -799,11 +877,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn maybe_use_ai_skills_does_not_arm_dash_before_roll() {
-        let match_config = MatchConfig {
-            mode: GameMode::OneVsOne,
-            ai_difficulty: AiDifficulty::Normal,
+    fn match_config(mode: GameMode, ai_difficulty: AiDifficulty) -> MatchConfig {
+        MatchConfig {
+            mode,
+            ai_difficulty,
             fast_mode: false,
             human_color: PlayerColorChoice::Crimson,
             pieces_per_player: 2,
@@ -813,39 +890,67 @@ mod tests {
                 PlayerControl::Human,
                 PlayerControl::Ai,
             ],
-        };
-        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster { players };
-        let mut skill_roster = build_skill_roster(&player_roster);
-        sync_turn_skill_usage(&mut skill_roster, 2);
+        }
+    }
+
+    fn set_ai_skill_charges(
+        skill_roster: &mut SkillRoster,
+        player_id: u8,
+        snipe: u8,
+        shield: u8,
+        swap: u8,
+        double_dice: u8,
+        dash: u8,
+    ) {
         if let Some(state) = skill_roster
             .players
             .iter_mut()
-            .find(|state| state.player_id == 2)
+            .find(|state| state.player_id == player_id)
         {
-            state.snipe_charges = 0;
-            state.shield_charges = 0;
-            state.swap_charges = 0;
-            state.double_dice_charges = 0;
+            state.snipe_charges = snipe;
+            state.shield_charges = shield;
+            state.swap_charges = swap;
+            state.double_dice_charges = double_dice;
             state.double_dice_armed = false;
-            state.dash_charges = 1;
+            state.dash_charges = dash;
             state.dash_armed = false;
         }
+    }
 
-        let mut world = World::new();
+    fn spawn_test_piece(
+        world: &mut World,
+        piece_id: u8,
+        owner_player_id: u8,
+        team_id: u8,
+        progress: u8,
+        shield: u8,
+    ) {
         world.spawn((
-            PieceId(1),
+            PieceId(piece_id),
             HangarSlot(Vec2::ZERO),
             PieceState {
-                owner_player_id: 2,
-                team_id: 2,
-                status: crate::domain::piece::PieceStatus::Active,
-                progress: 1,
-                shield: 0,
+                owner_player_id,
+                team_id,
+                status: PieceStatus::Active,
+                progress,
+                shield,
                 stack_shield: 0,
             },
             Transform::default(),
         ));
+    }
+
+    #[test]
+    fn maybe_use_ai_skills_does_not_arm_dash_before_roll() {
+        let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Normal);
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        set_ai_skill_charges(&mut skill_roster, 2, 0, 0, 0, 0, 1);
+
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 1, 0);
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
@@ -858,39 +963,116 @@ mod tests {
     }
 
     #[test]
+    fn easy_ai_does_not_use_skills_even_with_targets() {
+        let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Easy);
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
+        spawn_test_piece(&mut world, 2, 1, 1, 12, 0);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+
+        let state = player_skill_state(&skill_roster, 2).unwrap();
+        assert_eq!(state.snipe_charges, 1);
+        assert_eq!(state.shield_charges, 1);
+        assert!(!skill_roster.skill_used_this_turn);
+    }
+
+    #[test]
+    fn normal_ai_prefers_shield_over_opening_snipe() {
+        let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Normal);
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
+        spawn_test_piece(&mut world, 2, 1, 1, 12, 0);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+
+        let state = player_skill_state(&skill_roster, 2).unwrap();
+        assert_eq!(state.snipe_charges, 1);
+        assert_eq!(state.shield_charges, 0);
+        assert!(
+            skill_roster
+                .last_skill_action
+                .as_deref()
+                .is_some_and(|note| note.contains("Shield"))
+        );
+    }
+
+    #[test]
+    fn hard_ai_snipe_requires_target_progress_threshold() {
+        let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Hard);
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        set_ai_skill_charges(&mut skill_roster, 2, 1, 0, 0, 0, 0);
+
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
+        spawn_test_piece(&mut world, 2, 1, 1, HARD_AI_SNIPE_MIN_PROGRESS - 1, 0);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+
+        let state = player_skill_state(&skill_roster, 2).unwrap();
+        assert_eq!(state.snipe_charges, 1);
+        assert!(!skill_roster.skill_used_this_turn);
+    }
+
+    #[test]
+    fn hard_ai_uses_snipe_on_advanced_target() {
+        let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Hard);
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster { players };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        set_ai_skill_charges(&mut skill_roster, 2, 1, 0, 0, 0, 0);
+
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
+        spawn_test_piece(&mut world, 2, 1, 1, HARD_AI_SNIPE_MIN_PROGRESS, 0);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+
+        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+
+        let state = player_skill_state(&skill_roster, 2).unwrap();
+        assert_eq!(state.snipe_charges, 0);
+        assert!(skill_roster.skill_used_this_turn);
+    }
+
+    #[test]
     fn maybe_arm_dash_for_ai_after_roll_arms_dash_when_move_exists() {
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster { players };
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
-        if let Some(state) = skill_roster
-            .players
-            .iter_mut()
-            .find(|state| state.player_id == 2)
-        {
-            state.snipe_charges = 0;
-            state.shield_charges = 0;
-            state.swap_charges = 0;
-            state.double_dice_charges = 0;
-            state.double_dice_armed = false;
-            state.dash_charges = 1;
-            state.dash_armed = false;
-        }
+        set_ai_skill_charges(&mut skill_roster, 2, 0, 0, 0, 0, 1);
 
         let mut world = World::new();
-        world.spawn((
-            PieceId(1),
-            HangarSlot(Vec2::ZERO),
-            PieceState {
-                owner_player_id: 2,
-                team_id: 2,
-                status: crate::domain::piece::PieceStatus::Active,
-                progress: 1,
-                shield: 0,
-                stack_shield: 0,
-            },
-            Transform::default(),
-        ));
+        spawn_test_piece(&mut world, 1, 2, 2, 1, 0);
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
@@ -898,6 +1080,7 @@ mod tests {
 
         maybe_arm_dash_for_ai_after_roll(
             2,
+            AiDifficulty::Normal,
             DiceRoll(2),
             &player_roster,
             &mut skill_roster,

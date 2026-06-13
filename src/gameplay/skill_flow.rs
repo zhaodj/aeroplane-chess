@@ -7,6 +7,8 @@ use crate::gameplay::match_flow::PlayerRoster;
 use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
 use crate::plugins::piece_plugin::PieceId;
 
+pub const MAX_PIECE_SHIELD: u8 = 2;
+
 #[derive(Clone, Debug, Default, Resource)]
 /// 全体玩家技能资源与本回合技能使用状态。
 pub struct SkillRoster {
@@ -189,11 +191,7 @@ pub fn collect_snipe_targets(
     let mut shielded = Vec::new();
 
     for (piece_id, piece_state) in piece_query.iter() {
-        if piece_state.owner_player_id == current_player
-            || piece_state.team_id == current_team
-            || piece_state.status != PieceStatus::Active
-            || piece_state.progress >= MAIN_ROUTE_STEPS
-        {
+        if !is_legal_snipe_target(current_player, current_team, piece_state) {
             continue;
         }
 
@@ -217,30 +215,9 @@ pub fn preferred_shield_target(
 ) -> Option<u8> {
     piece_query
         .iter()
-        .filter(|(_, piece_state)| {
-            piece_state.owner_player_id == player_id
-                && piece_state.status == PieceStatus::Active
-                && piece_state.shield == 0
-        })
+        .filter(|(_, piece_state)| is_legal_shield_target(player_id, piece_state))
         .map(|(piece_id, _)| piece_id.0)
         .min()
-        .or_else(|| {
-            piece_query
-                .iter()
-                .filter(|(_, piece_state)| {
-                    piece_state.owner_player_id == player_id
-                        && piece_state.status == PieceStatus::Active
-                })
-                .map(|(piece_id, _)| piece_id.0)
-                .min()
-        })
-        .or_else(|| {
-            piece_query
-                .iter()
-                .filter(|(_, piece_state)| piece_state.owner_player_id == player_id)
-                .map(|(piece_id, _)| piece_id.0)
-                .min()
-        })
 }
 
 /// AI 是否应当在当前回合使用 Shield。
@@ -256,11 +233,44 @@ pub fn should_ai_use_shield(
         return false;
     }
 
-    piece_query.iter().any(|(_, piece_state)| {
-        piece_state.owner_player_id == player_id
-            && piece_state.status == PieceStatus::Active
-            && piece_state.shield == 0
-    })
+    piece_query
+        .iter()
+        .any(|(_, piece_state)| is_legal_shield_target(player_id, piece_state))
+}
+
+/// 判断棋子是否可作为 Shield 目标。
+pub fn is_legal_shield_target(player_id: u8, piece_state: &PieceState) -> bool {
+    piece_state.owner_player_id == player_id
+        && piece_state.status == PieceStatus::Active
+        && piece_state.shield < MAX_PIECE_SHIELD
+}
+
+/// 判断棋子是否可作为 Snipe 目标。
+pub fn is_legal_snipe_target(
+    current_player: u8,
+    current_team: u8,
+    piece_state: &PieceState,
+) -> bool {
+    piece_state.owner_player_id != current_player
+        && piece_state.team_id != current_team
+        && piece_state.status == PieceStatus::Active
+        && piece_state.progress < MAIN_ROUTE_STEPS
+}
+
+/// 判断棋子是否为当前玩家可操作的 Active 棋子。
+pub fn is_current_player_active_piece(current_player: u8, piece_state: &PieceState) -> bool {
+    piece_state.owner_player_id == current_player && piece_state.status == PieceStatus::Active
+}
+
+/// 判断棋子是否为当前玩家同队队友的 Active 棋子。
+pub fn is_active_teammate_piece(
+    current_player: u8,
+    current_team: u8,
+    piece_state: &PieceState,
+) -> bool {
+    piece_state.owner_player_id != current_player
+        && piece_state.team_id == current_team
+        && piece_state.status == PieceStatus::Active
 }
 
 /// AI 是否应当预备 DoubleDice（用于开局起飞机会）。
@@ -291,7 +301,6 @@ pub fn apply_shield_to_piece(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &mut PieceState)>,
 ) -> Option<u8> {
-    const MAX_PIECE_SHIELD: u8 = 2;
     for (query_piece_id, mut piece_state) in piece_query.iter_mut() {
         if query_piece_id.0 != piece_id {
             continue;
@@ -658,6 +667,41 @@ mod tests {
 
         assert!(should_ai_use_shield(2, &skill_roster, &query));
         assert_eq!(preferred_shield_target(2, &query), Some(1));
+    }
+
+    #[test]
+    fn shield_target_requires_active_piece_below_max_shield() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::InHangar,
+                progress: 0,
+                shield: 0,
+                stack_shield: 0,
+            },
+        ));
+        world.spawn((
+            PieceId(2),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: 4,
+                shield: MAX_PIECE_SHIELD,
+                stack_shield: 0,
+            },
+        ));
+
+        let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
+            SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world);
+        let skill_roster = build_skill_roster(&sample_roster());
+
+        assert!(!should_ai_use_shield(2, &skill_roster, &query));
+        assert_eq!(preferred_shield_target(2, &query), None);
     }
 
     #[test]

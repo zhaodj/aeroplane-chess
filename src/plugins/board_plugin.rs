@@ -36,6 +36,14 @@ struct SvgTriangle {
     fill: &'static str,
 }
 
+#[derive(Clone, Copy)]
+struct DrawStyle {
+    fill: Color,
+    border: Color,
+    border_width: f32,
+    z: f32,
+}
+
 fn spawn_board(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -47,10 +55,12 @@ fn spawn_board(
         &mut commands,
         Vec2::ZERO,
         Vec2::splat(690.0),
-        Color::srgb(0.96, 0.96, 0.93),
-        Color::srgb(0.16, 0.16, 0.16),
-        3.0,
-        BOARD_Z_LAYER - 3.0,
+        DrawStyle {
+            fill: Color::srgb(0.96, 0.96, 0.93),
+            border: Color::srgb(0.16, 0.16, 0.16),
+            border_width: 3.0,
+            z: BOARD_Z_LAYER - 3.0,
+        },
         "BoardBackdrop",
     );
 
@@ -60,10 +70,12 @@ fn spawn_board(
             &mut commands,
             rect.center,
             rect.size,
-            svg_color(rect.fill),
-            Color::BLACK,
-            1.8,
-            BOARD_Z_LAYER - 1.0,
+            DrawStyle {
+                fill: svg_color(rect.fill),
+                border: Color::BLACK,
+                border_width: 1.8,
+                z: BOARD_Z_LAYER - 1.0,
+            },
             "SvgRect",
         );
     }
@@ -73,13 +85,13 @@ fn spawn_board(
             &mut commands,
             &mut meshes,
             &mut materials,
-            tri.a,
-            tri.b,
-            tri.c,
-            svg_color(tri.fill),
-            Color::BLACK,
-            1.8,
-            BOARD_Z_LAYER - 0.9,
+            [tri.a, tri.b, tri.c],
+            DrawStyle {
+                fill: svg_color(tri.fill),
+                border: Color::BLACK,
+                border_width: 1.8,
+                z: BOARD_Z_LAYER - 0.9,
+            },
             "SvgTri",
         );
     }
@@ -92,10 +104,12 @@ fn spawn_board(
             &mut materials,
             tile.world_pos,
             16.0,
-            Color::WHITE,
-            Color::srgb(0.48, 0.48, 0.48),
-            1.2,
-            BOARD_Z_LAYER + 0.05,
+            DrawStyle {
+                fill: Color::WHITE,
+                border: Color::srgb(0.48, 0.48, 0.48),
+                border_width: 1.2,
+                z: BOARD_Z_LAYER + 0.05,
+            },
             "TrackDot",
         );
     }
@@ -109,10 +123,12 @@ fn spawn_board(
                 &mut materials,
                 lane_pos,
                 16.0,
-                Color::WHITE,
-                Color::srgb(0.48, 0.48, 0.48),
-                1.2,
-                BOARD_Z_LAYER + 0.05,
+                DrawStyle {
+                    fill: Color::WHITE,
+                    border: Color::srgb(0.48, 0.48, 0.48),
+                    border_width: 1.2,
+                    z: BOARD_Z_LAYER + 0.05,
+                },
                 "HomeLaneDot",
             );
         }
@@ -137,10 +153,12 @@ fn spawn_board(
                 &mut materials,
                 airport_center + offset,
                 24.5,
-                Color::WHITE,
-                Color::BLACK,
-                2.0,
-                BOARD_Z_LAYER + 0.20,
+                DrawStyle {
+                    fill: Color::WHITE,
+                    border: Color::BLACK,
+                    border_width: 2.0,
+                    z: BOARD_Z_LAYER + 0.20,
+                },
                 "HangarPad",
             );
         }
@@ -159,10 +177,12 @@ fn spawn_board(
             &mut materials,
             pos,
             17.0,
-            Color::WHITE,
-            Color::BLACK,
-            2.0,
-            BOARD_Z_LAYER + 0.30,
+            DrawStyle {
+                fill: Color::WHITE,
+                border: Color::BLACK,
+                border_width: 2.0,
+                z: BOARD_Z_LAYER + 0.30,
+            },
             "CenterNode",
         );
         spawn_plus_icon(
@@ -235,10 +255,12 @@ fn spawn_tile_marker(
                 materials,
                 pos,
                 8.4,
-                Color::WHITE,
-                Color::srgb(0.93, 0.22, 0.35),
-                2.8,
-                marker_z,
+                DrawStyle {
+                    fill: Color::WHITE,
+                    border: Color::srgb(0.93, 0.22, 0.35),
+                    border_width: 2.8,
+                    z: marker_z,
+                },
                 format!("EventRing_{route_index}"),
             );
             commands.spawn((
@@ -270,13 +292,17 @@ fn spawn_tile_marker(
                 commands,
                 meshes,
                 materials,
-                head,
-                head - direction * 7.5 + perp * 4.0,
-                head - direction * 7.5 - perp * 4.0,
-                Color::srgb(0.16, 0.55, 0.95),
-                Color::srgb(0.06, 0.20, 0.35),
-                1.0,
-                marker_z + 0.01,
+                [
+                    head,
+                    head - direction * 7.5 + perp * 4.0,
+                    head - direction * 7.5 - perp * 4.0,
+                ],
+                DrawStyle {
+                    fill: Color::srgb(0.16, 0.55, 0.95),
+                    border: Color::srgb(0.06, 0.20, 0.35),
+                    border_width: 1.0,
+                    z: marker_z + 0.01,
+                },
                 format!("JumpHead_{route_index}"),
             );
         }
@@ -288,22 +314,19 @@ fn spawn_square_with_border(
     commands: &mut Commands,
     center: Vec2,
     size: Vec2,
-    fill: Color,
-    border: Color,
-    border_width: f32,
-    z: f32,
+    style: DrawStyle,
     name: impl Into<String>,
 ) {
     let name = name.into();
     commands.spawn((
-        Sprite::from_color(border, size + Vec2::splat(border_width * 2.0)),
-        Transform::from_xyz(center.x, center.y, z),
+        Sprite::from_color(style.border, size + Vec2::splat(style.border_width * 2.0)),
+        Transform::from_xyz(center.x, center.y, style.z),
         Name::new(format!("{name}_border")),
         BoardSceneEntity,
     ));
     commands.spawn((
-        Sprite::from_color(fill, size),
-        Transform::from_xyz(center.x, center.y, z + 0.01),
+        Sprite::from_color(style.fill, size),
+        Transform::from_xyz(center.x, center.y, style.z + 0.01),
         Name::new(name),
         BoardSceneEntity,
     ));
@@ -316,24 +339,21 @@ fn spawn_circle_with_border(
     materials: &mut Assets<ColorMaterial>,
     center: Vec2,
     radius: f32,
-    fill: Color,
-    border: Color,
-    border_width: f32,
-    z: f32,
+    style: DrawStyle,
     name: impl Into<String>,
 ) {
     let name = name.into();
     commands.spawn((
-        Mesh2d(meshes.add(Circle::new(radius + border_width))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(border))),
-        Transform::from_xyz(center.x, center.y, z),
+        Mesh2d(meshes.add(Circle::new(radius + style.border_width))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(style.border))),
+        Transform::from_xyz(center.x, center.y, style.z),
         Name::new(format!("{name}_border")),
         BoardSceneEntity,
     ));
     commands.spawn((
         Mesh2d(meshes.add(Circle::new(radius))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(fill))),
-        Transform::from_xyz(center.x, center.y, z + 0.01),
+        MeshMaterial2d(materials.add(ColorMaterial::from(style.fill))),
+        Transform::from_xyz(center.x, center.y, style.z + 0.01),
         Name::new(name),
         BoardSceneEntity,
     ));
@@ -344,16 +364,12 @@ fn spawn_triangle_with_border(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
-    a: Vec2,
-    b: Vec2,
-    c: Vec2,
-    fill: Color,
-    border: Color,
-    border_width: f32,
-    z: f32,
+    points: [Vec2; 3],
+    style: DrawStyle,
     name: impl Into<String>,
 ) {
     let name = name.into();
+    let [a, b, c] = points;
     let centroid = (a + b + c) / 3.0;
     let outer_a = a - centroid;
     let outer_b = b - centroid;
@@ -361,8 +377,8 @@ fn spawn_triangle_with_border(
 
     commands.spawn((
         Mesh2d(meshes.add(Triangle2d::new(outer_a, outer_b, outer_c))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(border))),
-        Transform::from_xyz(centroid.x, centroid.y, z),
+        MeshMaterial2d(materials.add(ColorMaterial::from(style.border))),
+        Transform::from_xyz(centroid.x, centroid.y, style.z),
         Name::new(format!("{name}_border")),
         BoardSceneEntity,
     ));
@@ -372,7 +388,7 @@ fn spawn_triangle_with_border(
         .max(outer_b.length())
         .max(outer_c.length())
         .max(1.0);
-    let inset_scale = ((max_radius - border_width) / max_radius).clamp(0.72, 0.985);
+    let inset_scale = ((max_radius - style.border_width) / max_radius).clamp(0.72, 0.985);
 
     commands.spawn((
         Mesh2d(meshes.add(Triangle2d::new(
@@ -380,8 +396,8 @@ fn spawn_triangle_with_border(
             outer_b * inset_scale,
             outer_c * inset_scale,
         ))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(fill))),
-        Transform::from_xyz(centroid.x, centroid.y, z + 0.01),
+        MeshMaterial2d(materials.add(ColorMaterial::from(style.fill))),
+        Transform::from_xyz(centroid.x, centroid.y, style.z + 0.01),
         Name::new(name),
         BoardSceneEntity,
     ));

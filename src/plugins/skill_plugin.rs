@@ -1,14 +1,16 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
 use crate::domain::piece::PieceState;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster};
 use crate::gameplay::skill_flow::{
-    SkillRoster, arm_dash, arm_double_dice, build_skill_roster, can_use_skill_this_turn,
-    current_player_type, dash_bonus, mark_skill_used, player_skill_state, spend_shield_charge,
-    spend_snipe_charge, spend_swap_charge, sync_turn_skill_usage,
+    MAX_PIECE_SHIELD, SkillRoster, arm_dash, arm_double_dice, build_skill_roster,
+    can_use_skill_this_turn, current_player_type, dash_bonus, is_active_teammate_piece,
+    is_current_player_active_piece, is_legal_shield_target, is_legal_snipe_target, mark_skill_used,
+    player_skill_state, spend_shield_charge, spend_snipe_charge, spend_swap_charge,
+    sync_turn_skill_usage,
 };
-use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
 use crate::gameplay::turn_flow::TurnState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
@@ -65,6 +67,40 @@ impl SkillTargetState {
     }
 }
 
+type SkillPieceQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PieceId,
+        &'static HangarSlot,
+        &'static mut PieceState,
+        &'static mut Transform,
+    ),
+>;
+
+#[derive(SystemParam)]
+struct HumanSkillInputParams<'w, 's> {
+    match_config: Res<'w, MatchConfig>,
+    player_roster: Res<'w, PlayerRoster>,
+    match_result: Res<'w, MatchResult>,
+    game_phase: Res<'w, State<GamePhase>>,
+    turn_state: Res<'w, TurnState>,
+    skill_roster: ResMut<'w, SkillRoster>,
+    skill_ui_request: ResMut<'w, SkillUiRequest>,
+    target_state: ResMut<'w, SkillTargetState>,
+    next_phase: ResMut<'w, NextState<GamePhase>>,
+    piece_query: SkillPieceQuery<'w, 's>,
+}
+
+#[derive(SystemParam)]
+struct SnipeTargetParams<'w, 's> {
+    game_phase: Res<'w, State<GamePhase>>,
+    target_state: ResMut<'w, SkillTargetState>,
+    skill_roster: ResMut<'w, SkillRoster>,
+    next_phase: ResMut<'w, NextState<GamePhase>>,
+    piece_query: SkillPieceQuery<'w, 's>,
+}
+
 impl Plugin for SkillPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::InGame), setup_skill_roster)
@@ -113,16 +149,7 @@ fn sync_skill_turn_state(
 /// 人类技能入口：统一处理按键与 HUD 点击触发的技能动作。
 fn handle_human_skill_input(
     keyboard: Res<ButtonInput<KeyCode>>,
-    match_config: Res<MatchConfig>,
-    player_roster: Res<PlayerRoster>,
-    match_result: Res<MatchResult>,
-    game_phase: Res<State<GamePhase>>,
-    turn_state: Res<TurnState>,
-    mut skill_roster: ResMut<SkillRoster>,
-    mut skill_ui_request: ResMut<SkillUiRequest>,
-    mut target_state: ResMut<SkillTargetState>,
-    mut next_phase: ResMut<NextState<GamePhase>>,
-    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    mut params: HumanSkillInputParams,
 ) {
     let requested_action = if keyboard.just_pressed(KeyCode::KeyQ) {
         Some(SkillUiAction::Shield)
@@ -137,208 +164,220 @@ fn handle_human_skill_input(
     } else {
         None
     }
-    .or_else(|| skill_ui_request.take());
+    .or_else(|| params.skill_ui_request.take());
 
     let Some(action) = requested_action else {
         return;
     };
 
-    if match_result.finished {
+    if params.match_result.finished {
         return;
     }
 
-    if current_player_type(&player_roster, turn_state.current_player)
+    if current_player_type(&params.player_roster, params.turn_state.current_player)
         != Some(crate::domain::player::PlayerControl::Human)
     {
         return;
     }
 
-    if !can_use_skill_this_turn(&skill_roster, turn_state.current_player) {
-        let blocked_by_event = player_skill_state(&skill_roster, turn_state.current_player)
-            .map(|state| state.skill_blocked_this_turn)
-            .unwrap_or(false);
-        skill_roster.last_skill_action = Some(if blocked_by_event {
+    if !can_use_skill_this_turn(&params.skill_roster, params.turn_state.current_player) {
+        let blocked_by_event =
+            player_skill_state(&params.skill_roster, params.turn_state.current_player)
+                .map(|state| state.skill_blocked_this_turn)
+                .unwrap_or(false);
+        params.skill_roster.last_skill_action = Some(if blocked_by_event {
             format!(
                 "P{} cannot use skills this turn (event lock)",
-                turn_state.current_player
+                params.turn_state.current_player
             )
         } else {
             format!(
                 "P{} already used a skill this turn",
-                turn_state.current_player
+                params.turn_state.current_player
             )
         });
         return;
     }
 
     match action {
-        SkillUiAction::Shield if matches!(game_phase.get(), GamePhase::AwaitDice) => {
-            let Some(target_piece_id) =
-                preferred_shield_target_for_full_query(turn_state.current_player, &piece_query)
-            else {
-                skill_roster.last_skill_action = Some(format!(
+        SkillUiAction::Shield if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
+            let Some(target_piece_id) = preferred_shield_target_for_full_query(
+                params.turn_state.current_player,
+                &params.piece_query,
+            ) else {
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} could not find a piece for Shield",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
                 return;
             };
 
-            if !spend_shield_charge(&mut skill_roster, turn_state.current_player) {
-                skill_roster.last_skill_action = Some(format!(
+            if !spend_shield_charge(&mut params.skill_roster, params.turn_state.current_player) {
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} has no Shield charges left",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
                 return;
             }
 
             if let Some(shield_value) =
-                apply_shield_to_piece_for_full_query(target_piece_id, &mut piece_query)
+                apply_shield_to_piece_for_full_query(target_piece_id, &mut params.piece_query)
             {
-                mark_skill_used(&mut skill_roster, turn_state.current_player);
-                skill_roster.last_skill_action = Some(format!(
+                mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} used Shield on piece #{} ({})",
-                    turn_state.current_player, target_piece_id, shield_value
+                    params.turn_state.current_player, target_piece_id, shield_value
                 ));
             }
         }
-        SkillUiAction::Snipe if matches!(game_phase.get(), GamePhase::AwaitDice) => {
-            let Some(current_player_profile) = player_roster
+        SkillUiAction::Snipe if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
+            let Some(current_team_id) = params
+                .player_roster
                 .players
                 .iter()
-                .find(|player| player.state.player_id == turn_state.current_player)
+                .find(|player| player.state.player_id == params.turn_state.current_player)
+                .map(|player| player.state.team_id)
             else {
                 return;
             };
             let targets = collect_snipe_targets_for_full_query(
-                turn_state.current_player,
-                current_player_profile.state.team_id,
-                &piece_query,
+                params.turn_state.current_player,
+                current_team_id,
+                &params.piece_query,
             );
 
             if targets.is_empty() {
-                skill_roster.last_skill_action = Some(format!(
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} found no Snipe target",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
                 return;
             }
-            if !spend_snipe_charge(&mut skill_roster, turn_state.current_player) {
-                skill_roster.last_skill_action = Some(format!(
+            if !spend_snipe_charge(&mut params.skill_roster, params.turn_state.current_player) {
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} has no Snipe charges left",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
                 return;
             }
 
             if targets.len() == 1 {
-                mark_skill_used(&mut skill_roster, turn_state.current_player);
-                skill_roster.last_skill_action = Some(execute_snipe(targets[0], &mut piece_query));
+                mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
+                params.skill_roster.last_skill_action =
+                    Some(execute_snipe(targets[0], &mut params.piece_query));
                 return;
             }
 
-            mark_skill_used(&mut skill_roster, turn_state.current_player);
-            target_state.candidate_piece_ids = targets;
-            target_state.prompt = Some(format!(
+            mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
+            params.target_state.candidate_piece_ids = targets;
+            params.target_state.prompt = Some(format!(
                 "Select a Snipe target with click or {}",
-                (1..=target_state.candidate_piece_ids.len())
+                (1..=params.target_state.candidate_piece_ids.len())
                     .map(|index| index.to_string())
                     .collect::<Vec<_>>()
                     .join("/")
             ));
-            target_state.active = true;
-            next_phase.set(GamePhase::ResolveSkillEffect);
+            params.target_state.active = true;
+            params.next_phase.set(GamePhase::ResolveSkillEffect);
         }
-        SkillUiAction::DoubleDice if matches!(game_phase.get(), GamePhase::AwaitDice) => {
-            if arm_double_dice(&mut skill_roster, turn_state.current_player) {
-                mark_skill_used(&mut skill_roster, turn_state.current_player);
-                skill_roster.last_skill_action = Some(format!(
+        SkillUiAction::DoubleDice if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
+            if arm_double_dice(&mut params.skill_roster, params.turn_state.current_player) {
+                mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} armed DoubleDice for the next roll",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
             } else {
-                let armed = player_skill_state(&skill_roster, turn_state.current_player)
-                    .map(|state| state.double_dice_armed)
-                    .unwrap_or(false);
+                let armed =
+                    player_skill_state(&params.skill_roster, params.turn_state.current_player)
+                        .map(|state| state.double_dice_armed)
+                        .unwrap_or(false);
                 let message = if armed {
                     format!(
                         "P{} already has DoubleDice armed",
-                        turn_state.current_player
+                        params.turn_state.current_player
                     )
                 } else {
                     format!(
                         "P{} has no DoubleDice charges left",
-                        turn_state.current_player
+                        params.turn_state.current_player
                     )
                 };
-                skill_roster.last_skill_action = Some(message);
+                params.skill_roster.last_skill_action = Some(message);
             }
         }
         SkillUiAction::Dash
-            if matches!(game_phase.get(), GamePhase::AwaitPieceSelect)
-                && dash_bonus(&skill_roster, turn_state.current_player) == 0 =>
+            if matches!(params.game_phase.get(), GamePhase::AwaitPieceSelect)
+                && dash_bonus(&params.skill_roster, params.turn_state.current_player) == 0 =>
         {
-            if arm_dash(&mut skill_roster, turn_state.current_player) {
-                mark_skill_used(&mut skill_roster, turn_state.current_player);
-                skill_roster.last_skill_action = Some(format!(
+            if arm_dash(&mut params.skill_roster, params.turn_state.current_player) {
+                mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} armed Dash for +3 movement",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
             } else {
-                skill_roster.last_skill_action = Some(format!(
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} has no Dash charges left",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
             }
         }
-        SkillUiAction::Swap if matches!(game_phase.get(), GamePhase::AwaitDice) => {
-            if match_config.mode != GameMode::TwoVsTwo {
-                skill_roster.last_skill_action = Some("Swap is only available in 2v2".to_string());
+        SkillUiAction::Swap if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
+            if params.match_config.mode != GameMode::TwoVsTwo {
+                params.skill_roster.last_skill_action =
+                    Some("Swap is only available in 2v2".to_string());
                 return;
             }
 
-            let Some(current_player_profile) = player_roster
+            let Some(current_team_id) = params
+                .player_roster
                 .players
                 .iter()
-                .find(|player| player.state.player_id == turn_state.current_player)
+                .find(|player| player.state.player_id == params.turn_state.current_player)
+                .map(|player| player.state.team_id)
             else {
                 return;
             };
 
             let Some(teammate_piece_id) = find_active_teammate_piece_for_swap(
-                turn_state.current_player,
-                current_player_profile.state.team_id,
-                &piece_query,
+                params.turn_state.current_player,
+                current_team_id,
+                &params.piece_query,
             ) else {
-                skill_roster.last_skill_action = Some(format!(
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} found no teammate piece to Swap with",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
                 return;
             };
-            if !current_player_has_active_piece(turn_state.current_player, &piece_query) {
-                skill_roster.last_skill_action = Some(format!(
+            if !current_player_has_active_piece(
+                params.turn_state.current_player,
+                &params.piece_query,
+            ) {
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} needs an active piece to use Swap",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
                 return;
             }
-            if !spend_swap_charge(&mut skill_roster, turn_state.current_player) {
-                skill_roster.last_skill_action = Some(format!(
+            if !spend_swap_charge(&mut params.skill_roster, params.turn_state.current_player) {
+                params.skill_roster.last_skill_action = Some(format!(
                     "P{} has no Swap charges left",
-                    turn_state.current_player
+                    params.turn_state.current_player
                 ));
                 return;
             }
 
-            mark_skill_used(&mut skill_roster, turn_state.current_player);
-            skill_roster.last_skill_action = Some(execute_swap(
-                turn_state.current_player,
+            mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
+            params.skill_roster.last_skill_action = Some(execute_swap(
+                params.turn_state.current_player,
                 teammate_piece_id,
-                &mut piece_query,
+                &mut params.piece_query,
             ));
         }
         _ => {
-            skill_roster.last_skill_action =
+            params.skill_roster.last_skill_action =
                 Some("Skill not available in current phase".to_string());
         }
     }
@@ -347,20 +386,18 @@ fn handle_human_skill_input(
 /// Snipe 目标选择的键盘分支（数字键 + Esc 取消）。
 fn handle_human_snipe_key_select(
     keyboard: Res<ButtonInput<KeyCode>>,
-    game_phase: Res<State<GamePhase>>,
-    mut target_state: ResMut<SkillTargetState>,
-    mut skill_roster: ResMut<SkillRoster>,
-    mut next_phase: ResMut<NextState<GamePhase>>,
-    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    mut params: SnipeTargetParams,
 ) {
-    if !matches!(game_phase.get(), GamePhase::ResolveSkillEffect) || !target_state.is_active() {
+    if !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
+        || !params.target_state.is_active()
+    {
         return;
     }
 
     if keyboard.just_pressed(KeyCode::Escape) {
-        skill_roster.last_skill_action = Some("Snipe selection cancelled".to_string());
-        clear_target_state(&mut target_state);
-        next_phase.set(GamePhase::AwaitDice);
+        params.skill_roster.last_skill_action = Some("Snipe selection cancelled".to_string());
+        clear_target_state(&mut params.target_state);
+        params.next_phase.set(GamePhase::AwaitDice);
         return;
     }
 
@@ -371,16 +408,17 @@ fn handle_human_snipe_key_select(
         KeyCode::Digit4,
     ];
     let Some(selection) = keys.iter().enumerate().find_map(|(index, key)| {
-        (index < target_state.candidate_piece_ids.len() && keyboard.just_pressed(*key))
+        (index < params.target_state.candidate_piece_ids.len() && keyboard.just_pressed(*key))
             .then_some(index)
     }) else {
         return;
     };
 
-    let target_piece_id = target_state.candidate_piece_ids[selection];
-    skill_roster.last_skill_action = Some(execute_snipe(target_piece_id, &mut piece_query));
-    clear_target_state(&mut target_state);
-    next_phase.set(GamePhase::AwaitDice);
+    let target_piece_id = params.target_state.candidate_piece_ids[selection];
+    params.skill_roster.last_skill_action =
+        Some(execute_snipe(target_piece_id, &mut params.piece_query));
+    clear_target_state(&mut params.target_state);
+    params.next_phase.set(GamePhase::AwaitDice);
 }
 
 /// Snipe 目标选择的鼠标分支（点击高亮目标棋子）。
@@ -388,13 +426,11 @@ fn handle_human_snipe_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
-    game_phase: Res<State<GamePhase>>,
-    mut target_state: ResMut<SkillTargetState>,
-    mut skill_roster: ResMut<SkillRoster>,
-    mut next_phase: ResMut<NextState<GamePhase>>,
-    mut piece_query: Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    mut params: SnipeTargetParams,
 ) {
-    if !matches!(game_phase.get(), GamePhase::ResolveSkillEffect) || !target_state.is_active() {
+    if !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
+        || !params.target_state.is_active()
+    {
         return;
     }
     if !mouse.just_pressed(MouseButton::Left) {
@@ -416,8 +452,12 @@ fn handle_human_snipe_click(
 
     let mut selected_piece_id = None;
     let mut best_distance_sq = f32::MAX;
-    for (piece_id, _, _, transform) in &mut piece_query {
-        if !target_state.candidate_piece_ids.contains(&piece_id.0) {
+    for (piece_id, _, _, transform) in &mut params.piece_query {
+        if !params
+            .target_state
+            .candidate_piece_ids
+            .contains(&piece_id.0)
+        {
             continue;
         }
 
@@ -434,9 +474,10 @@ fn handle_human_snipe_click(
     let Some(target_piece_id) = selected_piece_id else {
         return;
     };
-    skill_roster.last_skill_action = Some(execute_snipe(target_piece_id, &mut piece_query));
-    clear_target_state(&mut target_state);
-    next_phase.set(GamePhase::AwaitDice);
+    params.skill_roster.last_skill_action =
+        Some(execute_snipe(target_piece_id, &mut params.piece_query));
+    clear_target_state(&mut params.target_state);
+    params.next_phase.set(GamePhase::AwaitDice);
 }
 
 /// 清理技能目标选择状态。
@@ -446,37 +487,16 @@ fn clear_target_state(target_state: &mut SkillTargetState) {
     target_state.active = false;
 }
 
-/// 选择 Shield 目标：优先无盾 Active，其次任意 Active，最后任意己方棋子。
+/// 选择 Shield 目标：仅允许己方 Active 且未满盾棋子。
 fn preferred_shield_target_for_full_query(
     player_id: u8,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
-    let mut unshielded_active = Vec::new();
-    let mut active = Vec::new();
-    let mut any_owned = Vec::new();
-
-    for (piece_id, _, piece_state, _) in piece_query.iter() {
-        if piece_state.owner_player_id != player_id {
-            continue;
-        }
-
-        any_owned.push(piece_id.0);
-        if piece_state.status == crate::domain::piece::PieceStatus::Active {
-            active.push(piece_id.0);
-            if piece_state.shield == 0 {
-                unshielded_active.push(piece_id.0);
-            }
-        }
-    }
-
-    unshielded_active.sort_unstable();
-    active.sort_unstable();
-    any_owned.sort_unstable();
-    unshielded_active
-        .into_iter()
-        .next()
-        .or_else(|| active.into_iter().next())
-        .or_else(|| any_owned.into_iter().next())
+    piece_query
+        .iter()
+        .filter(|(_, _, piece_state, _)| is_legal_shield_target(player_id, piece_state))
+        .map(|(piece_id, _, _, _)| piece_id.0)
+        .min()
 }
 
 /// 给目标棋子加盾（技能插件查询版本）。
@@ -484,7 +504,6 @@ fn apply_shield_to_piece_for_full_query(
     piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
-    const MAX_PIECE_SHIELD: u8 = 2;
     for (query_piece_id, _, mut piece_state, _) in piece_query.iter_mut() {
         if query_piece_id.0 != piece_id {
             continue;
@@ -505,11 +524,7 @@ fn collect_snipe_targets_for_full_query(
     let mut shielded = Vec::new();
 
     for (piece_id, _, piece_state, _) in piece_query.iter() {
-        if piece_state.owner_player_id == current_player
-            || piece_state.team_id == current_team
-            || piece_state.status != crate::domain::piece::PieceStatus::Active
-            || piece_state.progress >= MAIN_ROUTE_STEPS
-        {
+        if !is_legal_snipe_target(current_player, current_team, piece_state) {
             continue;
         }
 
@@ -562,10 +577,9 @@ fn current_player_has_active_piece(
     current_player: u8,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> bool {
-    piece_query.iter().any(|(_, _, piece_state, _)| {
-        piece_state.owner_player_id == current_player
-            && piece_state.status == crate::domain::piece::PieceStatus::Active
-    })
+    piece_query
+        .iter()
+        .any(|(_, _, piece_state, _)| is_current_player_active_piece(current_player, piece_state))
 }
 
 /// 查找可用于 Swap 的队友 Active 棋子。
@@ -577,9 +591,7 @@ fn find_active_teammate_piece_for_swap(
     let mut candidates = piece_query
         .iter()
         .filter(|(_, _, piece_state, _)| {
-            piece_state.owner_player_id != current_player
-                && piece_state.team_id == current_team
-                && piece_state.status == crate::domain::piece::PieceStatus::Active
+            is_active_teammate_piece(current_player, current_team, piece_state)
         })
         .map(|(piece_id, _, _, _)| piece_id.0)
         .collect::<Vec<_>>();
@@ -640,6 +652,7 @@ fn execute_swap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
     use bevy::ecs::system::SystemState;
 
     #[test]

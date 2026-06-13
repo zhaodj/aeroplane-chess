@@ -34,8 +34,16 @@
         return canvas;
       }
 
+      function syncCanvasSize(canvas) {
+        const scale = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.floor(window.innerWidth * scale));
+        canvas.height = Math.max(1, Math.floor(window.innerHeight * scale));
+      }
+
       async function boot() {
-        ensureCanvas();
+        const canvas = ensureCanvas();
+        syncCanvasSize(canvas);
+        window.addEventListener("resize", () => syncCanvasSize(canvas));
         await init();
       }
 
