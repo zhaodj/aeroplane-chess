@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
 use crate::domain::player::PlayerControl;
+use crate::domain::rules::LaunchRule;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
 use crate::states::AppState;
 
@@ -67,6 +68,7 @@ enum ModeSelectAction {
         color: PlayerColorChoice,
     },
     SetPieces(u8),
+    SetLaunchRule(LaunchRule),
     SetPlayerControl {
         player_index: usize,
         control: PlayerControl,
@@ -88,19 +90,20 @@ const MAIN_START_WIDTH: f32 = 360.0;
 const MAIN_START_HEIGHT: f32 = 62.0;
 
 const SECTION_LABEL_X: f32 = 96.0;
-const OPTION_LEFT: f32 = 350.0;
-const OPTION_W: f32 = 108.0;
-const OPTION_H: f32 = 40.0;
+const OPTION_LEFT: f32 = 336.0;
+const OPTION_W: f32 = 112.0;
+const OPTION_H: f32 = 36.0;
 const OPTION_GAP: f32 = 12.0;
-const MODE_ROW_TOP: f32 = 150.0;
-const COLOR_ROW_START_TOP: f32 = 208.0;
-const COLOR_ROW_GAP: f32 = 42.0;
-const PIECES_ROW_TOP: f32 = 388.0;
-const CONTROL_ROW_START_TOP: f32 = 444.0;
-const CONTROL_ROW_GAP: f32 = 42.0;
-const BOTTOM_ROW_TOP: f32 = 618.0;
+const MODE_ROW_TOP: f32 = 128.0;
+const COLOR_ROW_START_TOP: f32 = 184.0;
+const COLOR_ROW_GAP: f32 = 40.0;
+const PIECES_ROW_TOP: f32 = 356.0;
+const LAUNCH_RULE_ROW_TOP: f32 = 404.0;
+const CONTROL_ROW_START_TOP: f32 = 456.0;
+const CONTROL_ROW_GAP: f32 = 44.0;
+const BOTTOM_ROW_TOP: f32 = 646.0;
 const COLOR_SWATCH_W: f32 = 54.0;
-const COLOR_SWATCH_H: f32 = 34.0;
+const COLOR_SWATCH_H: f32 = 32.0;
 
 fn spawn_main_menu(mut commands: Commands) {
     // 主菜单：标题 + 开始按钮（支持点击与回车）。
@@ -153,14 +156,16 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
     commands.spawn((
         Text::new(mode_select_content(&match_setup)),
         TextFont {
-            font_size: 24.0,
+            font_size: 20.0,
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(22.0),
             left: Val::Px(MENU_LEFT),
+            width: Val::Px(760.0),
             ..default()
         },
         Name::new("ModeSelectText"),
@@ -238,6 +243,22 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
         );
     }
 
+    spawn_section_label(&mut commands, "Launch Rule", LAUNCH_RULE_ROW_TOP + 7.0);
+    for (rule_index, launch_rule) in LaunchRule::ALL.iter().enumerate() {
+        spawn_option(
+            &mut commands,
+            ModeSelectAction::SetLaunchRule(*launch_rule),
+            ClickRect {
+                x: OPTION_LEFT + rule_index as f32 * (OPTION_W + OPTION_GAP),
+                y: LAUNCH_RULE_ROW_TOP,
+                w: OPTION_W,
+                h: OPTION_H,
+            },
+            launch_rule.label(),
+            Color::srgba(0.53, 0.77, 0.96, 0.26),
+        );
+    }
+
     for player_index in 0..4usize {
         let row_top = CONTROL_ROW_START_TOP + player_index as f32 * CONTROL_ROW_GAP;
         spawn_section_label(
@@ -283,7 +304,7 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
         ClickRect {
             x: OPTION_LEFT,
             y: BOTTOM_ROW_TOP,
-            w: OPTION_W * 1.5,
+            w: OPTION_W * 1.58,
             h: OPTION_H + 6.0,
         },
         "Start Match",
@@ -293,7 +314,7 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
         &mut commands,
         ModeSelectAction::Back,
         ClickRect {
-            x: OPTION_LEFT + OPTION_W * 1.5 + OPTION_GAP,
+            x: OPTION_LEFT + OPTION_W * 1.58 + OPTION_GAP,
             y: BOTTOM_ROW_TOP,
             w: OPTION_W * 1.2,
             h: OPTION_H + 6.0,
@@ -308,7 +329,7 @@ fn spawn_section_label(commands: &mut Commands, label: &str, top: f32) {
     commands.spawn((
         Text::new(label),
         TextFont {
-            font_size: 22.0,
+            font_size: 20.0,
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
@@ -350,9 +371,14 @@ fn spawn_box_with_label(
             top: Val::Px(rect.y),
             width: Val::Px(rect.w),
             height: Val::Px(rect.h),
+            border: UiRect::all(Val::Px(2.0)),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::horizontal(Val::Px(6.0)),
             ..default()
         },
         BackgroundColor(color),
+        BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.20)),
         Name::new("MenuOptionBox"),
         MenuEntity,
     ));
@@ -367,22 +393,18 @@ fn spawn_box_with_label(
     }
 
     if !label.is_empty() {
-        commands.spawn((
-            Text::new(label),
-            TextFont {
-                font_size,
-                ..default()
-            },
-            TextColor(Color::srgb(0.10, 0.16, 0.24)),
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(rect.y + (rect.h - font_size) * 0.5),
-                left: Val::Px(rect.x + 14.0),
-                ..default()
-            },
-            Name::new("MenuOptionLabel"),
-            MenuEntity,
-        ));
+        entity.with_children(|parent| {
+            parent.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextLayout::new_with_justify(Justify::Center),
+                Name::new("MenuOptionLabel"),
+            ));
+        });
     }
 }
 
@@ -404,22 +426,27 @@ fn mode_select_content(match_setup: &MatchSetup) -> String {
 
     let colors = match_setup.normalized_player_colors();
 
+    let active = match_setup.active_player_count();
+    let player_summary = (0..4usize)
+        .map(|index| {
+            let state = if index < active { "" } else { " off" };
+            format!(
+                "P{} {}/{}{}",
+                index + 1,
+                colors[index].label(),
+                c(controls[index]),
+                state
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("   ");
+
     format!(
         "Match Setup\n\
-Direct-select options (no cycle toggle)\n\
-Current: Mode {mode}, Pieces {}\n\
-Colors: P1:{}  P2:{}  P3:{}  P4:{}\n\
-Players: P1:{}  P2:{}  P3:{}  P4:{}\n\
-Constraint: At least 1 Human; colors cannot repeat",
+Mode {mode} | Pieces {} | Launch {} | unique colors | at least 1 human\n\
+{player_summary}",
         match_setup.pieces_per_player,
-        colors[0].label(),
-        colors[1].label(),
-        colors[2].label(),
-        colors[3].label(),
-        c(controls[0]),
-        c(controls[1]),
-        c(controls[2]),
-        c(controls[3]),
+        match_setup.launch_rule.label(),
     )
 }
 
@@ -435,11 +462,12 @@ fn update_mode_select_text(
 
 fn update_mode_select_option_visuals(
     match_setup: Res<MatchSetup>,
-    mut option_query: Query<(&ModeSelectOption, &mut BackgroundColor)>,
+    mut option_query: Query<(&ModeSelectOption, &mut BackgroundColor, &mut BorderColor)>,
 ) {
     // 配置变更后刷新所有选项的高亮/禁用态。
-    for (option, mut color) in &mut option_query {
+    for (option, mut color, mut border) in &mut option_query {
         *color = BackgroundColor(option_fill_color(option, &match_setup));
+        *border = BorderColor::all(option_border_color(option, &match_setup));
     }
 }
 
@@ -452,6 +480,16 @@ fn option_fill_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> Col
         return option.base_color.mix(&Color::WHITE, 0.20).with_alpha(0.95);
     }
     option.base_color.with_alpha(0.58)
+}
+
+fn option_border_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> Color {
+    if action_disabled(option.action, match_setup) {
+        return Color::srgba(0.30, 0.35, 0.42, 0.16);
+    }
+    if action_selected(option.action, match_setup) {
+        return Color::srgba(0.06, 0.10, 0.16, 0.95);
+    }
+    Color::srgba(0.18, 0.24, 0.34, 0.34)
 }
 
 fn action_disabled(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
@@ -473,6 +511,7 @@ fn action_selected(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
             color,
         } => match_setup.player_color_choice(player_index) == Some(color),
         ModeSelectAction::SetPieces(pieces) => match_setup.pieces_per_player == pieces,
+        ModeSelectAction::SetLaunchRule(launch_rule) => match_setup.launch_rule == launch_rule,
         ModeSelectAction::SetPlayerControl {
             player_index,
             control,
@@ -633,6 +672,7 @@ fn apply_mode_select_action(
             color,
         } => match_setup.set_player_color(player_index, color),
         ModeSelectAction::SetPieces(pieces) => match_setup.pieces_per_player = pieces.clamp(1, 4),
+        ModeSelectAction::SetLaunchRule(launch_rule) => match_setup.launch_rule = launch_rule,
         ModeSelectAction::SetPlayerControl {
             player_index,
             control,
@@ -650,5 +690,123 @@ fn cleanup_menu(mut commands: Commands, query: Query<Entity, With<MenuEntity>>) 
     // 退出菜单状态时清理所有临时 UI 实体。
     for entity in &query {
         commands.entity(entity).despawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gameplay::ai::AiDifficulty;
+
+    fn setup() -> MatchSetup {
+        MatchSetup {
+            mode: GameMode::TwoVsTwo,
+            ai_difficulty: AiDifficulty::Normal,
+            fast_mode: false,
+            launch_rule: LaunchRule::SixOnly,
+            player_colors: [
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
+            pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
+        }
+    }
+
+    #[test]
+    fn mode_select_layout_rows_do_not_overlap_or_overflow() {
+        let summary_bottom = 22.0 + 88.0;
+        assert!(summary_bottom < MODE_ROW_TOP);
+
+        let mut rows = vec![(MODE_ROW_TOP, MODE_ROW_TOP + OPTION_H)];
+        rows.extend((0..4).map(|index| {
+            let top = COLOR_ROW_START_TOP + index as f32 * COLOR_ROW_GAP;
+            (top, top + COLOR_SWATCH_H)
+        }));
+        rows.push((PIECES_ROW_TOP, PIECES_ROW_TOP + OPTION_H));
+        rows.push((LAUNCH_RULE_ROW_TOP, LAUNCH_RULE_ROW_TOP + OPTION_H));
+        rows.extend((0..4).map(|index| {
+            let top = CONTROL_ROW_START_TOP + index as f32 * CONTROL_ROW_GAP;
+            (top, top + OPTION_H)
+        }));
+        rows.push((BOTTOM_ROW_TOP, BOTTOM_ROW_TOP + OPTION_H + 6.0));
+
+        for pair in rows.windows(2) {
+            let previous = pair[0];
+            let next = pair[1];
+            assert!(
+                previous.1 + 8.0 <= next.0,
+                "rows overlap or are too tight: {previous:?} -> {next:?}"
+            );
+        }
+
+        let bottom = rows.last().map(|(_, bottom)| *bottom).unwrap_or_default();
+        assert!(bottom <= 720.0);
+    }
+
+    #[test]
+    fn selected_unselected_and_disabled_options_are_visually_distinct() {
+        let mut match_setup = setup();
+        let selected = ModeSelectOption {
+            action: ModeSelectAction::SetMode(GameMode::TwoVsTwo),
+            base_color: Color::srgba(0.53, 0.77, 0.96, 0.26),
+        };
+        let unselected = ModeSelectOption {
+            action: ModeSelectAction::SetMode(GameMode::OneVsOne),
+            base_color: selected.base_color,
+        };
+
+        assert_ne!(
+            option_fill_color(&selected, &match_setup),
+            option_fill_color(&unselected, &match_setup)
+        );
+        assert_ne!(
+            option_border_color(&selected, &match_setup),
+            option_border_color(&unselected, &match_setup)
+        );
+
+        match_setup.mode = GameMode::OneVsOne;
+        let disabled = ModeSelectOption {
+            action: ModeSelectAction::SetPlayerControl {
+                player_index: 2,
+                control: PlayerControl::Human,
+            },
+            base_color: selected.base_color,
+        };
+        assert_ne!(
+            option_fill_color(&disabled, &match_setup),
+            option_fill_color(&selected, &match_setup)
+        );
+        assert_ne!(
+            option_border_color(&disabled, &match_setup),
+            option_border_color(&selected, &match_setup)
+        );
+    }
+
+    #[test]
+    fn launch_rule_options_follow_match_setup_selection() {
+        let mut match_setup = setup();
+        let even_option = ModeSelectAction::SetLaunchRule(LaunchRule::Even);
+        let six_only_option = ModeSelectAction::SetLaunchRule(LaunchRule::SixOnly);
+
+        assert!(action_selected(six_only_option, &match_setup));
+        assert!(!action_selected(even_option, &match_setup));
+
+        apply_mode_select_action(
+            even_option,
+            &mut match_setup,
+            &mut NextState::<AppState>::default(),
+        );
+
+        assert_eq!(match_setup.launch_rule, LaunchRule::Even);
+        assert!(action_selected(even_option, &match_setup));
+        assert!(!action_selected(six_only_option, &match_setup));
     }
 }

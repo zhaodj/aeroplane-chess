@@ -6,7 +6,7 @@ use crate::domain::dice::DiceRoll;
 use crate::domain::event::TileEventKind;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
-use crate::domain::rules::can_launch;
+use crate::domain::rules::{LaunchRule, can_launch};
 use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{
     BoardLayout, MatchConfig, MatchResult, PlayerProfile, PlayerRoster, TeamRoster,
@@ -20,7 +20,8 @@ use crate::states::GamePhase;
 
 pub const MAIN_ROUTE_STEPS: u8 = 48;
 pub const HOME_LANE_STEPS: u8 = 6;
-pub const FINISH_DISTANCE: u8 = MAIN_ROUTE_STEPS + HOME_LANE_STEPS;
+pub const HOME_ENTRY_PROGRESS: u8 = MAIN_ROUTE_STEPS - 2;
+pub const FINISH_DISTANCE: u8 = HOME_ENTRY_PROGRESS + HOME_LANE_STEPS;
 pub const MAX_CHAIN_EXTRA_ROLLS: u8 = 3;
 pub const MAX_PIECE_SHIELD: u8 = 2;
 
@@ -33,6 +34,8 @@ pub struct TurnState {
     pub turn_index: u32,
     pub current_roll: Option<u8>,
     pub last_roll: Option<u8>,
+    pub player_last_rolls: [Option<u8>; 4],
+    pub last_piece_effect: Option<PieceEffectNotice>,
     pub last_action: Option<String>,
 }
 
@@ -46,9 +49,32 @@ impl TurnState {
             turn_index: 1,
             current_roll: None,
             last_roll: None,
+            player_last_rolls: [None; 4],
+            last_piece_effect: None,
             last_action: None,
         }
     }
+
+    /// 查询指定玩家最近一次掷骰结果，用于棋盘停机坪骰面显示。
+    pub fn player_last_roll(&self, player_id: u8) -> Option<u8> {
+        self.player_last_rolls
+            .get(player_id.saturating_sub(1) as usize)
+            .copied()
+            .flatten()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// 最近一次特殊格结算产生的棋子附加效果。
+pub struct PieceEffectNotice {
+    pub piece_id: u8,
+    pub kind: PieceEffectKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PieceEffectKind {
+    Attack,
+    Defense,
 }
 
 #[derive(Resource, Default)]
@@ -66,7 +92,7 @@ impl TurnInputState {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// 执行动作描述：起飞或移动。
 pub enum PlannedAction {
     Launch { piece_id: u8, target_progress: u8 },
@@ -139,6 +165,31 @@ struct LandingResources<'a> {
     player_roster: &'a PlayerRoster,
     match_config: &'a MatchConfig,
     board_layout: &'a BoardLayout,
+    jump_source_event_tile: Option<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TileEventOutcome {
+    kind: TileEventKind,
+    note: String,
+    attacker_still_landed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct JumpResolution {
+    target_progress: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MovementStepKind {
+    Normal,
+    Shortcut,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MovementStep {
+    pub progress: u8,
+    pub kind: MovementStepKind,
 }
 
 /// 掷六面骰，结果范围固定为 1..=6。
@@ -175,6 +226,13 @@ pub fn pressed_selection_key(keyboard: &ButtonInput<KeyCode>, max_actions: usize
 pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
     turn_state.current_roll = Some(roll_value);
     turn_state.last_roll = Some(roll_value);
+    turn_state.last_piece_effect = None;
+    if let Some(player_roll) = turn_state
+        .player_last_rolls
+        .get_mut(turn_state.current_player.saturating_sub(1) as usize)
+    {
+        *player_roll = Some(roll_value);
+    }
 
     if roll_value == 6 {
         if turn_state.consecutive_sixes < MAX_CHAIN_EXTRA_ROLLS {
@@ -194,6 +252,7 @@ pub fn choose_action(
     current_player: u8,
     roll: DiceRoll,
     move_bonus: u8,
+    launch_rule: LaunchRule,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -208,7 +267,7 @@ pub fn choose_action(
         .iter()
         .find(|player| player.state.player_id == current_player)?;
 
-    if roll.0 == 6 {
+    if launch_rule.allows(roll) {
         for piece in snapshots
             .iter()
             .filter(|piece| piece.owner_player_id == current_player)
@@ -225,8 +284,10 @@ pub fn choose_action(
                     progress: piece.distance,
                     shield: piece.shield,
                     stack_shield: 0,
+                    motion_serial: 0,
                 },
                 roll,
+                launch_rule,
             ) {
                 return Some(PlannedAction::Launch {
                     piece_id: piece.piece_id,
@@ -244,10 +305,13 @@ pub fn choose_action(
             continue;
         }
 
-        let Some(target_progress) = compute_move_target_distance(
+        let Some(target_progress) = compute_move_target_distance_on_board(
+            piece.owner_player_id,
             piece.status,
             piece.distance,
             roll.0.saturating_add(move_bonus),
+            board_layout,
+            player_roster,
         ) else {
             continue;
         };
@@ -265,7 +329,7 @@ pub fn choose_action(
         }
     }
 
-    if roll.0 == 6 {
+    if launch_rule.allows(roll) {
         for piece in snapshots
             .iter()
             .filter(|piece| piece.owner_player_id == current_player)
@@ -284,10 +348,13 @@ pub fn choose_action(
         .filter(|piece| piece.owner_player_id == current_player)
     {
         if matches!(piece.status, PieceStatus::AtLaunch | PieceStatus::Active) {
-            let Some(target_progress) = compute_move_target_distance(
+            let Some(target_progress) = compute_move_target_distance_on_board(
+                piece.owner_player_id,
                 piece.status,
                 piece.distance,
                 roll.0.saturating_add(move_bonus),
+                board_layout,
+                player_roster,
             ) else {
                 continue;
             };
@@ -307,6 +374,8 @@ pub fn collect_actions(
     current_player: u8,
     roll: DiceRoll,
     move_bonus: u8,
+    launch_rule: LaunchRule,
+    board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Vec<PlannedAction> {
@@ -321,7 +390,7 @@ pub fn collect_actions(
 
     let mut actions = Vec::new();
 
-    if roll.0 == 6 {
+    if launch_rule.allows(roll) {
         for piece in snapshots
             .iter()
             .filter(|piece| piece.owner_player_id == current_player)
@@ -335,8 +404,10 @@ pub fn collect_actions(
                         progress: piece.distance,
                         shield: piece.shield,
                         stack_shield: 0,
+                        motion_serial: 0,
                     },
                     roll,
+                    launch_rule,
                 )
             {
                 actions.push(PlannedAction::Launch {
@@ -355,10 +426,13 @@ pub fn collect_actions(
             continue;
         }
 
-        if let Some(target_progress) = compute_move_target_distance(
+        if let Some(target_progress) = compute_move_target_distance_on_board(
+            piece.owner_player_id,
             piece.status,
             piece.distance,
             roll.0.saturating_add(move_bonus),
+            board_layout,
+            player_roster,
         ) {
             actions.push(PlannedAction::Move {
                 piece_id: piece.piece_id,
@@ -390,7 +464,10 @@ pub fn execute_action(
         piece_query,
     );
     let mut notes = Vec::new();
+    let mut piece_effect_notice = None;
+    let mut jump_source_event_tile_for_action = None;
     let attacker_landed = if action.is_move() {
+        let pre_jump_position = attacker_position(&action, resources.player_roster, piece_query);
         apply_jump_effect(
             &action,
             resources.board_layout,
@@ -398,7 +475,14 @@ pub fn execute_action(
             piece_query,
             &mut notes,
         );
-        resolve_collision(
+        let post_jump_position = attacker_position(&action, resources.player_roster, piece_query);
+        jump_source_event_tile_for_action = jump_source_event_tile(
+            pre_jump_position,
+            post_jump_position,
+            resources.board_layout,
+        );
+        let notes_before_collision = notes.len();
+        let attacker_landed = resolve_collision(
             &action,
             action_origin,
             resources.board_layout,
@@ -406,20 +490,35 @@ pub fn execute_action(
             resources.match_config,
             piece_query,
             &mut notes,
-        )
+        );
+        if notes[notes_before_collision..]
+            .iter()
+            .any(|note| note.contains("enhanced collision on attack tile"))
+        {
+            piece_effect_notice = Some(PieceEffectNotice {
+                piece_id: action.piece_id(),
+                kind: PieceEffectKind::Attack,
+            });
+        }
+        attacker_landed
     } else {
         true
     };
+
     // 只有移动动作的攻击方最终留在落点，才继续结算格子效果与队友叠加。
     if attacker_landed && action.is_move() {
         let attacker_still_landed = apply_post_collision_tile_effects(
             &action,
-            resources.board_layout,
-            resources.player_roster,
-            resources.match_config,
+            LandingResources {
+                player_roster: resources.player_roster,
+                match_config: resources.match_config,
+                board_layout: resources.board_layout,
+                jump_source_event_tile: jump_source_event_tile_for_action,
+            },
             piece_query,
             state.skill_roster,
             &mut notes,
+            &mut piece_effect_notice,
         );
         if attacker_still_landed {
             apply_team_stack(
@@ -458,6 +557,7 @@ pub fn execute_action(
     }
 
     state.turn_state.last_action = Some(describe_action(&action, roll_value, &notes));
+    state.turn_state.last_piece_effect = piece_effect_notice;
     clear_pending_input(state.input_state);
 
     if state.match_result.finished {
@@ -530,9 +630,12 @@ pub fn clear_pending_input(input_state: &mut TurnInputState) {
 
 /// 计算移动后的目标进度；若超终点则返回 None（精确到达规则）。
 pub fn compute_target_distance(current_distance: u8, roll_value: u8) -> Option<u8> {
-    current_distance
-        .checked_add(roll_value)
-        .filter(|next_distance| *next_distance <= FINISH_DISTANCE)
+    let mut current_progress = current_distance;
+    let mut direction = 1;
+    for _ in 0..roll_value {
+        current_progress = next_progress_with_finish_bounce(current_progress, &mut direction)?;
+    }
+    Some(current_progress)
 }
 
 /// 计算棋子移动后的目标进度；起飞点视为主环道前一格。
@@ -548,6 +651,199 @@ pub fn compute_move_target_distance(
     }
 }
 
+/// 计算棋子按真实棋盘路径移动后的目标进度；若最后一步落在虚线飞跃起点，
+/// 则飞跃起点和终点共同消耗这 1 个骰点。
+pub fn compute_move_target_distance_on_board(
+    owner_player_id: u8,
+    status: PieceStatus,
+    current_distance: u8,
+    roll_value: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<u8> {
+    movement_steps_for_roll(
+        owner_player_id,
+        status,
+        current_distance,
+        roll_value,
+        board_layout,
+        player_roster,
+    )
+    .and_then(|steps| steps.last().copied().map(|step| step.progress))
+}
+
+/// 按骰点展开本次移动路径，供规则结算与动画层保持一致。
+pub fn movement_steps_for_roll(
+    owner_player_id: u8,
+    status: PieceStatus,
+    current_distance: u8,
+    roll_value: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<Vec<MovementStep>> {
+    if roll_value == 0 {
+        return None;
+    }
+
+    let mut steps = Vec::new();
+    let mut remaining_steps = roll_value;
+    let mut current_progress = match status {
+        PieceStatus::AtLaunch => {
+            steps.push(MovementStep {
+                progress: 0,
+                kind: MovementStepKind::Normal,
+            });
+            remaining_steps = remaining_steps.checked_sub(1)?;
+            0
+        }
+        PieceStatus::Active if current_distance <= FINISH_DISTANCE => current_distance,
+        _ => return None,
+    };
+    let mut shortcut_used = false;
+    let mut direction = 1;
+
+    while remaining_steps > 0 {
+        current_progress = next_progress_with_finish_bounce(current_progress, &mut direction)?;
+        steps.push(MovementStep {
+            progress: current_progress,
+            kind: MovementStepKind::Normal,
+        });
+        remaining_steps = remaining_steps.saturating_sub(1);
+
+        if remaining_steps > 0 || shortcut_used || direction < 0 {
+            continue;
+        }
+
+        if let Some(shortcut_progress) = shortcut_progress_after_landing(
+            owner_player_id,
+            current_progress,
+            board_layout,
+            player_roster,
+        ) {
+            current_progress = shortcut_progress;
+            steps.push(MovementStep {
+                progress: current_progress,
+                kind: MovementStepKind::Shortcut,
+            });
+            shortcut_used = true;
+        }
+    }
+
+    Some(steps)
+}
+
+/// 从前后逻辑状态反推视觉移动路径。若最终目标来自虚线飞跃，直接连向虚线目标。
+pub fn movement_steps_between_progresses(
+    owner_player_id: u8,
+    previous_status: PieceStatus,
+    previous_progress: u8,
+    current_status: PieceStatus,
+    current_progress: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<Vec<MovementStep>> {
+    if !matches!(current_status, PieceStatus::Active | PieceStatus::Finished) {
+        return None;
+    }
+
+    let target_progress = current_progress.min(FINISH_DISTANCE);
+    if previous_status == PieceStatus::Active
+        && previous_progress >= HOME_ENTRY_PROGRESS
+        && target_progress <= previous_progress
+    {
+        return movement_steps_between_home_lane_bounce(previous_progress, target_progress);
+    }
+
+    let mut next_progress = match previous_status {
+        PieceStatus::AtLaunch => 0,
+        PieceStatus::Active if previous_progress < target_progress => {
+            previous_progress.saturating_add(1)
+        }
+        _ => return None,
+    };
+
+    let mut steps = Vec::new();
+    let mut shortcut_used = false;
+    while next_progress <= target_progress {
+        steps.push(MovementStep {
+            progress: next_progress,
+            kind: MovementStepKind::Normal,
+        });
+        if next_progress == target_progress {
+            break;
+        }
+
+        if !shortcut_used
+            && let Some(shortcut_progress) = shortcut_progress_after_landing(
+                owner_player_id,
+                next_progress,
+                board_layout,
+                player_roster,
+            )
+            && shortcut_progress <= target_progress
+        {
+            steps.push(MovementStep {
+                progress: shortcut_progress,
+                kind: MovementStepKind::Shortcut,
+            });
+            shortcut_used = true;
+            if shortcut_progress == target_progress {
+                break;
+            }
+            next_progress = shortcut_progress.saturating_add(1);
+            continue;
+        }
+
+        next_progress = next_progress.saturating_add(1);
+    }
+
+    Some(steps)
+}
+
+fn movement_steps_between_home_lane_bounce(
+    previous_progress: u8,
+    target_progress: u8,
+) -> Option<Vec<MovementStep>> {
+    let mut steps = Vec::new();
+    let mut current_progress = previous_progress;
+    let mut direction = 1;
+    let mut bounced_from_finish = false;
+
+    for _ in 0..=(HOME_LANE_STEPS * 2) {
+        current_progress = next_progress_with_finish_bounce(current_progress, &mut direction)?;
+        if current_progress == FINISH_DISTANCE {
+            bounced_from_finish = true;
+        }
+        steps.push(MovementStep {
+            progress: current_progress,
+            kind: MovementStepKind::Normal,
+        });
+        if bounced_from_finish && current_progress == target_progress {
+            return Some(steps);
+        }
+    }
+
+    None
+}
+
+fn next_progress_with_finish_bounce(current_progress: u8, direction: &mut i8) -> Option<u8> {
+    if current_progress == FINISH_DISTANCE && *direction > 0 {
+        *direction = -1;
+    } else if current_progress == HOME_ENTRY_PROGRESS && *direction < 0 {
+        *direction = 1;
+    }
+
+    if *direction > 0 {
+        current_progress
+            .checked_add(1)
+            .filter(|next_progress| *next_progress <= FINISH_DISTANCE)
+    } else {
+        current_progress
+            .checked_sub(1)
+            .filter(|next_progress| *next_progress >= HOME_ENTRY_PROGRESS)
+    }
+}
+
 /// 将“逻辑进度”映射成棋盘位置（主环道/冲线道/终点）。
 pub fn board_position_for_distance(
     player_profile: &PlayerProfile,
@@ -558,11 +854,11 @@ pub fn board_position_for_distance(
         PieceStatus::InHangar => None,
         PieceStatus::AtLaunch => Some(BoardPosition::Launch),
         PieceStatus::Finished => Some(BoardPosition::Goal),
-        PieceStatus::Active if distance < MAIN_ROUTE_STEPS => Some(BoardPosition::Main(
+        PieceStatus::Active if distance < HOME_ENTRY_PROGRESS => Some(BoardPosition::Main(
             (player_profile.launch_tile_index + distance) % MAIN_ROUTE_STEPS,
         )),
         PieceStatus::Active if distance < FINISH_DISTANCE => {
-            Some(BoardPosition::Home(distance - MAIN_ROUTE_STEPS))
+            Some(BoardPosition::Home(distance - HOME_ENTRY_PROGRESS))
         }
         PieceStatus::Active if distance == FINISH_DISTANCE => Some(BoardPosition::Goal),
         _ => None,
@@ -673,6 +969,7 @@ fn apply_action(
         let previous_translation = transform.translation;
         piece_state.status = next_status;
         piece_state.progress = target_progress;
+        piece_state.motion_serial = piece_state.motion_serial.wrapping_add(1);
         if let Some(world_pos) = world_position_for_piece(
             piece_state.owner_player_id,
             target_progress,
@@ -694,9 +991,8 @@ fn apply_action(
     None
 }
 
-/// 飞跃结算：
-/// 1) 落在与当前棋子同色的主环道格会触发同色飞跃；
-/// 2) 若该格存在虚线快捷路径，则优先走快捷路径。
+/// 飞跃结算：落在与当前棋子同色的普通主环道格时，触发免费同色飞跃。
+/// 虚线快捷飞跃属于移动路径的一步，必须消耗骰点，不能在落地后免费触发。
 fn apply_jump_effect(
     action: &PlannedAction,
     board_layout: &BoardLayout,
@@ -718,136 +1014,234 @@ fn apply_jump_effect(
         return;
     };
 
-    if !is_same_color_route_tile(owner_player_id, tile_index) {
+    if !is_same_color_route_tile(owner_player_id, tile_index, board_layout) {
         return;
     }
 
-    let current_progress = attacker_progress(action, piece_query).unwrap_or_default();
-
-    let jump_delta = if let Some(shortcut_target_index) =
-        board_layout.jump_shortcut_target_for_route_index(tile_index)
-    {
-        circular_forward_steps(tile_index, shortcut_target_index, MAIN_ROUTE_STEPS)
-    } else {
-        next_same_color_jump_steps(owner_player_id, tile_index)
+    let Some(jump) = jump_resolution_for_same_color_landing(
+        owner_player_id,
+        tile_index,
+        board_layout,
+        player_roster,
+    ) else {
+        return;
     };
 
-    if jump_delta == 0 {
-        return;
-    }
-
-    let final_progress = current_progress
-        .saturating_add(jump_delta)
-        .min(FINISH_DISTANCE);
     update_piece_progress(
         action,
-        final_progress,
+        jump.target_progress,
         board_layout,
         player_roster,
         piece_query,
     );
-    if board_layout
-        .jump_shortcut_target_for_route_index(tile_index)
-        .is_some()
-    {
-        notes.push(format!("took shortcut jump to tile {final_progress}"));
-    } else {
-        notes.push(format!("jumped to next same-color tile {final_progress}"));
-    }
+    notes.push(format!(
+        "jumped to next same-color tile {}",
+        jump.target_progress
+    ));
 }
 
-/// 将玩家 ID 映射为主环道颜色序号：
-/// 0=Green, 1=Blue, 2=Red, 3=Yellow。
-fn player_route_color_mod(player_id: u8) -> u8 {
-    match player_id {
-        1 => 1,
-        2 => 2,
-        3 => 0,
-        4 => 3,
-        _ => 0,
+fn jump_resolution_for_same_color_landing(
+    player_id: u8,
+    tile_index: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<JumpResolution> {
+    if !is_same_color_route_tile(player_id, tile_index, board_layout) {
+        return None;
     }
+
+    let current_progress = progress_for_main_route_index(player_roster, player_id, tile_index)?;
+
+    if shortcut_progress_after_landing(player_id, current_progress, board_layout, player_roster)
+        .is_some()
+    {
+        return None;
+    }
+
+    next_same_color_jump_progress(player_id, current_progress, board_layout, player_roster)
+        .map(|target_progress| JumpResolution { target_progress })
+}
+
+fn shortcut_progress_after_landing(
+    player_id: u8,
+    current_progress: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<u8> {
+    if current_progress >= HOME_ENTRY_PROGRESS {
+        return None;
+    }
+
+    let tile_index = route_index_for_progress(player_roster, player_id, current_progress)?;
+    if !is_same_color_route_tile(player_id, tile_index, board_layout) {
+        return None;
+    }
+
+    let shortcut_target_index = board_layout.jump_shortcut_target_for_route_index(tile_index)?;
+    let shortcut_progress =
+        progress_for_main_route_index(player_roster, player_id, shortcut_target_index)?;
+    (shortcut_progress > current_progress && shortcut_progress < HOME_ENTRY_PROGRESS)
+        .then_some(shortcut_progress)
 }
 
 /// 主环道当前格是否为该玩家的同色格。
-fn is_same_color_route_tile(player_id: u8, tile_index: u8) -> bool {
-    tile_index % 4 == player_route_color_mod(player_id)
+fn is_same_color_route_tile(player_id: u8, tile_index: u8, board_layout: &BoardLayout) -> bool {
+    let Some(player_color_slot) = player_color_slot(player_id) else {
+        return false;
+    };
+
+    board_layout.player_color_slot_for_route_index(tile_index) == Some(player_color_slot)
 }
 
-/// 计算主环道上从 current 到 target 的顺时针前进步数。
-fn circular_forward_steps(current: u8, target: u8, route_len: u8) -> u8 {
-    if route_len == 0 {
-        return 0;
-    }
-    if target >= current {
-        target - current
+fn player_color_slot(player_id: u8) -> Option<usize> {
+    (1..=4)
+        .contains(&player_id)
+        .then_some(player_id.saturating_sub(1) as usize)
+}
+
+fn progress_for_main_route_index(
+    player_roster: &PlayerRoster,
+    player_id: u8,
+    route_index: u8,
+) -> Option<u8> {
+    let player_profile = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == player_id)?;
+    Some(route_index_for_launch(
+        player_profile.launch_tile_index,
+        route_index,
+    ))
+}
+
+fn route_index_for_progress(
+    player_roster: &PlayerRoster,
+    player_id: u8,
+    progress: u8,
+) -> Option<u8> {
+    let player_profile = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == player_id)?;
+    Some((player_profile.launch_tile_index + progress) % MAIN_ROUTE_STEPS)
+}
+
+fn route_index_for_launch(launch_tile_index: u8, route_index: u8) -> u8 {
+    if route_index >= launch_tile_index {
+        route_index - launch_tile_index
     } else {
-        route_len - (current - target)
+        MAIN_ROUTE_STEPS - (launch_tile_index - route_index)
     }
 }
 
-/// 同色飞跃默认跳到下一处同色格（主环道配色按 4 格循环）。
-fn next_same_color_jump_steps(player_id: u8, tile_index: u8) -> u8 {
-    let owner_mod = player_route_color_mod(player_id);
-    for step in 1..MAIN_ROUTE_STEPS {
-        let next_index = (tile_index + step) % MAIN_ROUTE_STEPS;
-        if next_index % 4 == owner_mod {
-            return step;
+/// 同色飞跃默认跳到玩家前进路径上的下一处同色主环道格。
+fn next_same_color_jump_progress(
+    player_id: u8,
+    current_progress: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<u8> {
+    for progress in current_progress.saturating_add(1)..HOME_ENTRY_PROGRESS {
+        let Some(next_index) = route_index_for_progress(player_roster, player_id, progress) else {
+            continue;
+        };
+        if is_same_color_route_tile(player_id, next_index, board_layout) {
+            return Some(progress);
         }
     }
-    0
+    None
 }
 
 /// 撞击结算后的落点效果（防御格、事件格等）。
 fn apply_post_collision_tile_effects(
     action: &PlannedAction,
-    board_layout: &BoardLayout,
-    player_roster: &PlayerRoster,
-    match_config: &MatchConfig,
+    resources: LandingResources<'_>,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     skill_roster: &mut SkillRoster,
     notes: &mut Vec<String>,
+    piece_effect_notice: &mut Option<PieceEffectNotice>,
 ) -> bool {
-    if board_layout.route_len() == 0 {
+    if resources.board_layout.route_len() == 0 {
         return true;
     }
 
     let Some(BoardPosition::Main(tile_index)) =
-        attacker_position(action, player_roster, piece_query)
+        attacker_position(action, resources.player_roster, piece_query)
     else {
         return true;
     };
-    let Some(tile_kind) = board_layout.tile_kind_for_route_index(tile_index) else {
+    let Some(tile_kind) = resources.board_layout.tile_kind_for_route_index(tile_index) else {
         return true;
     };
 
-    match tile_kind {
+    let mut attacker_still_landed = match tile_kind {
         TileKind::Defense => {
             if let Some(shield) = modify_piece_shield(action, piece_query, 1) {
                 notes.push(format!("gained shield ({shield})"));
+                *piece_effect_notice = Some(PieceEffectNotice {
+                    piece_id: action.piece_id(),
+                    kind: PieceEffectKind::Defense,
+                });
             }
             true
         }
         TileKind::Event => {
             let mut final_progress = attacker_progress(action, piece_query).unwrap_or_default();
-            let Some((event_note, attacker_still_landed)) = apply_event_effect(
+            let Some(event_outcome) = apply_event_effect(
                 action,
                 &mut final_progress,
-                LandingResources {
-                    player_roster,
-                    match_config,
-                    board_layout,
-                },
+                resources,
                 piece_query,
                 skill_roster,
                 notes,
             ) else {
                 return true;
             };
-            notes.push(event_note);
-            attacker_still_landed
+            notes.push(event_outcome.note);
+            event_outcome.attacker_still_landed
         }
         TileKind::Attack | TileKind::Goal | TileKind::Jump | TileKind::Normal => true,
+    };
+
+    if attacker_still_landed
+        && let Some(source_tile_index) = resources.jump_source_event_tile
+        && source_tile_index != tile_index
+    {
+        let mut final_progress = attacker_progress(action, piece_query).unwrap_or_default();
+        if let Some(event_outcome) = apply_event_effect(
+            action,
+            &mut final_progress,
+            resources,
+            piece_query,
+            skill_roster,
+            notes,
+        ) {
+            notes.push(format!(
+                "pre-jump event tile {source_tile_index}: {}",
+                event_outcome.note
+            ));
+            attacker_still_landed = event_outcome.attacker_still_landed;
+        }
     }
+
+    attacker_still_landed
+}
+
+fn jump_source_event_tile(
+    pre_jump_position: Option<BoardPosition>,
+    post_jump_position: Option<BoardPosition>,
+    board_layout: &BoardLayout,
+) -> Option<u8> {
+    let Some(BoardPosition::Main(source_tile_index)) = pre_jump_position else {
+        return None;
+    };
+
+    if post_jump_position == Some(BoardPosition::Main(source_tile_index)) {
+        return None;
+    }
+
+    (board_layout.tile_kind_for_route_index(source_tile_index) == Some(TileKind::Event))
+        .then_some(source_tile_index)
 }
 
 /// 撞击主逻辑：
@@ -883,6 +1277,24 @@ fn resolve_collision(
     let Some(attacker_team) = attacker_team else {
         return true;
     };
+
+    let defender_piece_ids = piece_query
+        .iter()
+        .filter_map(|(piece_id, _, piece_state, _)| {
+            (piece_id.0 != attacker_piece_id
+                && piece_state.status == PieceStatus::Active
+                && piece_state.team_id != attacker_team
+                && piece_board_position(*piece_state, player_roster)
+                    == Some(BoardPosition::Main(target_tile_index)))
+            .then_some(piece_id.0)
+        })
+        .collect::<Vec<_>>();
+
+    if is_plain_route_tile(board_layout, target_tile_index) && defender_piece_ids.len() >= 2 {
+        send_attacker_to_hangar(action, piece_query);
+        notes.push("stacked defenders bounced attacker back to hangar".to_string());
+        return false;
+    }
 
     let mut defenders_with_stack = Vec::new();
     for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
@@ -958,6 +1370,11 @@ fn resolve_collision(
     true
 }
 
+/// 普通主环道格：不含攻击、防御、随机、飞跃等特殊效果。
+fn is_plain_route_tile(board_layout: &BoardLayout, target_tile_index: u8) -> bool {
+    board_layout.tile_kind_for_route_index(target_tile_index) == Some(TileKind::Normal)
+}
+
 /// 若撞击发生在攻击格，补充一条强化撞击说明。
 fn append_attack_tile_collision_note(
     board_layout: &BoardLayout,
@@ -986,6 +1403,26 @@ fn restore_attacker_origin(
         piece_state.status = action_origin.status;
         piece_state.progress = action_origin.progress;
         transform.translation = action_origin.translation;
+        break;
+    }
+}
+
+/// 普通格撞到重叠防御时，攻击方直接回到自身机库。
+fn send_attacker_to_hangar(
+    action: &PlannedAction,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) {
+    for (piece_id, hangar_slot, mut piece_state, mut transform) in piece_query.iter_mut() {
+        if piece_id.0 != action.piece_id() {
+            continue;
+        }
+
+        piece_state.status = PieceStatus::InHangar;
+        piece_state.progress = 0;
+        piece_state.shield = 0;
+        piece_state.stack_shield = 0;
+        transform.translation.x = hangar_slot.0.x;
+        transform.translation.y = hangar_slot.0.y;
         break;
     }
 }
@@ -1176,7 +1613,7 @@ fn apply_event_effect(
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     skill_roster: &mut SkillRoster,
     notes: &mut Vec<String>,
-) -> Option<(String, bool)> {
+) -> Option<TileEventOutcome> {
     apply_event_kind_effect(
         random_event_kind(),
         action,
@@ -1208,30 +1645,26 @@ fn apply_event_kind_effect(
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     skill_roster: &mut SkillRoster,
     notes: &mut Vec<String>,
-) -> Option<(String, bool)> {
+) -> Option<TileEventOutcome> {
     match event_kind {
         TileEventKind::GainShield => {
             let shield = modify_piece_shield(action, piece_query, 1)?;
-            Some((
-                format!(
-                    "event {:?}: gained shield ({shield})",
-                    TileEventKind::GainShield
-                ),
-                true,
-            ))
+            Some(TileEventOutcome {
+                kind: event_kind,
+                note: format!("event {event_kind:?}: gained shield ({shield})"),
+                attacker_still_landed: true,
+            })
         }
         TileEventKind::GainSkillCharge => {
             let owner_player_id = owner_player_id_for_action(action, piece_query)?;
             let allow_swap = resources.player_roster.players.len() > 2;
             let charged = grant_random_skill_charge(skill_roster, owner_player_id, allow_swap)
                 .unwrap_or("UnknownSkill");
-            Some((
-                format!(
-                    "event {:?}: gained 1 {charged} charge",
-                    TileEventKind::GainSkillCharge
-                ),
-                true,
-            ))
+            Some(TileEventOutcome {
+                kind: event_kind,
+                note: format!("event {event_kind:?}: gained 1 {charged} charge"),
+                attacker_still_landed: true,
+            })
         }
         TileEventKind::AdvanceTwo => {
             let next_progress = (*final_progress + 2).min(FINISH_DISTANCE);
@@ -1257,30 +1690,28 @@ fn apply_event_kind_effect(
                 piece_query,
                 notes,
             );
-            Some((
-                format!(
-                    "event {:?}: advanced to tile {next_progress}",
-                    TileEventKind::AdvanceTwo
-                ),
+            Some(TileEventOutcome {
+                kind: event_kind,
+                note: format!("event {event_kind:?}: advanced to tile {next_progress}"),
                 attacker_still_landed,
-            ))
+            })
         }
         TileEventKind::DisableNextSkill => {
             let owner_player_id = owner_player_id_for_action(action, piece_query)?;
             if disable_next_skill_turn(skill_roster, owner_player_id) {
-                Some((
-                    format!(
-                        "event {:?}: next skill turn disabled for P{}",
-                        TileEventKind::DisableNextSkill,
-                        owner_player_id
+                Some(TileEventOutcome {
+                    kind: event_kind,
+                    note: format!(
+                        "event {event_kind:?}: next skill turn disabled for P{owner_player_id}"
                     ),
-                    true,
-                ))
+                    attacker_still_landed: true,
+                })
             } else {
-                Some((
-                    "event fizzled: could not disable next skill turn".to_string(),
-                    true,
-                ))
+                Some(TileEventOutcome {
+                    kind: event_kind,
+                    note: "event fizzled: could not disable next skill turn".to_string(),
+                    attacker_still_landed: true,
+                })
             }
         }
         TileEventKind::RemoveEnemyShield => {
@@ -1304,7 +1735,11 @@ fn apply_event_kind_effect(
                 .map(|(piece_id, _, _, _)| piece_id.0)
                 .collect::<Vec<_>>();
             if candidates.is_empty() {
-                return Some(("event fizzled: no enemy shield to remove".to_string(), true));
+                return Some(TileEventOutcome {
+                    kind: event_kind,
+                    note: "event fizzled: no enemy shield to remove".to_string(),
+                    attacker_still_landed: true,
+                });
             }
 
             let picked_piece_id = candidates[random_range(0..candidates.len())];
@@ -1313,19 +1748,20 @@ fn apply_event_kind_effect(
                     continue;
                 }
                 piece_state.shield -= 1;
-                return Some((
-                    format!(
-                        "event {:?}: removed shield from piece #{}",
-                        TileEventKind::RemoveEnemyShield,
+                return Some(TileEventOutcome {
+                    kind: event_kind,
+                    note: format!(
+                        "event {event_kind:?}: removed shield from piece #{}",
                         piece_id.0
                     ),
-                    true,
-                ));
+                    attacker_still_landed: true,
+                });
             }
-            Some((
-                "event failed: selected enemy shield target disappeared".to_string(),
-                true,
-            ))
+            Some(TileEventOutcome {
+                kind: event_kind,
+                note: "event failed: selected enemy shield target disappeared".to_string(),
+                attacker_still_landed: true,
+            })
         }
     }
 }
@@ -1458,6 +1894,7 @@ mod tests {
             mode,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
+            launch_rule: LaunchRule::SixOnly,
             player_colors: [
                 PlayerColorChoice::Red,
                 PlayerColorChoice::Blue,
@@ -1479,6 +1916,7 @@ mod tests {
             mode,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
+            launch_rule: LaunchRule::SixOnly,
             player_colors: [
                 PlayerColorChoice::Red,
                 PlayerColorChoice::Blue,
@@ -1509,12 +1947,19 @@ mod tests {
     }
 
     #[test]
-    fn compute_target_distance_blocks_overshoot() {
+    fn compute_target_distance_bounces_from_finish_on_overshoot() {
         assert_eq!(
             compute_target_distance(FINISH_DISTANCE - 2, 2),
             Some(FINISH_DISTANCE)
         );
-        assert_eq!(compute_target_distance(FINISH_DISTANCE - 2, 3), None);
+        assert_eq!(
+            compute_target_distance(FINISH_DISTANCE - 2, 3),
+            Some(FINISH_DISTANCE - 1)
+        );
+        assert_eq!(
+            compute_target_distance(FINISH_DISTANCE - 1, 2),
+            Some(FINISH_DISTANCE - 1)
+        );
     }
 
     #[test]
@@ -1526,6 +1971,51 @@ mod tests {
         assert_eq!(
             compute_move_target_distance(PieceStatus::AtLaunch, 0, 6),
             Some(5)
+        );
+    }
+
+    #[test]
+    fn home_lane_overshoot_remains_legal_and_bounces_back() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let board_layout = BoardLayout::default();
+        let player_roster = PlayerRoster::from_players(players);
+        let start_progress = FINISH_DISTANCE - 2;
+
+        assert_eq!(
+            movement_steps_for_roll(
+                1,
+                PieceStatus::Active,
+                start_progress,
+                3,
+                &board_layout,
+                &player_roster
+            ),
+            Some(vec![
+                MovementStep {
+                    progress: FINISH_DISTANCE - 1,
+                    kind: MovementStepKind::Normal,
+                },
+                MovementStep {
+                    progress: FINISH_DISTANCE,
+                    kind: MovementStepKind::Normal,
+                },
+                MovementStep {
+                    progress: FINISH_DISTANCE - 1,
+                    kind: MovementStepKind::Normal,
+                },
+            ])
+        );
+        assert_eq!(
+            compute_move_target_distance_on_board(
+                1,
+                PieceStatus::Active,
+                start_progress,
+                3,
+                &board_layout,
+                &player_roster
+            ),
+            Some(FINISH_DISTANCE - 1)
         );
     }
 
@@ -1542,20 +2032,65 @@ mod tests {
         );
         assert_eq!(
             board_position_for_distance(player_one, 0, PieceStatus::Active),
-            Some(BoardPosition::Main(40))
+            Some(BoardPosition::Main(39))
         );
         assert_eq!(
             board_position_for_distance(player_two, 0, PieceStatus::Active),
-            Some(BoardPosition::Main(4))
+            Some(BoardPosition::Main(3))
         );
         assert_eq!(
-            board_position_for_distance(player_one, MAIN_ROUTE_STEPS, PieceStatus::Active),
+            board_position_for_distance(player_one, HOME_ENTRY_PROGRESS - 1, PieceStatus::Active),
+            Some(BoardPosition::Main(36))
+        );
+        assert_eq!(
+            board_position_for_distance(player_one, HOME_ENTRY_PROGRESS, PieceStatus::Active),
             Some(BoardPosition::Home(0))
         );
         assert_eq!(
             board_position_for_distance(player_one, FINISH_DISTANCE, PieceStatus::Finished),
             Some(BoardPosition::Goal)
         );
+    }
+
+    #[test]
+    fn home_lane_entry_starts_at_turn_marker_for_each_player() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let board_layout = BoardLayout::default();
+
+        for (player, expected_last_main, expected_home) in [
+            (&players[0], 36, Vec2::new(-300.104, -0.104)),
+            (&players[1], 0, Vec2::new(-0.104, 300.104)),
+            (&players[2], 24, Vec2::new(0.104, -300.104)),
+            (&players[3], 12, Vec2::new(300.317, 0.104)),
+        ] {
+            assert_eq!(
+                board_position_for_distance(player, HOME_ENTRY_PROGRESS - 1, PieceStatus::Active),
+                Some(BoardPosition::Main(expected_last_main))
+            );
+            assert_eq!(
+                board_position_for_distance(player, HOME_ENTRY_PROGRESS, PieceStatus::Active),
+                Some(BoardPosition::Home(0))
+            );
+            assert_eq!(
+                player
+                    .home_lane_positions
+                    .first()
+                    .copied()
+                    .expect("home lane entry exists"),
+                expected_home
+            );
+            assert_eq!(
+                board_layout.world_pos_for_route_index(expected_last_main),
+                match expected_last_main {
+                    36 => Some(Vec2::new(-300.104, -40.104)),
+                    0 => Some(Vec2::new(-40.104, 300.104)),
+                    24 => Some(Vec2::new(40.104, -300.104)),
+                    12 => Some(Vec2::new(300.317, 40.104)),
+                    _ => None,
+                }
+            );
+        }
     }
 
     #[test]
@@ -1567,6 +2102,8 @@ mod tests {
             turn_index: 3,
             current_roll: Some(6),
             last_roll: Some(6),
+            player_last_rolls: [Some(6), None, None, None],
+            last_piece_effect: None,
             last_action: None,
         };
 
@@ -1585,10 +2122,16 @@ mod tests {
     #[test]
     fn set_roll_caps_bonus_roll_chain_at_three() {
         let mut turn_state = TurnState::opening_turn();
+        turn_state.last_piece_effect = Some(PieceEffectNotice {
+            piece_id: 1,
+            kind: PieceEffectKind::Defense,
+        });
 
         set_roll(&mut turn_state, 6);
         assert_eq!(turn_state.extra_rolls_remaining, 1);
         assert_eq!(turn_state.consecutive_sixes, 1);
+        assert_eq!(turn_state.player_last_roll(1), Some(6));
+        assert_eq!(turn_state.last_piece_effect, None);
 
         set_roll(&mut turn_state, 6);
         assert_eq!(turn_state.extra_rolls_remaining, 2);
@@ -1604,7 +2147,7 @@ mod tests {
     }
 
     #[test]
-    fn world_position_for_piece_uses_home_lane_and_goal_positions() {
+    fn world_position_for_piece_uses_first_route_home_lane_and_goal_positions() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster::from_players(players);
@@ -1618,12 +2161,24 @@ mod tests {
         );
         assert_eq!(
             world_position_for_piece(1, 0, PieceStatus::Active, &board_layout, &player_roster),
-            board_layout.world_pos_for_route_index(40)
+            board_layout.world_pos_for_route_index(39)
+        );
+        assert_eq!(
+            world_position_for_piece(2, 0, PieceStatus::Active, &board_layout, &player_roster),
+            board_layout.world_pos_for_route_index(3)
+        );
+        assert_eq!(
+            world_position_for_piece(3, 0, PieceStatus::Active, &board_layout, &player_roster),
+            board_layout.world_pos_for_route_index(27)
+        );
+        assert_eq!(
+            world_position_for_piece(4, 0, PieceStatus::Active, &board_layout, &player_roster),
+            board_layout.world_pos_for_route_index(15)
         );
         assert_eq!(
             world_position_for_piece(
                 1,
-                MAIN_ROUTE_STEPS,
+                HOME_ENTRY_PROGRESS,
                 PieceStatus::Active,
                 &board_layout,
                 &player_roster
@@ -1646,8 +2201,8 @@ mod tests {
     fn launch_action_places_piece_on_launch_point_not_main_route() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster::from_players(players);
         let board_layout = BoardLayout::default();
+        let player_roster = PlayerRoster::from_players(players);
 
         let mut world = World::new();
         world.spawn((
@@ -1660,6 +2215,7 @@ mod tests {
                 progress: 0,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -1692,8 +2248,10 @@ mod tests {
     fn same_color_jump_advances_to_next_same_color_node() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
-        let player_roster = PlayerRoster::from_players(players);
         let board_layout = BoardLayout::default();
+        let player_roster = PlayerRoster::from_players(players);
+        let start_progress = progress_for_main_tile(&player_roster, 1, 40);
+        let expected_progress = progress_for_main_tile(&player_roster, 1, 44);
 
         let mut world = World::new();
         world.spawn((
@@ -1703,9 +2261,10 @@ mod tests {
                 owner_player_id: 1,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 5,
+                progress: start_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -1719,7 +2278,7 @@ mod tests {
         apply_jump_effect(
             &PlannedAction::Move {
                 piece_id: 1,
-                target_progress: 5,
+                target_progress: start_progress,
             },
             &board_layout,
             &player_roster,
@@ -1732,7 +2291,7 @@ mod tests {
             .find(|(piece_id, _, _, _)| piece_id.0 == 1)
             .map(|(_, _, piece_state, _)| piece_state.progress)
             .unwrap_or_default();
-        assert_eq!(progress, 9);
+        assert_eq!(progress, expected_progress);
         assert!(
             notes
                 .iter()
@@ -1741,11 +2300,46 @@ mod tests {
     }
 
     #[test]
-    fn same_color_jump_uses_shortcut_when_defined() {
+    fn same_color_event_tile_is_kept_as_pre_jump_event_source() {
+        let board_layout = BoardLayout::default();
+
+        assert_eq!(
+            jump_source_event_tile(
+                Some(BoardPosition::Main(0)),
+                Some(BoardPosition::Main(3)),
+                &board_layout,
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            jump_source_event_tile(
+                Some(BoardPosition::Main(0)),
+                Some(BoardPosition::Main(0)),
+                &board_layout,
+            ),
+            None
+        );
+        assert_eq!(
+            jump_source_event_tile(
+                Some(BoardPosition::Main(44)),
+                Some(BoardPosition::Main(0)),
+                &board_layout,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn same_color_jump_does_not_chain_from_landing_tile() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster::from_players(players);
         let board_layout = BoardLayout::default();
+        let start_progress = progress_for_main_tile(&player_roster, 1, 40);
+        let expected_progress = progress_for_main_tile(&player_roster, 1, 44);
+        let chained_progress = progress_for_main_tile(&player_roster, 1, 0);
+
+        assert!(is_same_color_route_tile(1, 44, &board_layout));
 
         let mut world = World::new();
         world.spawn((
@@ -1755,9 +2349,10 @@ mod tests {
                 owner_player_id: 1,
                 team_id: 1,
                 status: PieceStatus::Active,
-                progress: 13,
+                progress: start_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -1771,7 +2366,7 @@ mod tests {
         apply_jump_effect(
             &PlannedAction::Move {
                 piece_id: 1,
-                target_progress: 13,
+                target_progress: start_progress,
             },
             &board_layout,
             &player_roster,
@@ -1784,14 +2379,211 @@ mod tests {
             .find(|(piece_id, _, _, _)| piece_id.0 == 1)
             .map(|(_, _, piece_state, _)| piece_state.progress)
             .unwrap_or_default();
-        assert_eq!(progress, 25);
-        assert!(notes.iter().any(|note| note.contains("shortcut jump")));
+        assert_eq!(progress, expected_progress);
+        assert_ne!(progress, chained_progress);
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn shortcut_flight_consumes_one_roll_step() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let player_roster = PlayerRoster::from_players(players);
+        let board_layout = BoardLayout::default();
+
+        for (player_id, source_tile, target_tile) in
+            [(1, 7, 19), (2, 19, 31), (3, 43, 7), (4, 31, 43)]
+        {
+            let source_progress = progress_for_main_tile(&player_roster, player_id, source_tile);
+            let start_progress = source_progress.saturating_sub(1);
+            let expected_progress = progress_for_main_tile(&player_roster, player_id, target_tile);
+            let progress_after_source = source_progress.saturating_add(1);
+            let same_color_progress = next_same_color_jump_progress(
+                player_id,
+                source_progress,
+                &board_layout,
+                &player_roster,
+            )
+            .expect("nearer same-color tile exists");
+
+            assert_eq!(
+                board_layout.tile_kind_for_route_index(source_tile),
+                Some(TileKind::Jump)
+            );
+            assert!(
+                same_color_progress < expected_progress,
+                "shortcut should outrank a nearer same-color jump for P{player_id}"
+            );
+            assert_eq!(
+                movement_steps_for_roll(
+                    player_id,
+                    PieceStatus::Active,
+                    start_progress,
+                    1,
+                    &board_layout,
+                    &player_roster
+                ),
+                Some(vec![
+                    MovementStep {
+                        progress: source_progress,
+                        kind: MovementStepKind::Normal,
+                    },
+                    MovementStep {
+                        progress: expected_progress,
+                        kind: MovementStepKind::Shortcut,
+                    }
+                ])
+            );
+            assert_eq!(
+                compute_move_target_distance_on_board(
+                    player_id,
+                    PieceStatus::Active,
+                    start_progress,
+                    1,
+                    &board_layout,
+                    &player_roster
+                ),
+                Some(expected_progress)
+            );
+            assert_eq!(
+                movement_steps_for_roll(
+                    player_id,
+                    PieceStatus::Active,
+                    start_progress,
+                    2,
+                    &board_layout,
+                    &player_roster
+                ),
+                Some(vec![
+                    MovementStep {
+                        progress: source_progress,
+                        kind: MovementStepKind::Normal,
+                    },
+                    MovementStep {
+                        progress: progress_after_source,
+                        kind: MovementStepKind::Normal,
+                    },
+                ])
+            );
+            assert_eq!(
+                compute_move_target_distance_on_board(
+                    player_id,
+                    PieceStatus::Active,
+                    start_progress,
+                    2,
+                    &board_layout,
+                    &player_roster
+                ),
+                Some(progress_after_source)
+            );
+        }
+    }
+
+    #[test]
+    fn shortcut_source_does_not_trigger_free_jump_after_landing() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let player_roster = PlayerRoster::from_players(players);
+        let board_layout = BoardLayout::default();
+        let source_progress = progress_for_main_tile(&player_roster, 1, 7);
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: source_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        apply_jump_effect(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: source_progress,
+            },
+            &board_layout,
+            &player_roster,
+            &mut query,
+            &mut notes,
+        );
+
+        let progress = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 1)
+            .map(|(_, _, piece_state, _)| piece_state.progress)
+            .unwrap_or_default();
+        assert_eq!(progress, source_progress);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn different_color_route_tile_does_not_trigger_same_color_jump() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let board_layout = BoardLayout::default();
+        let start_progress = progress_for_main_tile(&player_roster, 1, 45);
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: start_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        apply_jump_effect(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: start_progress,
+            },
+            &board_layout,
+            &player_roster,
+            &mut query,
+            &mut notes,
+        );
+
+        let progress = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 1)
+            .map(|(_, _, piece_state, _)| piece_state.progress)
+            .unwrap_or_default();
+        assert_eq!(progress, start_progress);
+        assert!(notes.is_empty());
     }
 
     #[test]
     fn collect_actions_returns_launch_and_move_options_for_human_player() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let board_layout = BoardLayout::default();
         let player_roster = PlayerRoster::from_players(players);
 
         let mut world = World::new();
@@ -1805,6 +2597,7 @@ mod tests {
                 progress: 0,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -1818,6 +2611,7 @@ mod tests {
                 progress: 3,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -1827,7 +2621,15 @@ mod tests {
         > = SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world);
 
-        let actions = collect_actions(1, DiceRoll(6), 0, &player_roster, &query);
+        let actions = collect_actions(
+            1,
+            DiceRoll(6),
+            0,
+            LaunchRule::SixOnly,
+            &board_layout,
+            &player_roster,
+            &query,
+        );
         assert_eq!(actions.len(), 2);
         assert!(
             actions
@@ -1841,6 +2643,108 @@ mod tests {
                 target_progress: 9
             }
         )));
+    }
+
+    #[test]
+    fn collect_actions_allows_home_lane_finish_bounce() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let board_layout = BoardLayout::default();
+        let player_roster = PlayerRoster::from_players(players);
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: FINISH_DISTANCE - 2,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world);
+
+        assert_eq!(
+            collect_actions(
+                1,
+                DiceRoll(3),
+                0,
+                LaunchRule::SixOnly,
+                &board_layout,
+                &player_roster,
+                &query,
+            ),
+            vec![PlannedAction::Move {
+                piece_id: 1,
+                target_progress: FINISH_DISTANCE - 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn collect_actions_uses_configured_launch_rule() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let board_layout = BoardLayout::default();
+        let player_roster = PlayerRoster::from_players(players);
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::InHangar,
+                progress: 0,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world);
+
+        let six_only_actions = collect_actions(
+            1,
+            DiceRoll(4),
+            0,
+            LaunchRule::SixOnly,
+            &board_layout,
+            &player_roster,
+            &query,
+        );
+        assert!(six_only_actions.is_empty());
+
+        let even_actions = collect_actions(
+            1,
+            DiceRoll(4),
+            0,
+            LaunchRule::Even,
+            &board_layout,
+            &player_roster,
+            &query,
+        );
+        assert_eq!(
+            even_actions,
+            vec![PlannedAction::Launch {
+                piece_id: 1,
+                target_progress: 0,
+            }]
+        );
     }
 
     #[test]
@@ -1906,6 +2810,7 @@ mod tests {
                 progress: p1_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -1919,6 +2824,7 @@ mod tests {
                 progress: p3_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -1988,6 +2894,7 @@ mod tests {
                 progress: p1_progress,
                 shield: 0,
                 stack_shield: 1,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2001,6 +2908,7 @@ mod tests {
                 progress: p3_progress,
                 shield: 0,
                 stack_shield: 1,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2027,21 +2935,27 @@ mod tests {
     }
 
     #[test]
-    fn resolve_collision_consumes_shared_stack_shield_before_returning_to_hangar() {
+    fn normal_tile_stacked_defenders_send_attacker_to_hangar_without_damage() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
         let player_roster = PlayerRoster::from_players(players);
         let match_config = match_config(GameMode::TwoVsTwo);
         let board_layout = BoardLayout::default();
         let stack_tile = 42;
+        let attacker_hangar = Vec2::new(320.0, 280.0);
         let p1_progress = progress_for_main_tile(&player_roster, 1, stack_tile);
         let p2_progress = progress_for_main_tile(&player_roster, 2, stack_tile);
         let p3_progress = progress_for_main_tile(&player_roster, 3, stack_tile);
 
+        assert_eq!(
+            board_layout.tile_kind_for_route_index(stack_tile),
+            Some(TileKind::Normal)
+        );
+
         let mut world = World::new();
         world.spawn((
             PieceId(1),
-            HangarSlot(Vec2::new(-320.0, 280.0)),
+            HangarSlot(attacker_hangar),
             PieceState {
                 owner_player_id: 2,
                 team_id: 2,
@@ -2049,8 +2963,9 @@ mod tests {
                 progress: p2_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
-            Transform::default(),
+            Transform::from_xyz(12.0, 34.0, 0.0),
         ));
         world.spawn((
             PieceId(2),
@@ -2062,6 +2977,7 @@ mod tests {
                 progress: p1_progress,
                 shield: 0,
                 stack_shield: 1,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2075,6 +2991,123 @@ mod tests {
                 progress: p3_progress,
                 shield: 0,
                 stack_shield: 1,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        let attacker_landed = resolve_collision(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: p2_progress,
+            },
+            None,
+            &board_layout,
+            &player_roster,
+            &match_config,
+            &mut query,
+            &mut notes,
+        );
+
+        assert!(!attacker_landed);
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, transform)| {
+                (
+                    piece_id.0,
+                    piece_state.status,
+                    piece_state.progress,
+                    piece_state.stack_shield,
+                    transform.translation.x,
+                    transform.translation.y,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            vec![
+                (
+                    1,
+                    PieceStatus::InHangar,
+                    0,
+                    0,
+                    attacker_hangar.x,
+                    attacker_hangar.y
+                ),
+                (2, PieceStatus::Active, p1_progress, 1, 0.0, 0.0),
+                (3, PieceStatus::Active, p3_progress, 1, 0.0, 0.0),
+            ]
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("stacked defenders bounced attacker back to hangar"))
+        );
+    }
+
+    #[test]
+    fn special_tile_collision_consumes_shared_stack_shield() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let player_roster = PlayerRoster::from_players(players);
+        let match_config = match_config(GameMode::TwoVsTwo);
+        let board_layout = BoardLayout::default();
+        let stack_tile = 44;
+        let p1_progress = progress_for_main_tile(&player_roster, 1, stack_tile);
+        let p2_progress = progress_for_main_tile(&player_roster, 2, stack_tile);
+        let p3_progress = progress_for_main_tile(&player_roster, 3, stack_tile);
+
+        assert_eq!(
+            board_layout.tile_kind_for_route_index(stack_tile),
+            Some(TileKind::Defense)
+        );
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: p2_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: p1_progress,
+                shield: 0,
+                stack_shield: 1,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(3),
+            HangarSlot(Vec2::new(-320.0, -280.0)),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: p3_progress,
+                shield: 0,
+                stack_shield: 1,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2126,7 +3159,7 @@ mod tests {
         let player_roster = PlayerRoster::from_players(players);
         let match_config = match_config(GameMode::TwoVsTwo);
         let board_layout = BoardLayout::default();
-        let shield_tile = 2;
+        let shield_tile = 20;
         let p1_progress = progress_for_main_tile(&player_roster, 1, shield_tile);
         let p2_target_progress = progress_for_main_tile(&player_roster, 2, shield_tile);
         let p2_origin_progress = p2_target_progress - 1;
@@ -2142,6 +3175,7 @@ mod tests {
                 progress: p2_target_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::from_xyz(100.0, 100.0, 0.0),
         ));
@@ -2155,6 +3189,7 @@ mod tests {
                 progress: p1_progress,
                 shield: 1,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2225,6 +3260,7 @@ mod tests {
                 progress: 2,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2258,6 +3294,7 @@ mod tests {
                 player_roster: &player_roster,
                 match_config: &match_config,
                 board_layout: &board_layout,
+                jump_source_event_tile: None,
             },
             &mut query,
             &mut skill_roster,
@@ -2277,10 +3314,209 @@ mod tests {
             .unwrap_or_default();
 
         assert_eq!(after, before + 1);
+        let outcome = note.expect("event should resolve");
+        assert_eq!(outcome.kind, TileEventKind::GainSkillCharge);
+        assert!(outcome.note.contains("GainSkillCharge"));
+        assert!(outcome.attacker_still_landed);
+    }
+
+    #[test]
+    fn gain_shield_event_updates_piece_buff_state() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let match_config = match_config(GameMode::OneVsOne);
+        let board_layout = BoardLayout::default();
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 2,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut final_progress = 2;
+
+        let outcome = apply_event_kind_effect(
+            TileEventKind::GainShield,
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 2,
+            },
+            &mut final_progress,
+            LandingResources {
+                player_roster: &player_roster,
+                match_config: &match_config,
+                board_layout: &board_layout,
+                jump_source_event_tile: None,
+            },
+            &mut query,
+            &mut skill_roster,
+            &mut Vec::new(),
+        )
+        .expect("event should resolve");
+
+        let shield = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 1)
+            .map(|(_, _, piece_state, _)| piece_state.shield)
+            .unwrap_or_default();
+        assert_eq!(outcome.kind, TileEventKind::GainShield);
+        assert!(outcome.note.contains("gained shield"));
+        assert!(outcome.attacker_still_landed);
+        assert_eq!(shield, 1);
+    }
+
+    #[test]
+    fn defense_tile_records_piece_effect_notice() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let match_config = match_config(GameMode::OneVsOne);
+        let board_layout = BoardLayout::default();
+        let target_tile = 44;
+        let target_progress = progress_for_main_tile(&player_roster, 1, target_tile);
+
+        assert_eq!(
+            board_layout.tile_kind_for_route_index(target_tile),
+            Some(TileKind::Defense)
+        );
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: target_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+        let mut piece_effect_notice = None;
+
+        let attacker_still_landed = apply_post_collision_tile_effects(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress,
+            },
+            LandingResources {
+                player_roster: &player_roster,
+                match_config: &match_config,
+                board_layout: &board_layout,
+                jump_source_event_tile: None,
+            },
+            &mut query,
+            &mut skill_roster,
+            &mut notes,
+            &mut piece_effect_notice,
+        );
+
+        assert!(attacker_still_landed);
+        assert_eq!(
+            piece_effect_notice,
+            Some(PieceEffectNotice {
+                piece_id: 1,
+                kind: PieceEffectKind::Defense,
+            })
+        );
+        assert!(notes.iter().any(|note| note.contains("gained shield")));
+    }
+
+    #[test]
+    fn post_collision_effects_resolve_event_tile_that_triggered_same_color_jump() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let match_config = match_config(GameMode::OneVsOne);
+        let board_layout = BoardLayout::default();
+        let target_progress = progress_for_main_tile(&player_roster, 1, 3);
+
+        assert_eq!(
+            board_layout.tile_kind_for_route_index(0),
+            Some(TileKind::Event)
+        );
+        assert_eq!(
+            jump_source_event_tile(
+                Some(BoardPosition::Main(0)),
+                Some(BoardPosition::Main(3)),
+                &board_layout,
+            ),
+            Some(0)
+        );
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: target_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+        let mut piece_effect_notice = None;
+
+        let attacker_still_landed = apply_post_collision_tile_effects(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress,
+            },
+            LandingResources {
+                player_roster: &player_roster,
+                match_config: &match_config,
+                board_layout: &board_layout,
+                jump_source_event_tile: Some(0),
+            },
+            &mut query,
+            &mut skill_roster,
+            &mut notes,
+            &mut piece_effect_notice,
+        );
+
+        assert!(attacker_still_landed);
+        assert_eq!(piece_effect_notice, None);
         assert!(
-            note.map(|(note, _)| note)
-                .unwrap_or_default()
-                .contains("GainSkillCharge")
+            notes
+                .iter()
+                .any(|note| note.contains("pre-jump event tile 0: event"))
         );
     }
 
@@ -2304,6 +3540,7 @@ mod tests {
                 progress: 2,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2325,16 +3562,16 @@ mod tests {
                 player_roster: &player_roster,
                 match_config: &match_config,
                 board_layout: &board_layout,
+                jump_source_event_tile: None,
             },
             &mut query,
             &mut skill_roster,
             &mut Vec::new(),
         );
-        assert!(
-            note.map(|(note, _)| note)
-                .unwrap_or_default()
-                .contains("DisableNextSkill")
-        );
+        let outcome = note.expect("event should resolve");
+        assert_eq!(outcome.kind, TileEventKind::DisableNextSkill);
+        assert!(outcome.note.contains("DisableNextSkill"));
+        assert!(outcome.attacker_still_landed);
 
         sync_turn_skill_usage(&mut skill_roster, 1);
         assert!(!can_use_skill_this_turn(&skill_roster, 1));
@@ -2368,6 +3605,7 @@ mod tests {
                 progress: p1_start_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2381,6 +3619,7 @@ mod tests {
                 progress: p2_target_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::from_xyz(10.0, 20.0, 0.0),
         ));
@@ -2403,6 +3642,7 @@ mod tests {
                 player_roster: &player_roster,
                 match_config: &match_config,
                 board_layout: &board_layout,
+                jump_source_event_tile: None,
             },
             &mut query,
             &mut skill_roster,
@@ -2411,14 +3651,15 @@ mod tests {
 
         assert_eq!(
             event_result,
-            Some((
-                format!(
+            Some(TileEventOutcome {
+                kind: TileEventKind::AdvanceTwo,
+                note: format!(
                     "event {:?}: advanced to tile {}",
                     TileEventKind::AdvanceTwo,
                     p1_start_progress + 2
                 ),
-                true
-            ))
+                attacker_still_landed: true,
+            })
         );
         let states = query
             .iter_mut()
@@ -2482,6 +3723,7 @@ mod tests {
                 progress: p1_start_progress,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::from_translation(origin_translation),
         ));
@@ -2495,6 +3737,7 @@ mod tests {
                 progress: p2_target_progress,
                 shield: 1,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2517,6 +3760,7 @@ mod tests {
                 player_roster: &player_roster,
                 match_config: &match_config,
                 board_layout: &board_layout,
+                jump_source_event_tile: None,
             },
             &mut query,
             &mut skill_roster,
@@ -2525,14 +3769,15 @@ mod tests {
 
         assert_eq!(
             event_result,
-            Some((
-                format!(
+            Some(TileEventOutcome {
+                kind: TileEventKind::AdvanceTwo,
+                note: format!(
                     "event {:?}: advanced to tile {}",
                     TileEventKind::AdvanceTwo,
                     p1_start_progress + 2
                 ),
-                false
-            ))
+                attacker_still_landed: false,
+            })
         );
         let states = query
             .iter_mut()
@@ -2582,6 +3827,7 @@ mod tests {
                 progress: 3,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2595,6 +3841,7 @@ mod tests {
                 progress: 4,
                 shield: 1,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2608,6 +3855,7 @@ mod tests {
                 progress: 5,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -2629,19 +3877,20 @@ mod tests {
                 player_roster: &player_roster,
                 match_config: &match_config,
                 board_layout: &board_layout,
+                jump_source_event_tile: None,
             },
             &mut query,
             &mut skill_roster,
             &mut Vec::new(),
         )
-        .map(|(note, _)| note)
-        .unwrap_or_default();
+        .expect("event should resolve");
 
         let shields = query
             .iter_mut()
             .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.shield))
             .collect::<Vec<_>>();
         assert_eq!(shields, vec![(1, 0), (2, 0), (3, 0)]);
-        assert!(note.contains("removed shield from piece #2"));
+        assert_eq!(note.kind, TileEventKind::RemoveEnemyShield);
+        assert!(note.note.contains("removed shield from piece #2"));
     }
 }

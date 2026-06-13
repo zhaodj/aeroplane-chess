@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::data::board_config::{TileConfig, default_board_tiles};
 use crate::data::game_mode::GameMode;
 use crate::domain::player::{PlayerControl, PlayerState};
+use crate::domain::rules::LaunchRule;
 use crate::domain::team::TeamState;
 use crate::domain::tile::TileKind;
 use crate::domain::victory::all_pieces_finished;
@@ -14,6 +15,7 @@ pub struct MatchConfig {
     pub mode: GameMode,
     pub ai_difficulty: AiDifficulty,
     pub fast_mode: bool,
+    pub launch_rule: LaunchRule,
     pub player_colors: [PlayerColorChoice; 4],
     pub pieces_per_player: u8,
     pub player_controls: [PlayerControl; 4],
@@ -25,6 +27,7 @@ pub struct MatchSetup {
     pub mode: GameMode,
     pub ai_difficulty: AiDifficulty,
     pub fast_mode: bool,
+    pub launch_rule: LaunchRule,
     pub player_colors: [PlayerColorChoice; 4],
     pub pieces_per_player: u8,
     pub player_controls: [PlayerControl; 4],
@@ -232,6 +235,14 @@ impl BoardLayout {
             .map(|tile| tile.kind)
     }
 
+    /// 查询主环道格子对应的玩家颜色槽位。
+    pub fn player_color_slot_for_route_index(&self, route_index: u8) -> Option<usize> {
+        self.tiles
+            .iter()
+            .find(|tile| tile.route_index == Some(route_index))
+            .map(|tile| tile.player_color_slot)
+    }
+
     /// 查询指定主环道格子的飞跃快捷目标（若存在）。
     pub fn jump_shortcut_target_for_route_index(&self, route_index: u8) -> Option<u8> {
         self.tiles
@@ -318,7 +329,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     color: player_colors[0].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, 260.0), pieces_per_player),
                     launch_position: Vec2::new(-316.104, 156.104),
-                    launch_tile_index: 40,
+                    launch_tile_index: 39,
                     home_lane_positions: vec![
                         Vec2::new(-300.104, -0.104),
                         Vec2::new(-240.104, -0.104),
@@ -338,7 +349,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     color: player_colors[1].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, 260.0), pieces_per_player),
                     launch_position: Vec2::new(155.896, 316.104),
-                    launch_tile_index: 4,
+                    launch_tile_index: 3,
                     home_lane_positions: vec![
                         Vec2::new(-0.104, 300.104),
                         Vec2::new(-0.104, 240.104),
@@ -372,7 +383,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     color: player_colors[0].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, 260.0), pieces_per_player),
                     launch_position: Vec2::new(-316.104, 156.104),
-                    launch_tile_index: 40,
+                    launch_tile_index: 39,
                     home_lane_positions: vec![
                         Vec2::new(-300.104, -0.104),
                         Vec2::new(-240.104, -0.104),
@@ -392,7 +403,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     color: player_colors[1].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, 260.0), pieces_per_player),
                     launch_position: Vec2::new(155.896, 316.104),
-                    launch_tile_index: 4,
+                    launch_tile_index: 3,
                     home_lane_positions: vec![
                         Vec2::new(-0.104, 300.104),
                         Vec2::new(-0.104, 240.104),
@@ -412,7 +423,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     color: player_colors[2].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(-260.0, -260.0), pieces_per_player),
                     launch_position: Vec2::new(-156.104, -315.896),
-                    launch_tile_index: 28,
+                    launch_tile_index: 27,
                     home_lane_positions: vec![
                         Vec2::new(0.104, -300.104),
                         Vec2::new(0.104, -240.104),
@@ -432,7 +443,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                     color: player_colors[3].to_color(),
                     hangar_slots: build_hangar_slots(Vec2::new(260.0, -260.0), pieces_per_player),
                     launch_position: Vec2::new(315.896, -155.896),
-                    launch_tile_index: 16,
+                    launch_tile_index: 15,
                     home_lane_positions: vec![
                         Vec2::new(300.317, 0.104),
                         Vec2::new(240.317, 0.104),
@@ -512,6 +523,7 @@ mod tests {
             mode,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
+            launch_rule: LaunchRule::SixOnly,
             player_colors: [
                 PlayerColorChoice::Red,
                 PlayerColorChoice::Blue,

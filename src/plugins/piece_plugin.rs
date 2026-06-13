@@ -1,10 +1,12 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, sprite::Anchor};
 
 use crate::constants::BOARD_Z_LAYER;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
-use crate::gameplay::match_flow::PlayerRoster;
-use crate::gameplay::turn_flow::{TurnInputState, TurnState};
+use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
+use crate::gameplay::turn_flow::{
+    FINISH_DISTANCE, PieceEffectKind, TurnInputState, TurnState, world_position_for_piece,
+};
 use crate::plugins::skill_plugin::SkillTargetState;
 use crate::states::AppState;
 use crate::states::GamePhase;
@@ -17,7 +19,14 @@ impl Plugin for PiecePlugin {
         app.add_systems(OnEnter(AppState::InGame), spawn_pieces)
             .add_systems(
                 Update,
-                (update_piece_highlight, update_piece_shield_badges)
+                (
+                    update_piece_highlight,
+                    update_piece_stack_visuals,
+                    update_piece_stack_count_badges,
+                    update_piece_shield_badges,
+                    update_piece_effect_badges,
+                )
+                    .chain()
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnExit(AppState::InGame), cleanup_pieces);
@@ -41,6 +50,24 @@ pub struct HangarSlot(pub Vec2);
 struct PieceBaseColor(pub Color);
 
 #[derive(Component)]
+/// 棋子可见图形根节点：叠放错位只作用在这里，不污染逻辑 Transform。
+struct PieceVisual {
+    piece_id: u8,
+}
+
+#[derive(Component)]
+/// 同一逻辑格上多枚棋子的数量徽标。
+struct PieceStackCountBadge {
+    piece_id: u8,
+}
+
+#[derive(Component)]
+/// 同格棋子数量徽标文本。
+struct PieceStackCountBadgeText {
+    piece_id: u8,
+}
+
+#[derive(Component)]
 /// 棋子护盾角标。
 struct PieceShieldBadge {
     piece_id: u8,
@@ -52,10 +79,27 @@ struct PieceShieldBadgeText {
     piece_id: u8,
 }
 
+#[derive(Component)]
+/// 最近一次特殊格结果附加在棋子旁的短标签。
+struct PieceEffectBadge {
+    piece_id: u8,
+}
+
+#[derive(Component)]
+/// 特殊格结果标签文字。
+struct PieceEffectBadgeText {
+    piece_id: u8,
+}
+
 const PIECE_HITBOX_SIZE: f32 = 32.0;
 const PIECE_TOKEN_RADIUS: f32 = 14.0;
-const SHIELD_BADGE_SIZE: f32 = 14.0;
-const SHIELD_BADGE_OFFSET: Vec2 = Vec2::new(10.0, 10.0);
+const STACK_BADGE_SIZE: Vec2 = Vec2::new(25.0, 15.0);
+const STACK_BADGE_OFFSET: Vec2 = Vec2::new(-18.0, 20.0);
+const SHIELD_BADGE_MIN_SIZE: Vec2 = Vec2::new(28.0, 16.0);
+const SHIELD_BADGE_OFFSET: Vec2 = Vec2::new(17.0, 14.0);
+const EFFECT_BADGE_SIZE: Vec2 = Vec2::new(50.0, 14.0);
+const EFFECT_BADGE_OFFSET: Vec2 = Vec2::new(0.0, -23.0);
+const PLANE_ICON_BASE_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
 const PLANE_ICON_POINTS: &[Vec2] = &[
     Vec2::new(-9.12, -3.40),
     Vec2::new(-5.31, -5.31),
@@ -77,12 +121,8 @@ const PLANE_ICON_POINTS: &[Vec2] = &[
     Vec2::new(-9.12, -3.40),
 ];
 
-type ShieldBadgePieceQuery<'w, 's> = Query<
-    'w,
-    's,
-    (&'static PieceId, &'static PieceState, &'static Transform),
-    (Without<PieceShieldBadge>, Without<PieceShieldBadgeText>),
->;
+type PieceTransformQuery<'w, 's> =
+    Query<'w, 's, (&'static PieceId, &'static PieceState, &'static Transform)>;
 type ShieldBadgeQuery<'w, 's> = Query<
     'w,
     's,
@@ -100,10 +140,100 @@ type ShieldBadgeTextQuery<'w, 's> = Query<
     (
         &'static PieceShieldBadgeText,
         &'static mut Text2d,
+        &'static mut TextColor,
         &'static mut Transform,
         &'static mut Visibility,
     ),
     (Without<PieceId>, Without<PieceShieldBadge>),
+>;
+
+type PieceVisualQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static PieceVisual, &'static mut Transform),
+    (Without<PieceId>, Without<PieceShieldBadge>),
+>;
+
+#[derive(Clone)]
+struct ShieldBadgeInfo {
+    label: String,
+    fill: Color,
+    text: Color,
+    size: Vec2,
+}
+
+#[derive(Clone, Copy)]
+struct PieceVisualInfo {
+    piece_id: u8,
+    visual_local_translation: Vec3,
+    visual_scale: f32,
+    visual_translation: Vec3,
+    stack_badge_translation: Vec3,
+    stack_count: usize,
+    is_stack_leader: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct StackKey {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Clone, Copy)]
+struct StackEntry {
+    piece_id: u8,
+    key: StackKey,
+    current_translation: Vec3,
+    current_rotation: Quat,
+    current_scale: Vec3,
+}
+
+type StackCountBadgeQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PieceStackCountBadge,
+        &'static mut Sprite,
+        &'static mut Transform,
+        &'static mut Visibility,
+    ),
+    (Without<PieceId>, Without<PieceStackCountBadgeText>),
+>;
+type StackCountBadgeTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PieceStackCountBadgeText,
+        &'static mut Text2d,
+        &'static mut TextColor,
+        &'static mut Transform,
+        &'static mut Visibility,
+    ),
+    (Without<PieceId>, Without<PieceStackCountBadge>),
+>;
+
+type EffectBadgeQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PieceEffectBadge,
+        &'static mut Sprite,
+        &'static mut Transform,
+        &'static mut Visibility,
+    ),
+    (Without<PieceId>, Without<PieceEffectBadgeText>),
+>;
+type EffectBadgeTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PieceEffectBadgeText,
+        &'static mut Text2d,
+        &'static mut TextColor,
+        &'static mut Transform,
+        &'static mut Visibility,
+    ),
+    (Without<PieceId>, Without<PieceEffectBadge>),
 >;
 
 fn spawn_pieces(
@@ -136,6 +266,7 @@ fn spawn_pieces(
                         progress: 0,
                         shield: 0,
                         stack_shield: 0,
+                        motion_serial: 0,
                     },
                     Name::new(format!(
                         "Piece_P{}_{}",
@@ -144,13 +275,57 @@ fn spawn_pieces(
                     PieceEntity,
                 ))
                 .with_children(|parent| {
-                    spawn_piece_token(parent, &mut meshes, &mut materials, player.color);
+                    parent
+                        .spawn((
+                            Transform::default(),
+                            Visibility::Visible,
+                            PieceVisual {
+                                piece_id: current_piece_id,
+                            },
+                            Name::new(format!("PieceVisual_{}", current_piece_id)),
+                            PieceEntity,
+                        ))
+                        .with_children(|visual| {
+                            spawn_piece_token(visual, &mut meshes, &mut materials, player.color);
+                        });
                 });
             commands.spawn((
-                Sprite::from_color(
-                    Color::srgba(0.20, 0.76, 1.0, 0.88),
-                    Vec2::splat(SHIELD_BADGE_SIZE),
+                Sprite::from_color(Color::srgba(0.10, 0.12, 0.16, 0.92), STACK_BADGE_SIZE),
+                Transform::from_xyz(
+                    hangar_slot.x + STACK_BADGE_OFFSET.x,
+                    hangar_slot.y + STACK_BADGE_OFFSET.y,
+                    BOARD_Z_LAYER + 2.05,
                 ),
+                Visibility::Hidden,
+                PieceStackCountBadge {
+                    piece_id: current_piece_id,
+                },
+                Name::new(format!("PieceStackCountBadge_{}", current_piece_id)),
+                PieceEntity,
+            ));
+            commands.spawn((
+                Text2d::new(""),
+                TextFont {
+                    font_size: 10.5,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                TextLayout::new_with_justify(Justify::Center),
+                Anchor::CENTER,
+                Transform::from_xyz(
+                    hangar_slot.x + STACK_BADGE_OFFSET.x,
+                    hangar_slot.y + STACK_BADGE_OFFSET.y - 0.5,
+                    BOARD_Z_LAYER + 3.05,
+                ),
+                Visibility::Hidden,
+                PieceStackCountBadgeText {
+                    piece_id: current_piece_id,
+                },
+                Name::new(format!("PieceStackCountBadgeText_{}", current_piece_id)),
+                PieceEntity,
+            ));
+            commands.spawn((
+                Sprite::from_color(Color::srgba(0.06, 0.26, 0.58, 0.94), SHIELD_BADGE_MIN_SIZE),
                 Transform::from_xyz(
                     hangar_slot.x + SHIELD_BADGE_OFFSET.x,
                     hangar_slot.y + SHIELD_BADGE_OFFSET.y,
@@ -170,9 +345,11 @@ fn spawn_pieces(
                     ..default()
                 },
                 TextColor(Color::WHITE),
+                TextLayout::new_with_justify(Justify::Center),
+                Anchor::CENTER,
                 Transform::from_xyz(
-                    hangar_slot.x + SHIELD_BADGE_OFFSET.x - 3.5,
-                    hangar_slot.y + SHIELD_BADGE_OFFSET.y - 7.0,
+                    hangar_slot.x + SHIELD_BADGE_OFFSET.x,
+                    hangar_slot.y + SHIELD_BADGE_OFFSET.y - 0.5,
                     BOARD_Z_LAYER + 3.0,
                 ),
                 Visibility::Hidden,
@@ -183,9 +360,128 @@ fn spawn_pieces(
                 PieceEntity,
             ));
 
+            commands.spawn((
+                Sprite::from_color(Color::srgba(0.12, 0.16, 0.22, 0.90), EFFECT_BADGE_SIZE),
+                Transform::from_xyz(
+                    hangar_slot.x + EFFECT_BADGE_OFFSET.x,
+                    hangar_slot.y + EFFECT_BADGE_OFFSET.y,
+                    BOARD_Z_LAYER + 2.15,
+                ),
+                Visibility::Hidden,
+                PieceEffectBadge {
+                    piece_id: current_piece_id,
+                },
+                Name::new(format!("PieceEffectBadge_{}", current_piece_id)),
+                PieceEntity,
+            ));
+            commands.spawn((
+                Text2d::new(""),
+                TextFont {
+                    font_size: 10.5,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                TextLayout::new_with_justify(Justify::Center),
+                Transform::from_xyz(
+                    hangar_slot.x + EFFECT_BADGE_OFFSET.x,
+                    hangar_slot.y + EFFECT_BADGE_OFFSET.y - 6.0,
+                    BOARD_Z_LAYER + 3.15,
+                ),
+                Visibility::Hidden,
+                PieceEffectBadgeText {
+                    piece_id: current_piece_id,
+                },
+                Name::new(format!("PieceEffectBadgeText_{}", current_piece_id)),
+                PieceEntity,
+            ));
+
             piece_id += 1;
         }
     }
+}
+
+fn facing_rotation_for_piece(
+    piece_state: PieceState,
+    current_translation: Vec3,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<Quat> {
+    let current_position = current_piece_position_for_facing(
+        piece_state,
+        current_translation,
+        board_layout,
+        player_roster,
+    );
+    let target_position = next_facing_target(piece_state, board_layout, player_roster)?;
+    rotation_for_direction(target_position - current_position)
+}
+
+fn current_piece_position_for_facing(
+    piece_state: PieceState,
+    current_translation: Vec3,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Vec2 {
+    if matches!(piece_state.status, PieceStatus::InHangar) {
+        return current_translation.truncate();
+    }
+
+    world_position_for_piece(
+        piece_state.owner_player_id,
+        piece_state.progress,
+        piece_state.status,
+        board_layout,
+        player_roster,
+    )
+    .unwrap_or_else(|| current_translation.truncate())
+}
+
+fn next_facing_target(
+    piece_state: PieceState,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<Vec2> {
+    match piece_state.status {
+        PieceStatus::InHangar => world_position_for_piece(
+            piece_state.owner_player_id,
+            0,
+            PieceStatus::AtLaunch,
+            board_layout,
+            player_roster,
+        ),
+        PieceStatus::AtLaunch => world_position_for_piece(
+            piece_state.owner_player_id,
+            0,
+            PieceStatus::Active,
+            board_layout,
+            player_roster,
+        ),
+        PieceStatus::Active if piece_state.progress < FINISH_DISTANCE => {
+            let next_progress = piece_state.progress.saturating_add(1).min(FINISH_DISTANCE);
+            let next_status = if next_progress == FINISH_DISTANCE {
+                PieceStatus::Finished
+            } else {
+                PieceStatus::Active
+            };
+            world_position_for_piece(
+                piece_state.owner_player_id,
+                next_progress,
+                next_status,
+                board_layout,
+                player_roster,
+            )
+        }
+        PieceStatus::Active | PieceStatus::Finished => None,
+    }
+}
+
+fn rotation_for_direction(direction: Vec2) -> Option<Quat> {
+    if direction.length_squared() < 0.25 {
+        return None;
+    }
+
+    let target_angle = direction.y.atan2(direction.x);
+    Some(Quat::from_rotation_z(target_angle - PLANE_ICON_BASE_ANGLE))
 }
 
 fn spawn_piece_token(
@@ -249,24 +545,266 @@ fn spawn_piece_line(
     ));
 }
 
+fn update_piece_stack_visuals(
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+    piece_query: PieceTransformQuery,
+    mut visual_query: PieceVisualQuery,
+) {
+    let visual_infos = piece_visual_infos(&piece_query, &board_layout, &player_roster);
+
+    for (visual, mut transform) in &mut visual_query {
+        let Some(info) = visual_infos
+            .iter()
+            .find(|info| info.piece_id == visual.piece_id)
+        else {
+            transform.translation = Vec3::ZERO;
+            transform.scale = Vec3::ONE;
+            continue;
+        };
+
+        transform.translation = info.visual_local_translation;
+        transform.scale = Vec3::splat(info.visual_scale);
+    }
+}
+
+fn update_piece_stack_count_badges(
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+    piece_query: PieceTransformQuery,
+    mut badge_query: StackCountBadgeQuery,
+    mut badge_text_query: StackCountBadgeTextQuery,
+) {
+    let visual_infos = piece_visual_infos(&piece_query, &board_layout, &player_roster);
+
+    for (badge, mut sprite, mut transform, mut visibility) in &mut badge_query {
+        let Some(info) = visual_infos
+            .iter()
+            .find(|info| info.piece_id == badge.piece_id)
+        else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        if info.stack_count <= 1 || !info.is_stack_leader {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+
+        sprite.custom_size = Some(STACK_BADGE_SIZE);
+        transform.translation = info.stack_badge_translation
+            + Vec3::new(STACK_BADGE_OFFSET.x, STACK_BADGE_OFFSET.y, 0.0);
+        transform.translation.z = BOARD_Z_LAYER + 2.05;
+        *visibility = Visibility::Visible;
+    }
+
+    for (badge_text, mut text, mut text_color, mut transform, mut visibility) in
+        &mut badge_text_query
+    {
+        let Some(info) = visual_infos
+            .iter()
+            .find(|info| info.piece_id == badge_text.piece_id)
+        else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        if info.stack_count <= 1 || !info.is_stack_leader {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+
+        *text = Text2d::new(format!("x{}", info.stack_count));
+        *text_color = TextColor(Color::WHITE);
+        transform.translation = info.stack_badge_translation
+            + Vec3::new(STACK_BADGE_OFFSET.x, STACK_BADGE_OFFSET.y - 0.5, 0.0);
+        transform.translation.z = BOARD_Z_LAYER + 3.05;
+        *visibility = Visibility::Visible;
+    }
+}
+
+fn piece_visual_infos(
+    piece_query: &PieceTransformQuery,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Vec<PieceVisualInfo> {
+    let mut entries = piece_query
+        .iter()
+        .map(|(piece_id, piece_state, transform)| {
+            let logical_center = stack_logical_center(
+                *piece_state,
+                transform.translation,
+                board_layout,
+                player_roster,
+            );
+            StackEntry {
+                piece_id: piece_id.0,
+                key: stack_key(logical_center),
+                current_translation: transform.translation,
+                current_rotation: transform.rotation,
+                current_scale: transform.scale,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    entries.sort_by_key(|entry| (entry.key, entry.piece_id));
+
+    let mut visual_infos = Vec::with_capacity(entries.len());
+    let mut group_start = 0;
+    while group_start < entries.len() {
+        let group_key = entries[group_start].key;
+        let mut group_end = group_start + 1;
+        while group_end < entries.len() && entries[group_end].key == group_key {
+            group_end += 1;
+        }
+
+        let group = &entries[group_start..group_end];
+        let stack_count = group.len();
+        let group_center = group.iter().fold(Vec2::ZERO, |sum, entry| {
+            sum + entry.current_translation.truncate()
+        }) / stack_count as f32;
+        let leader_id = group[0].piece_id;
+
+        for (index, entry) in group.iter().enumerate() {
+            let visual_offset = stack_visual_offset(index, stack_count);
+            let visual_z_offset = stack_visual_z_offset(index, stack_count);
+            visual_infos.push(PieceVisualInfo {
+                piece_id: entry.piece_id,
+                visual_local_translation: stack_visual_local_translation(
+                    visual_offset,
+                    visual_z_offset,
+                    entry.current_rotation,
+                    entry.current_scale,
+                ),
+                visual_scale: stack_visual_scale(stack_count),
+                visual_translation: entry.current_translation + visual_offset.extend(0.0),
+                stack_badge_translation: group_center.extend(BOARD_Z_LAYER + 2.05),
+                stack_count,
+                is_stack_leader: entry.piece_id == leader_id,
+            });
+        }
+
+        group_start = group_end;
+    }
+
+    visual_infos
+}
+
+fn stack_logical_center(
+    piece_state: PieceState,
+    current_translation: Vec3,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Vec2 {
+    if matches!(piece_state.status, PieceStatus::InHangar) {
+        return current_translation.truncate();
+    }
+
+    world_position_for_piece(
+        piece_state.owner_player_id,
+        piece_state.progress,
+        piece_state.status,
+        board_layout,
+        player_roster,
+    )
+    .unwrap_or_else(|| current_translation.truncate())
+}
+
+fn stack_key(center: Vec2) -> StackKey {
+    StackKey {
+        x: (center.x * 10.0).round() as i32,
+        y: (center.y * 10.0).round() as i32,
+    }
+}
+
+fn stack_visual_offset(index: usize, stack_count: usize) -> Vec2 {
+    match stack_count {
+        0 | 1 => Vec2::ZERO,
+        2 => [Vec2::new(-6.5, 0.0), Vec2::new(6.5, 0.0)][index],
+        3 => [
+            Vec2::new(-6.5, -4.8),
+            Vec2::new(6.5, -4.8),
+            Vec2::new(0.0, 6.8),
+        ][index],
+        4 => [
+            Vec2::new(-6.5, 6.0),
+            Vec2::new(6.5, 6.0),
+            Vec2::new(-6.5, -6.0),
+            Vec2::new(6.5, -6.0),
+        ][index],
+        _ => {
+            let angle = -std::f32::consts::FRAC_PI_2
+                + index as f32 * std::f32::consts::TAU / stack_count as f32;
+            Vec2::new(angle.cos() * 8.2, angle.sin() * 8.2)
+        }
+    }
+}
+
+fn stack_visual_scale(stack_count: usize) -> f32 {
+    match stack_count {
+        0 | 1 => 1.0,
+        2 => 0.90,
+        3 | 4 => 0.84,
+        _ => 0.76,
+    }
+}
+
+fn stack_visual_z_offset(index: usize, stack_count: usize) -> f32 {
+    if stack_count <= 1 {
+        0.0
+    } else {
+        index as f32 * 0.025
+    }
+}
+
+fn stack_visual_local_translation(
+    visual_offset: Vec2,
+    visual_z_offset: f32,
+    parent_rotation: Quat,
+    parent_scale: Vec3,
+) -> Vec3 {
+    let safe_scale = Vec3::new(
+        parent_scale.x.abs().max(0.001).copysign(parent_scale.x),
+        parent_scale.y.abs().max(0.001).copysign(parent_scale.y),
+        parent_scale.z.abs().max(0.001).copysign(parent_scale.z),
+    );
+    let rotated = parent_rotation.inverse().mul_vec3(Vec3::new(
+        visual_offset.x,
+        visual_offset.y,
+        visual_z_offset,
+    ));
+    Vec3::new(
+        rotated.x / safe_scale.x,
+        rotated.y / safe_scale.y,
+        rotated.z / safe_scale.z,
+    )
+}
+
 fn update_piece_shield_badges(
-    piece_query: ShieldBadgePieceQuery,
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+    piece_query: PieceTransformQuery,
     mut badge_query: ShieldBadgeQuery,
     mut badge_text_query: ShieldBadgeTextQuery,
 ) {
+    let visual_infos = piece_visual_infos(&piece_query, &board_layout, &player_roster);
     let pieces = piece_query
         .iter()
         .map(|(piece_id, piece_state, transform)| {
             (
                 piece_id.0,
-                piece_state.shield.saturating_add(piece_state.stack_shield),
-                transform.translation,
+                shield_badge_info(piece_state.shield, piece_state.stack_shield),
+                visual_infos
+                    .iter()
+                    .find(|info| info.piece_id == piece_id.0)
+                    .map(|info| info.visual_translation)
+                    .unwrap_or(transform.translation),
             )
         })
         .collect::<Vec<_>>();
 
     for (badge, mut sprite, mut transform, mut visibility) in &mut badge_query {
-        let Some((_, shield_layers, translation)) = pieces
+        let Some((_, shield_info, translation)) = pieces
             .iter()
             .find(|(piece_id, _, _)| *piece_id == badge.piece_id)
         else {
@@ -274,24 +812,23 @@ fn update_piece_shield_badges(
             continue;
         };
 
-        if *shield_layers == 0 {
+        let Some(shield_info) = shield_info else {
             *visibility = Visibility::Hidden;
             continue;
-        }
-
-        sprite.color = if *shield_layers > 1 {
-            Color::srgba(0.08, 0.58, 1.0, 0.96)
-        } else {
-            Color::srgba(0.20, 0.76, 1.0, 0.88)
         };
+
+        sprite.color = shield_info.fill;
+        sprite.custom_size = Some(shield_info.size);
         transform.translation =
             *translation + Vec3::new(SHIELD_BADGE_OFFSET.x, SHIELD_BADGE_OFFSET.y, 0.0);
         transform.translation.z = BOARD_Z_LAYER + 2.0;
         *visibility = Visibility::Visible;
     }
 
-    for (badge_text, mut text, mut transform, mut visibility) in &mut badge_text_query {
-        let Some((_, shield_layers, translation)) = pieces
+    for (badge_text, mut text, mut text_color, mut transform, mut visibility) in
+        &mut badge_text_query
+    {
+        let Some((_, shield_info, translation)) = pieces
             .iter()
             .find(|(piece_id, _, _)| *piece_id == badge_text.piece_id)
         else {
@@ -299,20 +836,139 @@ fn update_piece_shield_badges(
             continue;
         };
 
-        if *shield_layers == 0 {
+        let Some(shield_info) = shield_info else {
             *visibility = Visibility::Hidden;
             continue;
-        }
+        };
 
-        *text = Text2d::new(shield_layers.to_string());
-        transform.translation = *translation
-            + Vec3::new(
-                SHIELD_BADGE_OFFSET.x - 3.5,
-                SHIELD_BADGE_OFFSET.y - 7.0,
-                0.0,
-            );
+        *text = Text2d::new(shield_info.label.clone());
+        *text_color = TextColor(shield_info.text);
+        transform.translation =
+            *translation + Vec3::new(SHIELD_BADGE_OFFSET.x, SHIELD_BADGE_OFFSET.y - 0.5, 0.0);
         transform.translation.z = BOARD_Z_LAYER + 3.0;
         *visibility = Visibility::Visible;
+    }
+}
+
+fn shield_badge_info(shield: u8, stack_shield: u8) -> Option<ShieldBadgeInfo> {
+    let label = shield_badge_label(shield, stack_shield)?;
+    let fill = match (shield, stack_shield) {
+        (_, 0) => Color::srgba(0.05, 0.34, 0.78, 0.95),
+        (0, _) => Color::srgba(0.05, 0.48, 0.36, 0.95),
+        (_, _) => Color::srgba(0.34, 0.22, 0.72, 0.95),
+    };
+
+    Some(ShieldBadgeInfo {
+        size: shield_badge_size(&label),
+        label,
+        fill,
+        text: Color::WHITE,
+    })
+}
+
+fn shield_badge_label(shield: u8, stack_shield: u8) -> Option<String> {
+    match (shield, stack_shield) {
+        (0, 0) => None,
+        (shield, 0) => Some(format!("SH{shield}")),
+        (0, stack_shield) => Some(format!("ST{stack_shield}")),
+        (shield, stack_shield) => Some(format!("SH{shield}+ST{stack_shield}")),
+    }
+}
+
+fn shield_badge_size(label: &str) -> Vec2 {
+    Vec2::new(
+        SHIELD_BADGE_MIN_SIZE
+            .x
+            .max(10.0 + label.chars().count() as f32 * 6.2),
+        SHIELD_BADGE_MIN_SIZE.y,
+    )
+}
+
+fn update_piece_effect_badges(
+    turn_state: Res<TurnState>,
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+    piece_query: PieceTransformQuery,
+    mut badge_query: EffectBadgeQuery,
+    mut badge_text_query: EffectBadgeTextQuery,
+) {
+    let visual_infos = piece_visual_infos(&piece_query, &board_layout, &player_roster);
+    let pieces = piece_query
+        .iter()
+        .map(|(piece_id, _, transform)| {
+            (
+                piece_id.0,
+                visual_infos
+                    .iter()
+                    .find(|info| info.piece_id == piece_id.0)
+                    .map(|info| info.visual_translation)
+                    .unwrap_or(transform.translation),
+            )
+        })
+        .collect::<Vec<_>>();
+    let notice = turn_state.last_piece_effect;
+
+    for (badge, mut sprite, mut transform, mut visibility) in &mut badge_query {
+        let Some(effect) = notice.filter(|effect| effect.piece_id == badge.piece_id) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        let Some((_, translation)) = pieces
+            .iter()
+            .find(|(piece_id, _)| *piece_id == badge.piece_id)
+        else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        sprite.color = piece_effect_color(effect.kind);
+        transform.translation =
+            *translation + Vec3::new(EFFECT_BADGE_OFFSET.x, EFFECT_BADGE_OFFSET.y, 0.0);
+        transform.translation.z = BOARD_Z_LAYER + 2.15;
+        *visibility = Visibility::Visible;
+    }
+
+    for (badge_text, mut text, mut text_color, mut transform, mut visibility) in
+        &mut badge_text_query
+    {
+        let Some(effect) = notice.filter(|effect| effect.piece_id == badge_text.piece_id) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        let Some((_, translation)) = pieces
+            .iter()
+            .find(|(piece_id, _)| *piece_id == badge_text.piece_id)
+        else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        *text = Text2d::new(piece_effect_label(effect.kind));
+        *text_color = TextColor(piece_effect_text_color(effect.kind));
+        transform.translation =
+            *translation + Vec3::new(EFFECT_BADGE_OFFSET.x, EFFECT_BADGE_OFFSET.y - 6.0, 0.0);
+        transform.translation.z = BOARD_Z_LAYER + 3.15;
+        *visibility = Visibility::Visible;
+    }
+}
+
+fn piece_effect_label(kind: PieceEffectKind) -> &'static str {
+    match kind {
+        PieceEffectKind::Attack => "ATK",
+        PieceEffectKind::Defense => "SHD",
+    }
+}
+
+fn piece_effect_color(kind: PieceEffectKind) -> Color {
+    match kind {
+        PieceEffectKind::Attack => Color::srgba(0.86, 0.08, 0.08, 0.92),
+        PieceEffectKind::Defense => Color::srgba(0.08, 0.34, 0.86, 0.92),
+    }
+}
+
+fn piece_effect_text_color(kind: PieceEffectKind) -> Color {
+    match kind {
+        PieceEffectKind::Attack | PieceEffectKind::Defense => Color::WHITE,
     }
 }
 
@@ -325,6 +981,7 @@ fn cleanup_pieces(mut commands: Commands, query: Query<Entity, With<PieceEntity>
 fn update_piece_highlight(
     input_state: Res<TurnInputState>,
     skill_target_state: Res<SkillTargetState>,
+    board_layout: Res<BoardLayout>,
     player_roster: Res<PlayerRoster>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
@@ -350,6 +1007,15 @@ fn update_piece_highlight(
 
     for (piece_id, piece_state, _base_color, mut sprite, mut transform) in &mut query {
         sprite.color = Color::srgba(1.0, 1.0, 1.0, 0.0);
+        if let Some(rotation) = facing_rotation_for_piece(
+            *piece_state,
+            transform.translation,
+            &board_layout,
+            &player_roster,
+        ) {
+            transform.rotation = rotation;
+        }
+
         let action_selectable =
             selectable && input_state.candidate_piece_ids().contains(&piece_id.0);
         let skill_target_selectable = skill_selectable
@@ -368,5 +1034,164 @@ fn update_piece_highlight(
         } else {
             transform.scale = Vec3::ONE;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::game_mode::GameMode;
+    use crate::domain::player::PlayerControl;
+    use crate::domain::rules::LaunchRule;
+    use crate::gameplay::ai::AiDifficulty;
+    use crate::gameplay::match_flow::{
+        MatchSetup, PlayerColorChoice, PlayerRoster, build_match_rosters,
+    };
+
+    fn test_roster() -> (BoardLayout, PlayerRoster) {
+        let setup = MatchSetup {
+            mode: GameMode::TwoVsTwo,
+            ai_difficulty: AiDifficulty::Normal,
+            fast_mode: false,
+            launch_rule: LaunchRule::SixOnly,
+            player_colors: [
+                PlayerColorChoice::Blue,
+                PlayerColorChoice::Red,
+                PlayerColorChoice::Green,
+                PlayerColorChoice::Yellow,
+            ],
+            pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
+        };
+        let (players, _) = build_match_rosters(&setup);
+        (BoardLayout::default(), PlayerRoster::from_players(players))
+    }
+
+    fn piece_state(owner_player_id: u8, status: PieceStatus, progress: u8) -> PieceState {
+        PieceState {
+            owner_player_id,
+            team_id: owner_player_id,
+            status,
+            progress,
+            shield: 0,
+            stack_shield: 0,
+            motion_serial: 0,
+        }
+    }
+
+    #[test]
+    fn hangar_piece_faces_launch_position() {
+        let (board_layout, player_roster) = test_roster();
+        let piece_state = piece_state(1, PieceStatus::InHangar, 0);
+
+        assert_eq!(
+            next_facing_target(piece_state, &board_layout, &player_roster),
+            world_position_for_piece(1, 0, PieceStatus::AtLaunch, &board_layout, &player_roster)
+        );
+    }
+
+    #[test]
+    fn active_piece_faces_next_route_position() {
+        let (board_layout, player_roster) = test_roster();
+        let piece_state = piece_state(1, PieceStatus::Active, 0);
+
+        assert_eq!(
+            next_facing_target(piece_state, &board_layout, &player_roster),
+            world_position_for_piece(1, 1, PieceStatus::Active, &board_layout, &player_roster)
+        );
+    }
+
+    #[test]
+    fn finished_piece_keeps_last_rotation() {
+        let (board_layout, player_roster) = test_roster();
+        let piece_state = piece_state(1, PieceStatus::Finished, FINISH_DISTANCE);
+
+        assert_eq!(
+            next_facing_target(piece_state, &board_layout, &player_roster),
+            None
+        );
+    }
+
+    #[test]
+    fn piece_effect_labels_cover_attack_and_defense_results() {
+        assert_eq!(piece_effect_label(PieceEffectKind::Attack), "ATK");
+        assert_eq!(piece_effect_label(PieceEffectKind::Defense), "SHD");
+    }
+
+    fn assert_vec2_close(actual: Vec2, expected: Vec2) {
+        assert!(
+            (actual - expected).length() < 0.001,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn stack_visual_offsets_spread_overlapped_pieces() {
+        assert_vec2_close(stack_visual_offset(0, 1), Vec2::ZERO);
+
+        let left = stack_visual_offset(0, 2);
+        let right = stack_visual_offset(1, 2);
+        assert!(left.x < 0.0);
+        assert!(right.x > 0.0);
+        assert_vec2_close(left + right, Vec2::ZERO);
+
+        let third = stack_visual_offset(2, 3);
+        assert!(third.y > 0.0);
+
+        let ring = (0..6)
+            .map(|index| stack_visual_offset(index, 6))
+            .collect::<Vec<_>>();
+        assert!(ring.iter().all(|offset| offset.length() > 8.0));
+    }
+
+    #[test]
+    fn stack_visual_scale_shrinks_clustered_pieces() {
+        assert_eq!(stack_visual_scale(1), 1.0);
+        assert!(stack_visual_scale(2) < stack_visual_scale(1));
+        assert!(stack_visual_scale(5) < stack_visual_scale(4));
+    }
+
+    #[test]
+    fn stack_visual_local_translation_keeps_world_offset_after_parent_transform() {
+        let desired_offset = Vec2::new(6.5, -4.0);
+        let parent_rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let parent_scale = Vec3::new(1.5, 0.75, 1.0);
+
+        let local =
+            stack_visual_local_translation(desired_offset, 0.0, parent_rotation, parent_scale);
+        let world_offset = parent_rotation
+            .mul_vec3(Vec3::new(
+                local.x * parent_scale.x,
+                local.y * parent_scale.y,
+                local.z * parent_scale.z,
+            ))
+            .truncate();
+
+        assert_vec2_close(world_offset, desired_offset);
+    }
+
+    #[test]
+    fn stack_key_groups_tiny_position_jitter() {
+        assert_eq!(
+            stack_key(Vec2::new(12.003, -4.004)),
+            stack_key(Vec2::new(12.004, -4.003))
+        );
+    }
+
+    #[test]
+    fn shield_badge_labels_explain_personal_and_stack_buffs() {
+        assert_eq!(shield_badge_label(0, 0), None);
+        assert_eq!(shield_badge_label(1, 0), Some("SH1".to_string()));
+        assert_eq!(shield_badge_label(0, 1), Some("ST1".to_string()));
+        assert_eq!(shield_badge_label(2, 1), Some("SH2+ST1".to_string()));
+
+        let combined = shield_badge_info(2, 1).expect("combined badge is visible");
+        assert_eq!(combined.label, "SH2+ST1");
+        assert!(combined.size.x > SHIELD_BADGE_MIN_SIZE.x);
     }
 }

@@ -35,6 +35,7 @@ fn prepare_match(
         mode: match_setup.mode,
         ai_difficulty: match_setup.ai_difficulty,
         fast_mode: match_setup.fast_mode,
+        launch_rule: match_setup.launch_rule,
         player_colors: match_setup.normalized_player_colors(),
         pieces_per_player: match_setup.pieces_per_player,
         player_controls: match_setup.normalized_player_controls(),

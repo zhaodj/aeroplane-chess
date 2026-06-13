@@ -4,7 +4,9 @@ use bevy::{
 use std::f32::consts::PI;
 
 use crate::constants::BOARD_Z_LAYER;
+use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
+use crate::gameplay::turn_flow::TurnState;
 use crate::states::AppState;
 
 /// 棋盘渲染插件：按 SVG 的几何元素重建棋盘外观。
@@ -13,6 +15,10 @@ pub struct BoardPlugin;
 impl Plugin for BoardPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::InGame), spawn_board)
+            .add_systems(
+                Update,
+                update_player_dice_displays.run_if(in_state(AppState::InGame)),
+            )
             .add_systems(OnExit(AppState::InGame), cleanup_board);
     }
 }
@@ -20,6 +26,30 @@ impl Plugin for BoardPlugin {
 #[derive(Component)]
 /// 棋盘场景实体标记，用于状态切换时统一清理。
 struct BoardSceneEntity;
+
+#[derive(Component)]
+/// 玩家停机坪中心的骰面底板。
+struct PlayerDiceDisplay {
+    player_id: u8,
+}
+
+#[derive(Clone, Copy, Component, Eq, PartialEq)]
+/// 骰面点位，用于按 1~6 点动态显示。
+struct PlayerDicePip {
+    player_id: u8,
+    slot: DicePipSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DicePipSlot {
+    Center,
+    TopLeft,
+    TopRight,
+    MiddleLeft,
+    MiddleRight,
+    BottomLeft,
+    BottomRight,
+}
 
 #[derive(Clone, Copy)]
 /// SVG 复刻矩形图元。
@@ -58,11 +88,10 @@ struct LaunchTriangle {
 }
 
 #[derive(Clone, Copy)]
-/// 棋盘上的 SVG 线性图标（飞机、箭头、星形等）使用原始填色键映射玩家色。
+/// 棋盘上的 SVG 点状图标使用原始填色键映射玩家色。
 struct SvgIcon {
     center: Vec2,
     fill: &'static str,
-    rotation: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -94,6 +123,14 @@ struct ChevronDraw {
 }
 
 #[derive(Clone, Copy)]
+struct TurnMarkerDraw {
+    center: Vec2,
+    direction: Vec2,
+    color: Color,
+    z: f32,
+}
+
+#[derive(Clone, Copy)]
 struct StarDraw {
     center: Vec2,
     radius: f32,
@@ -106,6 +143,48 @@ struct StarDraw {
 struct BoardPalette {
     player_colors: [Color; 4],
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HomeLaneDotDraw {
+    player_id: u8,
+    position: Vec2,
+    show_turn_marker: bool,
+}
+
+const BOARD_HOME_LANES: [[Vec2; 6]; 4] = [
+    [
+        Vec2::new(-300.104, -0.104),
+        Vec2::new(-240.104, -0.104),
+        Vec2::new(-200.104, -0.104),
+        Vec2::new(-160.104, -0.104),
+        Vec2::new(-120.104, -0.104),
+        Vec2::new(-80.104, -0.104),
+    ],
+    [
+        Vec2::new(-0.104, 300.104),
+        Vec2::new(-0.104, 240.104),
+        Vec2::new(-0.104, 200.104),
+        Vec2::new(-0.104, 160.104),
+        Vec2::new(-0.104, 120.104),
+        Vec2::new(-0.104, 80.104),
+    ],
+    [
+        Vec2::new(0.104, -300.104),
+        Vec2::new(0.104, -240.104),
+        Vec2::new(0.104, -200.104),
+        Vec2::new(0.104, -160.104),
+        Vec2::new(0.104, -120.104),
+        Vec2::new(0.104, -80.104),
+    ],
+    [
+        Vec2::new(300.317, 0.104),
+        Vec2::new(240.317, 0.104),
+        Vec2::new(200.317, 0.104),
+        Vec2::new(160.317, 0.104),
+        Vec2::new(120.317, 0.104),
+        Vec2::new(80.317, 0.104),
+    ],
+];
 
 impl BoardPalette {
     fn from_player_roster(player_roster: &PlayerRoster) -> Self {
@@ -162,7 +241,11 @@ fn spawn_board(
     );
 
     // 先画矩形网格，再画三角区域，保证层次与 SVG 基本一致。
-    for rect in SVG_RECTS {
+    for &rect in SVG_RECTS {
+        if !should_draw_svg_rect(rect, &player_roster) {
+            continue;
+        }
+
         spawn_square_with_border(
             &mut commands,
             rect.center,
@@ -255,22 +338,48 @@ fn spawn_board(
         );
     }
 
-    // 冲线支路圆点：同样按逻辑坐标绘制，避免出现“一格双圆圈”。
-    for player in &player_roster.players {
-        for &lane_pos in &player.home_lane_positions {
-            spawn_circle_with_border(
+    // 主环道特殊格专属图标：攻击=剑，防御=盾，随机事件=问号。
+    for tile in &board_layout.tiles {
+        if let Some(route_index) = tile.route_index {
+            spawn_special_tile_icon(
                 &mut commands,
                 &mut meshes,
                 &mut materials,
-                lane_pos,
-                16.0,
-                DrawStyle {
-                    fill: Color::WHITE,
-                    border: Color::WHITE,
-                    border_width: 0.0,
-                    z: BOARD_Z_LAYER + 0.05,
+                tile.world_pos,
+                tile.kind,
+                BOARD_Z_LAYER + 0.62,
+                format!("SpecialTileIcon_{route_index:02}"),
+            );
+        }
+    }
+
+    // 冲线支路圆点：参赛玩家显示完整支路；未参赛色位只保留与主路交叉的入口格。
+    for dot in visible_home_lane_dots(&player_roster) {
+        spawn_circle_with_border(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            dot.position,
+            16.0,
+            DrawStyle {
+                fill: Color::WHITE,
+                border: Color::WHITE,
+                border_width: 0.0,
+                z: BOARD_Z_LAYER + 0.05,
+            },
+            "HomeLaneDot",
+        );
+
+        if dot.show_turn_marker {
+            spawn_home_lane_turn_marker(
+                &mut commands,
+                TurnMarkerDraw {
+                    center: dot.position,
+                    direction: home_lane_turn_direction(dot.player_id),
+                    color: board_palette.player_color(dot.player_id),
+                    z: BOARD_Z_LAYER + 0.64,
                 },
-                "HomeLaneDot",
+                format!("HomeLaneTurn_P{}", dot.player_id),
             );
         }
     }
@@ -304,18 +413,18 @@ fn spawn_board(
             );
         }
     }
-    for icon in HANGAR_PLANE_ICONS {
-        spawn_plane_icon(
-            &mut commands,
-            icon.center,
-            icon.rotation,
-            1.0,
-            board_palette.color_for_svg_fill(icon.fill),
-            BOARD_Z_LAYER + 0.56,
-            "HangarPlane",
-        );
-    }
 
+    for player in &player_roster.players {
+        if let Some(center) = airport_center_for_player(player.state.player_id) {
+            spawn_player_dice_display(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                player.state.player_id,
+                center,
+            );
+        }
+    }
     // 中心四向目标点。
     for icon in CENTER_STAR_ICONS {
         spawn_circle_with_border(
@@ -369,6 +478,133 @@ fn cleanup_board(mut commands: Commands, query: Query<Entity, With<BoardSceneEnt
     }
 }
 
+fn update_player_dice_displays(
+    turn_state: Res<TurnState>,
+    mut display_query: Query<(&PlayerDiceDisplay, &mut Visibility)>,
+    mut pip_query: Query<(&PlayerDicePip, &mut Visibility), Without<PlayerDiceDisplay>>,
+) {
+    for (display, mut visibility) in &mut display_query {
+        *visibility = if turn_state.player_last_roll(display.player_id).is_some() {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    for (pip, mut visibility) in &mut pip_query {
+        let Some(roll) = turn_state.player_last_roll(pip.player_id) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        *visibility = if pip_visible_for_roll(roll, pip.slot) {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+fn airport_center_for_player(player_id: u8) -> Option<Vec2> {
+    match player_id {
+        1 => Some(Vec2::new(-260.0, 260.0)),
+        2 => Some(Vec2::new(260.0, 260.0)),
+        3 => Some(Vec2::new(-260.0, -260.0)),
+        4 => Some(Vec2::new(260.0, -260.0)),
+        _ => None,
+    }
+}
+
+fn pip_visible_for_roll(roll: u8, slot: DicePipSlot) -> bool {
+    match roll {
+        1 => matches!(slot, DicePipSlot::Center),
+        2 => matches!(slot, DicePipSlot::TopLeft | DicePipSlot::BottomRight),
+        3 => matches!(
+            slot,
+            DicePipSlot::TopLeft | DicePipSlot::Center | DicePipSlot::BottomRight
+        ),
+        4 => matches!(
+            slot,
+            DicePipSlot::TopLeft
+                | DicePipSlot::TopRight
+                | DicePipSlot::BottomLeft
+                | DicePipSlot::BottomRight
+        ),
+        5 => matches!(
+            slot,
+            DicePipSlot::TopLeft
+                | DicePipSlot::TopRight
+                | DicePipSlot::Center
+                | DicePipSlot::BottomLeft
+                | DicePipSlot::BottomRight
+        ),
+        6 => matches!(
+            slot,
+            DicePipSlot::TopLeft
+                | DicePipSlot::TopRight
+                | DicePipSlot::MiddleLeft
+                | DicePipSlot::MiddleRight
+                | DicePipSlot::BottomLeft
+                | DicePipSlot::BottomRight
+        ),
+        _ => false,
+    }
+}
+
+fn spawn_player_dice_display(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    player_id: u8,
+    center: Vec2,
+) {
+    for (radius, color, z) in [
+        (
+            20.0,
+            Color::srgba(0.08, 0.11, 0.16, 0.82),
+            BOARD_Z_LAYER + 1.26,
+        ),
+        (
+            17.2,
+            Color::srgba(1.0, 1.0, 1.0, 0.92),
+            BOARD_Z_LAYER + 1.27,
+        ),
+    ] {
+        commands.spawn((
+            Mesh2d(meshes.add(Circle::new(radius))),
+            MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+            Transform::from_xyz(center.x, center.y, z),
+            Visibility::Hidden,
+            PlayerDiceDisplay { player_id },
+            Name::new(format!("PlayerDiceDisplay_P{player_id}")),
+            BoardSceneEntity,
+        ));
+    }
+
+    for (slot, offset) in [
+        (DicePipSlot::Center, Vec2::ZERO),
+        (DicePipSlot::TopLeft, Vec2::new(-6.0, 6.0)),
+        (DicePipSlot::TopRight, Vec2::new(6.0, 6.0)),
+        (DicePipSlot::MiddleLeft, Vec2::new(-6.0, 0.0)),
+        (DicePipSlot::MiddleRight, Vec2::new(6.0, 0.0)),
+        (DicePipSlot::BottomLeft, Vec2::new(-6.0, -6.0)),
+        (DicePipSlot::BottomRight, Vec2::new(6.0, -6.0)),
+    ] {
+        commands.spawn((
+            Mesh2d(meshes.add(Circle::new(2.7))),
+            MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.08, 0.11, 0.16)))),
+            Transform::from_xyz(
+                center.x + offset.x,
+                center.y + offset.y,
+                BOARD_Z_LAYER + 1.29,
+            ),
+            Visibility::Hidden,
+            PlayerDicePip { player_id, slot },
+            Name::new(format!("PlayerDicePip_P{player_id}_{slot:?}")),
+            BoardSceneEntity,
+        ));
+    }
+}
+
 /// 绘制带描边方块。
 fn spawn_square_with_border(
     commands: &mut Commands,
@@ -390,6 +626,63 @@ fn spawn_square_with_border(
         Name::new(name),
         BoardSceneEntity,
     ));
+}
+
+fn visible_home_lane_dots(player_roster: &PlayerRoster) -> Vec<HomeLaneDotDraw> {
+    let mut dots = Vec::with_capacity(BOARD_HOME_LANES.len() * 6);
+
+    for (lane_index, lane) in BOARD_HOME_LANES.iter().enumerate() {
+        let player_id = lane_index as u8 + 1;
+        let active = player_roster
+            .players
+            .iter()
+            .any(|player| player.state.player_id == player_id);
+        let visible_count = if active { lane.len() } else { 1 };
+
+        for (dot_index, &position) in lane.iter().take(visible_count).enumerate() {
+            dots.push(HomeLaneDotDraw {
+                player_id,
+                position,
+                show_turn_marker: active && dot_index == 0,
+            });
+        }
+    }
+
+    dots
+}
+
+fn should_draw_svg_rect(rect: SvgRect, player_roster: &PlayerRoster) -> bool {
+    let Some((player_id, lane_index)) = svg_rect_home_lane_slot(rect) else {
+        return true;
+    };
+
+    player_roster
+        .players
+        .iter()
+        .any(|player| player.state.player_id == player_id)
+        || lane_index == 0
+}
+
+fn svg_rect_home_lane_slot(rect: SvgRect) -> Option<(u8, usize)> {
+    for (lane_index, lane) in BOARD_HOME_LANES.iter().enumerate() {
+        for (dot_index, &position) in lane.iter().enumerate() {
+            if rect.center == position {
+                return Some((lane_index as u8 + 1, dot_index));
+            }
+        }
+    }
+
+    None
+}
+
+fn home_lane_turn_direction(player_id: u8) -> Vec2 {
+    match player_id {
+        1 => Vec2::X,
+        2 => Vec2::NEG_Y,
+        3 => Vec2::Y,
+        4 => Vec2::NEG_X,
+        _ => Vec2::ZERO,
+    }
 }
 
 /// 绘制带描边圆形。
@@ -508,30 +801,196 @@ fn spawn_arrow_icon(
     );
 }
 
-/// 绘制机库里的飞机线稿。
-fn spawn_plane_icon(
+fn spawn_special_tile_icon(
     commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
     center: Vec2,
-    rotation: f32,
-    scale: f32,
+    kind: TileKind,
+    z: f32,
+    name: impl Into<String>,
+) {
+    let name = name.into();
+    match kind {
+        TileKind::Attack => spawn_sword_icon(
+            commands,
+            meshes,
+            materials,
+            center,
+            Color::srgb(0.82, 0.08, 0.08),
+            z,
+            format!("{name}_Sword"),
+        ),
+        TileKind::Defense => spawn_shield_icon(
+            commands,
+            center,
+            Color::srgb(0.08, 0.28, 0.78),
+            z,
+            format!("{name}_Shield"),
+        ),
+        TileKind::Event => spawn_question_icon(
+            commands,
+            meshes,
+            materials,
+            center,
+            Color::srgb(0.12, 0.12, 0.16),
+            z,
+            format!("{name}_Question"),
+        ),
+        TileKind::Normal | TileKind::Jump | TileKind::Goal => {}
+    }
+}
+
+/// 绘制攻击点剑图标。
+fn spawn_sword_icon(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    center: Vec2,
     color: Color,
     z: f32,
     name: impl Into<String>,
 ) {
     let name = name.into();
-    for (index, segment) in PLANE_ICON_POINTS.windows(2).enumerate() {
-        let start = center + rotate_vec(segment[0] * scale, rotation);
-        let end = center + rotate_vec(segment[1] * scale, rotation);
+    let direction = Vec2::new(1.0, 1.0).normalize();
+    let perp = Vec2::new(-direction.y, direction.x);
+    let blade_base = center - direction * 3.0;
+    let blade_tip = center + direction * 8.0;
+    let guard = center - direction * 5.0;
+
+    spawn_line_segment(
+        commands,
+        blade_base,
+        blade_tip,
+        2.2,
+        color,
+        z,
+        format!("{name}_blade"),
+    );
+    spawn_triangle_with_border(
+        commands,
+        meshes,
+        materials,
+        [
+            blade_tip + direction * 3.2,
+            blade_tip - direction * 2.2 + perp * 3.0,
+            blade_tip - direction * 2.2 - perp * 3.0,
+        ],
+        DrawStyle {
+            fill: color,
+            border: color,
+            border_width: 0.0,
+            z: z + 0.01,
+        },
+        format!("{name}_tip"),
+    );
+    spawn_line_segment(
+        commands,
+        guard - perp * 5.0,
+        guard + perp * 5.0,
+        2.0,
+        color,
+        z + 0.03,
+        format!("{name}_guard"),
+    );
+    spawn_line_segment(
+        commands,
+        guard - direction * 5.0,
+        guard - direction * 1.2,
+        2.2,
+        color,
+        z + 0.04,
+        format!("{name}_hilt"),
+    );
+}
+
+/// 绘制防御点盾牌图标。
+fn spawn_shield_icon(
+    commands: &mut Commands,
+    center: Vec2,
+    color: Color,
+    z: f32,
+    name: impl Into<String>,
+) {
+    let name = name.into();
+    let outline = [
+        Vec2::new(-6.2, 5.8),
+        Vec2::new(0.0, 8.2),
+        Vec2::new(6.2, 5.8),
+        Vec2::new(5.0, -1.2),
+        Vec2::new(0.0, -8.0),
+        Vec2::new(-5.0, -1.2),
+        Vec2::new(-6.2, 5.8),
+    ];
+
+    for (index, segment) in outline.windows(2).enumerate() {
         spawn_line_segment(
             commands,
-            start,
-            end,
-            2.0 * scale,
+            center + segment[0],
+            center + segment[1],
+            2.2,
             color,
-            z + index as f32 * 0.001,
-            format!("{name}_{index}"),
+            z + index as f32 * 0.002,
+            format!("{name}_outline_{index}"),
         );
     }
+    spawn_line_segment(
+        commands,
+        center + Vec2::new(0.0, 4.7),
+        center + Vec2::new(0.0, -4.2),
+        1.9,
+        color,
+        z + 0.02,
+        format!("{name}_center"),
+    );
+}
+
+/// 绘制随机事件问号图标。
+fn spawn_question_icon(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    center: Vec2,
+    color: Color,
+    z: f32,
+    name: impl Into<String>,
+) {
+    let name = name.into();
+    let question = [
+        Vec2::new(-5.2, 4.5),
+        Vec2::new(-3.5, 7.2),
+        Vec2::new(1.0, 7.8),
+        Vec2::new(4.6, 5.5),
+        Vec2::new(4.2, 1.8),
+        Vec2::new(0.0, -0.8),
+        Vec2::new(0.0, -4.0),
+    ];
+
+    for (index, segment) in question.windows(2).enumerate() {
+        spawn_line_segment(
+            commands,
+            center + segment[0],
+            center + segment[1],
+            2.3,
+            color,
+            z + index as f32 * 0.002,
+            format!("{name}_mark_{index}"),
+        );
+    }
+    spawn_circle_with_border(
+        commands,
+        meshes,
+        materials,
+        center + Vec2::new(0.0, -8.0),
+        1.8,
+        DrawStyle {
+            fill: color,
+            border: color,
+            border_width: 0.0,
+            z: z + 0.03,
+        },
+        format!("{name}_dot"),
+    );
 }
 
 /// 绘制 SVG 中的单/双 chevron 方向提示。
@@ -567,6 +1026,71 @@ fn spawn_chevron_icon(commands: &mut Commands, icon: ChevronDraw, name: impl Int
             format!("{name}_{index}_b"),
         );
     }
+}
+
+fn spawn_home_lane_turn_marker(
+    commands: &mut Commands,
+    icon: TurnMarkerDraw,
+    name: impl Into<String>,
+) {
+    let name = name.into();
+    let Some(points) = home_lane_turn_marker_path(icon.direction) else {
+        return;
+    };
+    let points = points.map(|point| icon.center + point);
+
+    for (index, segment) in points.windows(2).enumerate() {
+        spawn_line_segment(
+            commands,
+            segment[0],
+            segment[1],
+            3.1,
+            icon.color,
+            icon.z + index as f32 * 0.001,
+            format!("{name}_elbow_{index}"),
+        );
+    }
+
+    let tip = *points.last().unwrap_or(&icon.center);
+    let before_tip = points
+        .get(points.len().saturating_sub(2))
+        .copied()
+        .unwrap_or(icon.center);
+    let direction = (tip - before_tip).normalize_or_zero();
+    if direction.length_squared() <= 0.01 {
+        return;
+    }
+    let perp = Vec2::new(-direction.y, direction.x);
+    let head_back = tip - direction * 6.2;
+    spawn_line_segment(
+        commands,
+        head_back + perp * 4.4,
+        tip,
+        3.1,
+        icon.color,
+        icon.z + 0.01,
+        format!("{name}_head_a"),
+    );
+    spawn_line_segment(
+        commands,
+        head_back - perp * 4.4,
+        tip,
+        3.1,
+        icon.color,
+        icon.z + 0.011,
+        format!("{name}_head_b"),
+    );
+}
+
+fn home_lane_turn_marker_path(direction: Vec2) -> Option<[Vec2; 3]> {
+    let direction = direction.normalize_or_zero();
+    if direction.length_squared() <= 0.01 {
+        return None;
+    }
+
+    let incoming = Vec2::new(-direction.y, direction.x);
+    let elbow = -direction * 4.0;
+    Some([elbow - incoming * 9.0, elbow, elbow + direction * 13.0])
 }
 
 /// 绘制中心终点星形。
@@ -641,135 +1165,22 @@ fn spawn_line_segment(
     ));
 }
 
-fn rotate_vec(vec: Vec2, angle: f32) -> Vec2 {
-    let (sin, cos) = angle.sin_cos();
-    Vec2::new(vec.x * cos - vec.y * sin, vec.x * sin + vec.y * cos)
-}
-
-const PLANE_ICON_POINTS: &[Vec2] = &[
-    Vec2::new(-9.12, -3.40),
-    Vec2::new(-5.31, -5.31),
-    Vec2::new(-3.40, -9.12),
-    Vec2::new(-1.49, -7.21),
-    Vec2::new(-1.49, -4.35),
-    Vec2::new(1.85, -1.01),
-    Vec2::new(4.71, -9.60),
-    Vec2::new(7.58, -6.74),
-    Vec2::new(5.19, 2.33),
-    Vec2::new(9.01, 6.14),
-    Vec2::new(6.14, 9.01),
-    Vec2::new(2.33, 5.19),
-    Vec2::new(-6.74, 7.58),
-    Vec2::new(-9.60, 4.71),
-    Vec2::new(-1.01, 1.85),
-    Vec2::new(-4.35, -1.49),
-    Vec2::new(-7.21, -1.49),
-    Vec2::new(-9.12, -3.40),
-];
-
-const HANGAR_PLANE_ICONS: &[SvgIcon] = &[
-    SvgIcon {
-        center: Vec2::new(-295.104, 295.104),
-        fill: "#0080FF",
-        rotation: 0.0,
-    },
-    SvgIcon {
-        center: Vec2::new(-225.104, 295.104),
-        fill: "#0080FF",
-        rotation: 0.0,
-    },
-    SvgIcon {
-        center: Vec2::new(-295.104, 225.104),
-        fill: "#0080FF",
-        rotation: 0.0,
-    },
-    SvgIcon {
-        center: Vec2::new(-225.104, 225.104),
-        fill: "#0080FF",
-        rotation: 0.0,
-    },
-    SvgIcon {
-        center: Vec2::new(295.317, 295.104),
-        fill: "#FF0000",
-        rotation: -PI * 0.5,
-    },
-    SvgIcon {
-        center: Vec2::new(225.317, 295.104),
-        fill: "#FF0000",
-        rotation: -PI * 0.5,
-    },
-    SvgIcon {
-        center: Vec2::new(295.317, 225.104),
-        fill: "#FF0000",
-        rotation: -PI * 0.5,
-    },
-    SvgIcon {
-        center: Vec2::new(225.317, 225.104),
-        fill: "#FF0000",
-        rotation: -PI * 0.5,
-    },
-    SvgIcon {
-        center: Vec2::new(-295.104, -295.104),
-        fill: "#008000",
-        rotation: PI * 0.5,
-    },
-    SvgIcon {
-        center: Vec2::new(-225.104, -295.104),
-        fill: "#008000",
-        rotation: PI * 0.5,
-    },
-    SvgIcon {
-        center: Vec2::new(-295.104, -225.104),
-        fill: "#008000",
-        rotation: PI * 0.5,
-    },
-    SvgIcon {
-        center: Vec2::new(-225.104, -225.104),
-        fill: "#008000",
-        rotation: PI * 0.5,
-    },
-    SvgIcon {
-        center: Vec2::new(295.104, -295.104),
-        fill: "#F3D849",
-        rotation: PI,
-    },
-    SvgIcon {
-        center: Vec2::new(225.104, -295.104),
-        fill: "#F3D849",
-        rotation: PI,
-    },
-    SvgIcon {
-        center: Vec2::new(295.104, -225.104),
-        fill: "#F3D849",
-        rotation: PI,
-    },
-    SvgIcon {
-        center: Vec2::new(225.104, -225.104),
-        fill: "#F3D849",
-        rotation: PI,
-    },
-];
-
 const CENTER_STAR_ICONS: &[SvgIcon] = &[
     SvgIcon {
         center: Vec2::new(0.0, 35.958),
         fill: "#FF0000",
-        rotation: 0.0,
     },
     SvgIcon {
         center: Vec2::new(-35.958, 0.0),
         fill: "#0080FF",
-        rotation: 0.0,
     },
     SvgIcon {
         center: Vec2::new(35.959, 0.0),
         fill: "#F3D849",
-        rotation: 0.0,
     },
     SvgIcon {
         center: Vec2::new(0.0, -35.958),
         fill: "#008000",
-        rotation: 0.0,
     },
 ];
 
@@ -1428,6 +1839,115 @@ mod tests {
     }
 
     #[test]
+    fn one_vs_one_home_lanes_keep_only_inactive_entry_dots() {
+        let red = Color::srgb(1.0, 0.0, 0.0);
+        let blue = Color::srgb(0.0, 128.0 / 255.0, 1.0);
+        let green = Color::srgb(0.0, 128.0 / 255.0, 0.0);
+        let yellow = Color::srgb(243.0 / 255.0, 216.0 / 255.0, 73.0 / 255.0);
+        let roster = PlayerRoster {
+            players: vec![player(1, red), player(2, blue)],
+            player_colors: [red, blue, green, yellow],
+        };
+
+        let dots = visible_home_lane_dots(&roster);
+        assert_eq!(dots.len(), 14);
+        assert_eq!(dots.iter().filter(|dot| dot.player_id == 1).count(), 6);
+        assert_eq!(dots.iter().filter(|dot| dot.player_id == 2).count(), 6);
+        assert_eq!(dots.iter().filter(|dot| dot.player_id == 3).count(), 1);
+        assert_eq!(dots.iter().filter(|dot| dot.player_id == 4).count(), 1);
+        assert!(
+            dots.iter()
+                .any(|dot| dot.player_id == 1 && dot.show_turn_marker)
+        );
+        assert!(
+            dots.iter()
+                .any(|dot| dot.player_id == 2 && dot.show_turn_marker)
+        );
+        assert!(
+            dots.iter()
+                .all(|dot| dot.player_id <= 2 || !dot.show_turn_marker)
+        );
+        assert!(
+            dots.iter()
+                .any(|dot| dot.position == Vec2::new(0.104, -300.104))
+        );
+        assert!(
+            !dots
+                .iter()
+                .any(|dot| dot.position == Vec2::new(0.104, -240.104))
+        );
+        assert!(should_draw_svg_rect(
+            svg_rect_at(Vec2::new(0.104, -300.104)),
+            &roster
+        ));
+        assert!(!should_draw_svg_rect(
+            svg_rect_at(Vec2::new(0.104, -240.104)),
+            &roster
+        ));
+        assert!(should_draw_svg_rect(
+            svg_rect_at(Vec2::new(300.317, 0.104)),
+            &roster
+        ));
+        assert!(!should_draw_svg_rect(
+            svg_rect_at(Vec2::new(240.317, 0.104)),
+            &roster
+        ));
+    }
+
+    #[test]
+    fn two_vs_two_home_lanes_show_all_dots_and_turn_markers() {
+        let red = Color::srgb(1.0, 0.0, 0.0);
+        let blue = Color::srgb(0.0, 128.0 / 255.0, 1.0);
+        let green = Color::srgb(0.0, 128.0 / 255.0, 0.0);
+        let yellow = Color::srgb(243.0 / 255.0, 216.0 / 255.0, 73.0 / 255.0);
+        let roster = PlayerRoster {
+            players: vec![
+                player(1, red),
+                player(2, blue),
+                player(3, green),
+                player(4, yellow),
+            ],
+            player_colors: [red, blue, green, yellow],
+        };
+
+        let dots = visible_home_lane_dots(&roster);
+        assert_eq!(dots.len(), 24);
+        for player_id in 1..=4 {
+            assert_eq!(
+                dots.iter().filter(|dot| dot.player_id == player_id).count(),
+                6
+            );
+            assert!(
+                dots.iter()
+                    .any(|dot| dot.player_id == player_id && dot.show_turn_marker)
+            );
+        }
+        assert_eq!(home_lane_turn_direction(1), Vec2::X);
+        assert_eq!(home_lane_turn_direction(2), Vec2::NEG_Y);
+        assert_eq!(home_lane_turn_direction(3), Vec2::Y);
+        assert_eq!(home_lane_turn_direction(4), Vec2::NEG_X);
+        let marker_path = home_lane_turn_marker_path(Vec2::X).expect("path should resolve");
+        assert_eq!(marker_path.len(), 3);
+        assert_eq!(marker_path[1].y, marker_path[2].y);
+        assert!(marker_path[2].x > marker_path[1].x);
+        assert!(should_draw_svg_rect(
+            svg_rect_at(Vec2::new(0.104, -240.104)),
+            &roster
+        ));
+        assert!(should_draw_svg_rect(
+            svg_rect_at(Vec2::new(240.317, 0.104)),
+            &roster
+        ));
+    }
+
+    fn svg_rect_at(center: Vec2) -> SvgRect {
+        *SVG_RECTS
+            .iter()
+            .find(|rect| rect.center == center)
+            .expect("svg rect exists")
+    }
+
+    #[test]
     fn launch_triangles_use_corner_consistent_right_angles() {
         for triangle in LAUNCH_TRIANGLES {
             assert!(
@@ -1439,5 +1959,32 @@ mod tests {
                     || (triangle.a.y - triangle.c.y).abs() < 0.001
             );
         }
+    }
+
+    #[test]
+    fn dice_pip_visibility_matches_standard_faces() {
+        assert!(pip_visible_for_roll(1, DicePipSlot::Center));
+        assert!(!pip_visible_for_roll(1, DicePipSlot::TopLeft));
+
+        assert!(pip_visible_for_roll(2, DicePipSlot::TopLeft));
+        assert!(pip_visible_for_roll(2, DicePipSlot::BottomRight));
+        assert!(!pip_visible_for_roll(2, DicePipSlot::Center));
+
+        assert!(pip_visible_for_roll(5, DicePipSlot::Center));
+        assert!(pip_visible_for_roll(6, DicePipSlot::MiddleLeft));
+        assert!(pip_visible_for_roll(6, DicePipSlot::MiddleRight));
+        assert!(!pip_visible_for_roll(0, DicePipSlot::Center));
+    }
+
+    #[test]
+    fn airport_centers_match_player_quadrants() {
+        assert_eq!(airport_center_for_player(1), Some(Vec2::new(-260.0, 260.0)));
+        assert_eq!(airport_center_for_player(2), Some(Vec2::new(260.0, 260.0)));
+        assert_eq!(
+            airport_center_for_player(3),
+            Some(Vec2::new(-260.0, -260.0))
+        );
+        assert_eq!(airport_center_for_player(4), Some(Vec2::new(260.0, -260.0)));
+        assert_eq!(airport_center_for_player(9), None);
     }
 }

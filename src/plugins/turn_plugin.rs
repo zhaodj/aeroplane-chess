@@ -5,6 +5,7 @@ use crate::data::game_mode::GameMode;
 use crate::domain::dice::DiceRoll;
 use crate::domain::piece::PieceState;
 use crate::domain::player::PlayerControl;
+use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{
     BoardLayout, MatchConfig, MatchResult, PlayerRoster, TeamRoster,
@@ -178,6 +179,8 @@ fn drive_ai_turn_loop(
         current_player,
         params.match_config.ai_difficulty,
         roll,
+        params.match_config.launch_rule,
+        &params.board_layout,
         &params.player_roster,
         &mut params.skill_roster,
         &mut params.piece_query,
@@ -186,6 +189,7 @@ fn drive_ai_turn_loop(
         current_player,
         roll,
         dash_bonus(&params.skill_roster, current_player),
+        params.match_config.launch_rule,
         &params.board_layout,
         &params.player_roster,
         &params.piece_query,
@@ -359,6 +363,8 @@ fn maybe_arm_dash_for_ai_after_roll(
     current_player: u8,
     ai_difficulty: AiDifficulty,
     roll: DiceRoll,
+    launch_rule: LaunchRule,
+    board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -377,9 +383,17 @@ fn maybe_arm_dash_for_ai_after_roll(
         return;
     }
 
-    let has_movable_action = collect_actions(current_player, roll, 0, player_roster, piece_query)
-        .iter()
-        .any(PlannedAction::is_move);
+    let has_movable_action = collect_actions(
+        current_player,
+        roll,
+        0,
+        launch_rule,
+        board_layout,
+        player_roster,
+        piece_query,
+    )
+    .iter()
+    .any(PlannedAction::is_move);
     if !has_movable_action {
         return;
     }
@@ -651,6 +665,8 @@ fn handle_human_roll_input(
         current_player,
         roll,
         0,
+        params.match_config.launch_rule,
+        &params.board_layout,
         &params.player_roster,
         &params.piece_query,
     );
@@ -712,9 +728,11 @@ fn handle_human_action_input(
     refresh_pending_actions_for_dash(
         &mut params.input_state,
         &params.turn_state,
+        &params.board_layout,
         &params.player_roster,
         &mut params.piece_query,
         &params.skill_roster,
+        params.match_config.launch_rule,
         &mut params.next_phase,
     );
 
@@ -765,9 +783,11 @@ fn handle_human_action_click(
     refresh_pending_actions_for_dash(
         &mut params.input_state,
         &params.turn_state,
+        &params.board_layout,
         &params.player_roster,
         &mut params.piece_query,
         &params.skill_roster,
+        params.match_config.launch_rule,
         &mut params.next_phase,
     );
 
@@ -810,9 +830,11 @@ fn handle_human_action_click(
 fn refresh_pending_actions_for_dash(
     input_state: &mut TurnInputState,
     turn_state: &TurnState,
+    board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     skill_roster: &SkillRoster,
+    launch_rule: LaunchRule,
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
     let move_bonus = dash_bonus(skill_roster, turn_state.current_player);
@@ -824,6 +846,8 @@ fn refresh_pending_actions_for_dash(
         turn_state.current_player,
         DiceRoll(turn_state.last_roll.unwrap_or_default()),
         move_bonus,
+        launch_rule,
+        board_layout,
         player_roster,
         piece_query,
     );
@@ -866,6 +890,7 @@ mod tests {
             mode,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
+            launch_rule: LaunchRule::SixOnly,
             player_colors: [
                 PlayerColorChoice::Red,
                 PlayerColorChoice::Blue,
@@ -887,6 +912,7 @@ mod tests {
             mode,
             ai_difficulty,
             fast_mode: false,
+            launch_rule: LaunchRule::SixOnly,
             player_colors: [
                 PlayerColorChoice::Red,
                 PlayerColorChoice::Blue,
@@ -945,6 +971,7 @@ mod tests {
                 progress,
                 shield,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -1076,6 +1103,7 @@ mod tests {
     #[test]
     fn maybe_arm_dash_for_ai_after_roll_arms_dash_when_move_exists() {
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
+        let board_layout = BoardLayout::default();
         let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
@@ -1092,6 +1120,8 @@ mod tests {
             2,
             AiDifficulty::Normal,
             DiceRoll(2),
+            LaunchRule::SixOnly,
+            &board_layout,
             &player_roster,
             &mut skill_roster,
             &mut query,

@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
 use crate::domain::player::PlayerControl;
+use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
 use crate::states::AppState;
@@ -31,6 +32,7 @@ fn setup_camera(mut commands: Commands) {
         mode: GameMode::TwoVsTwo,
         ai_difficulty: AiDifficulty::Normal,
         fast_mode: false,
+        launch_rule: LaunchRule::SixOnly,
         player_colors: [
             PlayerColorChoice::Blue,
             PlayerColorChoice::Red,

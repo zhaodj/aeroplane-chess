@@ -668,6 +668,7 @@ mod tests {
                 progress: 7,
                 shield: 1,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -706,6 +707,7 @@ mod tests {
                 progress: 7,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::from_xyz(100.0, 200.0, 0.0),
         ));
@@ -755,6 +757,7 @@ mod tests {
                 progress: 3,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -768,6 +771,7 @@ mod tests {
                 progress: 10,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -781,6 +785,7 @@ mod tests {
                 progress: 12,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -806,6 +811,7 @@ mod tests {
                 progress: 3,
                 shield: 1,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::from_xyz(-100.0, 0.0, 0.0),
         ));
@@ -819,6 +825,7 @@ mod tests {
                 progress: 18,
                 shield: 0,
                 stack_shield: 1,
+                motion_serial: 0,
             },
             Transform::from_xyz(100.0, 50.0, 0.0),
         ));
@@ -864,6 +871,7 @@ mod tests {
                 progress: 3,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -877,6 +885,7 @@ mod tests {
                 progress: MAIN_ROUTE_STEPS + 1,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));
@@ -890,6 +899,7 @@ mod tests {
                 progress: 6,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
             Transform::default(),
         ));

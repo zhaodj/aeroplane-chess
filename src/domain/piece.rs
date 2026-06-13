@@ -17,4 +17,5 @@ pub struct PieceState {
     pub progress: u8,
     pub shield: u8,
     pub stack_shield: u8,
+    pub motion_serial: u32,
 }

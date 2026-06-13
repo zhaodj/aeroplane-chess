@@ -634,6 +634,7 @@ mod tests {
                 progress: 0,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
 
@@ -657,6 +658,7 @@ mod tests {
                 progress: 4,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
 
@@ -681,6 +683,7 @@ mod tests {
                 progress: 0,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
         world.spawn((
@@ -692,6 +695,7 @@ mod tests {
                 progress: 4,
                 shield: MAX_PIECE_SHIELD,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
 
@@ -716,6 +720,7 @@ mod tests {
                 progress: 0,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
         world.spawn((
@@ -727,6 +732,7 @@ mod tests {
                 progress: 0,
                 shield: 1,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
         world.spawn((
@@ -738,6 +744,7 @@ mod tests {
                 progress: 0,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
 
@@ -760,6 +767,7 @@ mod tests {
                 progress: 0,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
         world.spawn((
@@ -771,6 +779,7 @@ mod tests {
                 progress: MAIN_ROUTE_STEPS + 1,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
         world.spawn((
@@ -782,6 +791,7 @@ mod tests {
                 progress: 6,
                 shield: 0,
                 stack_shield: 0,
+                motion_serial: 0,
             },
         ));
 
