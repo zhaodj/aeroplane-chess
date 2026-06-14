@@ -10,6 +10,7 @@ use crate::gameplay::skill_flow::{
     is_legal_shield_target, is_legal_snipe_target, player_skill_state,
 };
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
+use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::PieceId;
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
 use crate::plugins::turn_plugin::TurnUiRequest;
@@ -653,10 +654,11 @@ fn update_hud(
 
 fn handle_hud_toggle(
     keyboard: Res<ButtonInput<KeyCode>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut hud_fold_state: ResMut<HudFoldState>,
     mut collapsible_query: Query<&mut Visibility, With<HudCollapsible>>,
 ) {
-    if !keyboard.just_pressed(KeyCode::Tab) {
+    if overlay_state.open || !keyboard.just_pressed(KeyCode::Tab) {
         return;
     }
 
@@ -762,10 +764,12 @@ fn skill_button_color(ready: bool, can_use_skill: bool) -> Color {
 fn handle_skill_panel_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut params: SkillPanelClickParams,
 ) {
     if params.hud_fold_state.collapsed
         || params.match_result.finished
+        || overlay_state.input_captured
         || !matches!(
             params.game_phase.get(),
             GamePhase::AwaitDice | GamePhase::AwaitPieceSelect
@@ -939,8 +943,13 @@ fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
 
 fn handle_result_input(
     keyboard: Res<ButtonInput<KeyCode>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut next_app_state: ResMut<NextState<AppState>>,
 ) {
+    if overlay_state.open {
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::KeyR) {
         next_app_state.set(AppState::LoadingGame);
     } else if keyboard.just_pressed(KeyCode::Escape) {

@@ -12,6 +12,7 @@ use crate::gameplay::skill_flow::{
     sync_turn_skill_usage,
 };
 use crate::gameplay::turn_flow::TurnState;
+use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
 
@@ -149,8 +150,13 @@ fn sync_skill_turn_state(
 /// 人类技能入口：统一处理按键与 HUD 点击触发的技能动作。
 fn handle_human_skill_input(
     keyboard: Res<ButtonInput<KeyCode>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut params: HumanSkillInputParams,
 ) {
+    if overlay_state.open {
+        return;
+    }
+
     let requested_action = if keyboard.just_pressed(KeyCode::KeyQ) {
         Some(SkillUiAction::Shield)
     } else if keyboard.just_pressed(KeyCode::KeyS) {
@@ -386,9 +392,11 @@ fn handle_human_skill_input(
 /// Snipe 目标选择的键盘分支（数字键 + Esc 取消）。
 fn handle_human_snipe_key_select(
     keyboard: Res<ButtonInput<KeyCode>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut params: SnipeTargetParams,
 ) {
-    if !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
+    if overlay_state.open
+        || !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
         || !params.target_state.is_active()
     {
         return;
@@ -426,6 +434,7 @@ fn handle_human_snipe_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut params: SnipeTargetParams,
 ) {
     if !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
@@ -433,7 +442,7 @@ fn handle_human_snipe_click(
     {
         return;
     }
-    if !mouse.just_pressed(MouseButton::Left) {
+    if overlay_state.input_captured || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
 

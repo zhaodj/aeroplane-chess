@@ -4,6 +4,7 @@ use crate::data::game_mode::GameMode;
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
+use crate::plugins::audio_plugin::AudioSettings;
 use crate::states::AppState;
 
 /// 菜单插件：主菜单与开局配置页的渲染和交互。
@@ -11,7 +12,18 @@ pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::MainMenu), spawn_main_menu)
+        app.init_resource::<SoundSettingsOverlayState>()
+            .add_systems(Startup, spawn_global_sound_overlay)
+            .add_systems(PreUpdate, update_sound_overlay_input_capture)
+            .add_systems(
+                Update,
+                (
+                    update_global_sound_overlay,
+                    handle_global_sound_overlay_input,
+                    handle_global_sound_overlay_click,
+                ),
+            )
+            .add_systems(OnEnter(AppState::MainMenu), spawn_main_menu)
             .add_systems(OnEnter(AppState::ModeSelect), spawn_mode_select)
             .add_systems(
                 Update,
@@ -29,13 +41,48 @@ impl Plugin for MenuPlugin {
     }
 }
 
+#[derive(Resource, Default)]
+/// 全局声音弹窗状态；用于所有页面共享音量入口并阻止下层误点。
+pub struct SoundSettingsOverlayState {
+    pub open: bool,
+    pub input_captured: bool,
+}
+
 #[derive(Component)]
 /// 菜单实体分组标记。
 struct MenuEntity;
 
 #[derive(Component)]
+/// 常驻声音入口实体。
+struct GlobalSoundEntry;
+
+#[derive(Component)]
+/// 全局声音弹窗实体。
+struct GlobalSoundModal;
+
+#[derive(Component)]
+/// 全局声音设置 UI 实体分组。
+struct GlobalSoundEntity;
+
+#[derive(Component)]
 /// 主菜单开始按钮点击区域标记。
 struct MainMenuStartArea;
+
+#[derive(Component)]
+/// 声音设置页摘要文本节点。
+struct SoundSettingsText;
+
+#[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
+enum SoundSettingsValueKind {
+    Music,
+    Effects,
+}
+
+#[derive(Component)]
+/// 声音设置页百分比文本节点。
+struct SoundSettingsValueText {
+    kind: SoundSettingsValueKind,
+}
 
 #[derive(Component)]
 /// 配置页顶部摘要文本节点。
@@ -84,10 +131,48 @@ struct ModeSelectOption {
     base_color: Color,
 }
 
+#[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
+enum SoundSettingsAction {
+    MusicDown,
+    MusicUp,
+    EffectsDown,
+    EffectsUp,
+    Back,
+}
+
+#[derive(Component)]
+/// 声音设置项元数据。
+struct SoundSettingsOption {
+    action: SoundSettingsAction,
+}
+
 const MENU_LEFT: f32 = 96.0;
 const MAIN_START_TOP: f32 = 250.0;
 const MAIN_START_WIDTH: f32 = 360.0;
 const MAIN_START_HEIGHT: f32 = 62.0;
+const MAIN_BUTTON_GAP: f32 = 22.0;
+
+const GLOBAL_SOUND_ENTRY_LEFT: f32 = 16.0;
+const GLOBAL_SOUND_ENTRY_TOP: f32 = 16.0;
+const GLOBAL_SOUND_ENTRY_W: f32 = 108.0;
+const GLOBAL_SOUND_ENTRY_H: f32 = 38.0;
+const GLOBAL_SOUND_PANEL_W: f32 = 462.0;
+const GLOBAL_SOUND_PANEL_H: f32 = 292.0;
+const GLOBAL_SOUND_ROW_LEFT: f32 = 34.0;
+const GLOBAL_SOUND_CONTROL_LEFT: f32 = 244.0;
+const GLOBAL_SOUND_ROW_TOP: f32 = 84.0;
+const GLOBAL_SOUND_ROW_GAP: f32 = 72.0;
+const GLOBAL_SOUND_BUTTON: f32 = 42.0;
+const GLOBAL_SOUND_VALUE_W: f32 = 82.0;
+const GLOBAL_SOUND_CLOSE_W: f32 = 104.0;
+const GLOBAL_SOUND_CLOSE_H: f32 = 42.0;
+
+const SOUND_PANEL_TOP: f32 = 170.0;
+const SOUND_ROW_GAP: f32 = 92.0;
+const SOUND_CONTROL_LEFT: f32 = 430.0;
+const SOUND_BUTTON: f32 = 52.0;
+const SOUND_VALUE_W: f32 = 100.0;
+const SOUND_BACK_TOP: f32 = 488.0;
 
 const SECTION_LABEL_X: f32 = 96.0;
 const OPTION_LEFT: f32 = 336.0;
@@ -105,8 +190,427 @@ const BOTTOM_ROW_TOP: f32 = 646.0;
 const COLOR_SWATCH_W: f32 = 54.0;
 const COLOR_SWATCH_H: f32 = 32.0;
 
+fn spawn_global_sound_overlay(mut commands: Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(GLOBAL_SOUND_ENTRY_LEFT),
+                top: Val::Px(GLOBAL_SOUND_ENTRY_TOP),
+                width: Val::Px(GLOBAL_SOUND_ENTRY_W),
+                height: Val::Px(GLOBAL_SOUND_ENTRY_H),
+                border: UiRect::all(Val::Px(1.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::horizontal(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.97, 0.99, 1.0, 0.94)),
+            BorderColor::all(Color::srgba(0.22, 0.30, 0.42, 0.30)),
+            ZIndex(80),
+            Visibility::Hidden,
+            Name::new("GlobalSoundEntry"),
+            GlobalSoundEntry,
+            GlobalSoundEntity,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("Audio"),
+                TextFont {
+                    font_size: 17.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextLayout::new_with_justify(Justify::Center),
+                Name::new("GlobalSoundEntryLabel"),
+            ));
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.07, 0.10, 0.34)),
+            ZIndex(90),
+            Visibility::Hidden,
+            Name::new("GlobalSoundModal"),
+            GlobalSoundModal,
+            GlobalSoundEntity,
+        ))
+        .with_children(|parent| {
+            parent
+                .spawn((
+                    Node {
+                        width: Val::Px(GLOBAL_SOUND_PANEL_W),
+                        height: Val::Px(GLOBAL_SOUND_PANEL_H),
+                        border: UiRect::all(Val::Px(1.0)),
+                        position_type: PositionType::Relative,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.98, 0.99, 1.0, 0.98)),
+                    BorderColor::all(Color::srgba(0.34, 0.42, 0.55, 0.42)),
+                    ZIndex(91),
+                    Name::new("GlobalSoundPanel"),
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new("Sound Settings"),
+                        TextFont {
+                            font_size: 28.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(GLOBAL_SOUND_ROW_LEFT),
+                            top: Val::Px(24.0),
+                            ..default()
+                        },
+                        Name::new("GlobalSoundTitle"),
+                    ));
+
+                    spawn_global_sound_row(
+                        panel,
+                        "Background Music",
+                        SoundSettingsValueKind::Music,
+                        GLOBAL_SOUND_ROW_TOP,
+                    );
+                    spawn_global_sound_row(
+                        panel,
+                        "Action Effects",
+                        SoundSettingsValueKind::Effects,
+                        GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP,
+                    );
+
+                    spawn_global_sound_panel_button(
+                        panel,
+                        ClickRect {
+                            x: GLOBAL_SOUND_PANEL_W - GLOBAL_SOUND_ROW_LEFT - GLOBAL_SOUND_CLOSE_W,
+                            y: GLOBAL_SOUND_PANEL_H - 62.0,
+                            w: GLOBAL_SOUND_CLOSE_W,
+                            h: GLOBAL_SOUND_CLOSE_H,
+                        },
+                        "Close",
+                        20.0,
+                    );
+                });
+        });
+}
+
+fn spawn_global_sound_row(
+    panel: &mut ChildSpawnerCommands<'_>,
+    label: &str,
+    value_kind: SoundSettingsValueKind,
+    top: f32,
+) {
+    panel.spawn((
+        Text::new(label),
+        TextFont {
+            font_size: 20.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(GLOBAL_SOUND_ROW_LEFT),
+            top: Val::Px(top + 10.0),
+            ..default()
+        },
+        Name::new(format!("GlobalSoundLabel{label}")),
+    ));
+
+    spawn_global_sound_panel_button(
+        panel,
+        ClickRect {
+            x: GLOBAL_SOUND_CONTROL_LEFT,
+            y: top,
+            w: GLOBAL_SOUND_BUTTON,
+            h: GLOBAL_SOUND_BUTTON,
+        },
+        "-",
+        24.0,
+    );
+
+    panel.spawn((
+        Text::new("  0%"),
+        TextFont {
+            font_size: 22.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        TextLayout::new_with_justify(Justify::Center),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(GLOBAL_SOUND_CONTROL_LEFT + GLOBAL_SOUND_BUTTON + 10.0),
+            top: Val::Px(top + 8.0),
+            width: Val::Px(GLOBAL_SOUND_VALUE_W),
+            ..default()
+        },
+        SoundSettingsValueText { kind: value_kind },
+        Name::new("GlobalSoundValue"),
+    ));
+
+    spawn_global_sound_panel_button(
+        panel,
+        ClickRect {
+            x: GLOBAL_SOUND_CONTROL_LEFT + GLOBAL_SOUND_BUTTON + GLOBAL_SOUND_VALUE_W + 20.0,
+            y: top,
+            w: GLOBAL_SOUND_BUTTON,
+            h: GLOBAL_SOUND_BUTTON,
+        },
+        "+",
+        24.0,
+    );
+}
+
+fn spawn_global_sound_panel_button(
+    panel: &mut ChildSpawnerCommands<'_>,
+    rect: ClickRect,
+    label: &str,
+    font_size: f32,
+) {
+    panel
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(rect.x),
+                top: Val::Px(rect.y),
+                width: Val::Px(rect.w),
+                height: Val::Px(rect.h),
+                border: UiRect::all(Val::Px(1.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.55, 0.70, 0.88, 0.22)),
+            BorderColor::all(Color::srgba(0.22, 0.30, 0.42, 0.24)),
+            Name::new(format!("GlobalSoundButton{label}")),
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextLayout::new_with_justify(Justify::Center),
+                Name::new("GlobalSoundButtonLabel"),
+            ));
+        });
+}
+
+fn update_sound_overlay_input_capture(
+    mut overlay_state: ResMut<SoundSettingsOverlayState>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+) {
+    overlay_state.input_captured = false;
+
+    if overlay_state.open
+        && (mouse.just_pressed(MouseButton::Left)
+            || keyboard.just_pressed(KeyCode::Escape)
+            || keyboard.just_pressed(KeyCode::Backspace))
+    {
+        overlay_state.input_captured = true;
+        return;
+    }
+
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+
+    overlay_state.input_captured = global_sound_entry_rect().contains(cursor);
+}
+
+fn update_global_sound_overlay(
+    app_state: Res<State<AppState>>,
+    audio_settings: Res<AudioSettings>,
+    overlay_state: Res<SoundSettingsOverlayState>,
+    mut entry_query: Query<&mut Visibility, (With<GlobalSoundEntry>, Without<GlobalSoundModal>)>,
+    mut modal_query: Query<&mut Visibility, (With<GlobalSoundModal>, Without<GlobalSoundEntry>)>,
+    mut value_query: Query<(&SoundSettingsValueText, &mut Text)>,
+) {
+    let visible_on_page = !matches!(app_state.get(), AppState::Boot);
+    let entry_visibility = if visible_on_page {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in &mut entry_query {
+        *visibility = entry_visibility;
+    }
+
+    let modal_visibility = if visible_on_page && overlay_state.open {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in &mut modal_query {
+        *visibility = modal_visibility;
+    }
+
+    if !audio_settings.is_changed() && !overlay_state.is_changed() {
+        return;
+    }
+    for (value_text, mut text) in &mut value_query {
+        *text = Text::new(match value_text.kind {
+            SoundSettingsValueKind::Music => format_volume_percent(audio_settings.music_volume),
+            SoundSettingsValueKind::Effects => format_volume_percent(audio_settings.effects_volume),
+        });
+    }
+}
+
+fn handle_global_sound_overlay_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut overlay_state: ResMut<SoundSettingsOverlayState>,
+) {
+    if !overlay_state.open {
+        return;
+    }
+    if keyboard.just_pressed(KeyCode::Escape) || keyboard.just_pressed(KeyCode::Backspace) {
+        overlay_state.open = false;
+    }
+}
+
+fn handle_global_sound_overlay_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    mut audio_settings: ResMut<AudioSettings>,
+    mut overlay_state: ResMut<SoundSettingsOverlayState>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+
+    if overlay_state.open {
+        if let Some(action) = global_sound_action_at(cursor, window) {
+            apply_global_sound_action(action, &mut audio_settings, &mut overlay_state);
+            return;
+        }
+
+        if !global_sound_panel_rect(window).contains(cursor) {
+            overlay_state.open = false;
+        }
+        return;
+    }
+
+    if global_sound_entry_rect().contains(cursor) {
+        overlay_state.open = true;
+    }
+}
+
+fn apply_global_sound_action(
+    action: SoundSettingsAction,
+    audio_settings: &mut AudioSettings,
+    overlay_state: &mut SoundSettingsOverlayState,
+) {
+    match action {
+        SoundSettingsAction::MusicDown => audio_settings.adjust_music(-AudioSettings::STEP),
+        SoundSettingsAction::MusicUp => audio_settings.adjust_music(AudioSettings::STEP),
+        SoundSettingsAction::EffectsDown => audio_settings.adjust_effects(-AudioSettings::STEP),
+        SoundSettingsAction::EffectsUp => audio_settings.adjust_effects(AudioSettings::STEP),
+        SoundSettingsAction::Back => overlay_state.open = false,
+    }
+}
+
+fn global_sound_entry_rect() -> ClickRect {
+    ClickRect {
+        x: GLOBAL_SOUND_ENTRY_LEFT,
+        y: GLOBAL_SOUND_ENTRY_TOP,
+        w: GLOBAL_SOUND_ENTRY_W,
+        h: GLOBAL_SOUND_ENTRY_H,
+    }
+}
+
+fn global_sound_panel_rect(window: &Window) -> ClickRect {
+    ClickRect {
+        x: (window.width() - GLOBAL_SOUND_PANEL_W) * 0.5,
+        y: (window.height() - GLOBAL_SOUND_PANEL_H) * 0.5,
+        w: GLOBAL_SOUND_PANEL_W,
+        h: GLOBAL_SOUND_PANEL_H,
+    }
+}
+
+fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettingsAction> {
+    let panel = global_sound_panel_rect(window);
+    let local = Vec2::new(cursor.x - panel.x, cursor.y - panel.y);
+    let actions = [
+        (
+            SoundSettingsAction::MusicDown,
+            ClickRect {
+                x: GLOBAL_SOUND_CONTROL_LEFT,
+                y: GLOBAL_SOUND_ROW_TOP,
+                w: GLOBAL_SOUND_BUTTON,
+                h: GLOBAL_SOUND_BUTTON,
+            },
+        ),
+        (
+            SoundSettingsAction::MusicUp,
+            ClickRect {
+                x: GLOBAL_SOUND_CONTROL_LEFT + GLOBAL_SOUND_BUTTON + GLOBAL_SOUND_VALUE_W + 20.0,
+                y: GLOBAL_SOUND_ROW_TOP,
+                w: GLOBAL_SOUND_BUTTON,
+                h: GLOBAL_SOUND_BUTTON,
+            },
+        ),
+        (
+            SoundSettingsAction::EffectsDown,
+            ClickRect {
+                x: GLOBAL_SOUND_CONTROL_LEFT,
+                y: GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP,
+                w: GLOBAL_SOUND_BUTTON,
+                h: GLOBAL_SOUND_BUTTON,
+            },
+        ),
+        (
+            SoundSettingsAction::EffectsUp,
+            ClickRect {
+                x: GLOBAL_SOUND_CONTROL_LEFT + GLOBAL_SOUND_BUTTON + GLOBAL_SOUND_VALUE_W + 20.0,
+                y: GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP,
+                w: GLOBAL_SOUND_BUTTON,
+                h: GLOBAL_SOUND_BUTTON,
+            },
+        ),
+        (
+            SoundSettingsAction::Back,
+            ClickRect {
+                x: GLOBAL_SOUND_PANEL_W - GLOBAL_SOUND_ROW_LEFT - GLOBAL_SOUND_CLOSE_W,
+                y: GLOBAL_SOUND_PANEL_H - 62.0,
+                w: GLOBAL_SOUND_CLOSE_W,
+                h: GLOBAL_SOUND_CLOSE_H,
+            },
+        ),
+    ];
+
+    actions
+        .iter()
+        .find_map(|(action, rect)| rect.contains(local).then_some(*action))
+}
+
 fn spawn_main_menu(mut commands: Commands) {
-    // 主菜单：标题 + 开始按钮（支持点击与回车）。
+    // 主菜单：标题 + 开始与声音设置入口。
     commands.spawn((
         Text::new("Aeroplane Chess"),
         TextFont {
@@ -133,7 +637,7 @@ fn spawn_main_menu(mut commands: Commands) {
             h: MAIN_START_HEIGHT,
         },
         Color::srgba(0.42, 0.61, 0.88, 0.30),
-        "Start Match (Click / Enter)",
+        "Start Match",
         30.0,
         None,
     );
@@ -149,6 +653,149 @@ fn spawn_main_menu(mut commands: Commands) {
         Name::new("MainMenuStartArea"),
         MenuEntity,
     ));
+}
+
+fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSettings>) {
+    commands.spawn((
+        Text::new("Sound Settings"),
+        TextFont {
+            font_size: 46.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(96.0),
+            left: Val::Px(MENU_LEFT),
+            ..default()
+        },
+        Name::new("SoundSettingsTitle"),
+        MenuEntity,
+    ));
+
+    commands.spawn((
+        Text::new(sound_settings_content(&audio_settings)),
+        TextFont {
+            font_size: 19.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.16, 0.22, 0.32)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(146.0),
+            left: Val::Px(MENU_LEFT),
+            width: Val::Px(620.0),
+            ..default()
+        },
+        Name::new("SoundSettingsText"),
+        SoundSettingsText,
+        MenuEntity,
+    ));
+
+    spawn_sound_row(
+        &mut commands,
+        "Background Music",
+        SoundSettingsValueKind::Music,
+        SoundSettingsAction::MusicDown,
+        SoundSettingsAction::MusicUp,
+        SOUND_PANEL_TOP,
+        audio_settings.music_volume,
+    );
+    spawn_sound_row(
+        &mut commands,
+        "Action Effects",
+        SoundSettingsValueKind::Effects,
+        SoundSettingsAction::EffectsDown,
+        SoundSettingsAction::EffectsUp,
+        SOUND_PANEL_TOP + SOUND_ROW_GAP,
+        audio_settings.effects_volume,
+    );
+
+    spawn_sound_option(
+        &mut commands,
+        SoundSettingsAction::Back,
+        ClickRect {
+            x: MENU_LEFT,
+            y: SOUND_BACK_TOP,
+            w: MAIN_START_WIDTH * 0.64,
+            h: MAIN_START_HEIGHT,
+        },
+        "Back",
+        Color::srgba(0.72, 0.54, 0.44, 0.28),
+    );
+}
+
+fn spawn_sound_row(
+    commands: &mut Commands,
+    label: &str,
+    value_kind: SoundSettingsValueKind,
+    down_action: SoundSettingsAction,
+    up_action: SoundSettingsAction,
+    top: f32,
+    value: f32,
+) {
+    commands.spawn((
+        Text::new(label),
+        TextFont {
+            font_size: 24.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(top + 12.0),
+            left: Val::Px(MENU_LEFT),
+            ..default()
+        },
+        Name::new(format!("SoundSettingLabel{label}")),
+        MenuEntity,
+    ));
+
+    spawn_sound_option(
+        commands,
+        down_action,
+        ClickRect {
+            x: SOUND_CONTROL_LEFT,
+            y: top,
+            w: SOUND_BUTTON,
+            h: SOUND_BUTTON,
+        },
+        "-",
+        Color::srgba(0.53, 0.77, 0.96, 0.26),
+    );
+
+    commands.spawn((
+        Text::new(format_volume_percent(value)),
+        TextFont {
+            font_size: 26.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        TextLayout::new_with_justify(Justify::Center),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(top + 10.0),
+            left: Val::Px(SOUND_CONTROL_LEFT + SOUND_BUTTON + 12.0),
+            width: Val::Px(SOUND_VALUE_W),
+            ..default()
+        },
+        SoundSettingsValueText { kind: value_kind },
+        Name::new("SoundSettingValue"),
+        MenuEntity,
+    ));
+
+    spawn_sound_option(
+        commands,
+        up_action,
+        ClickRect {
+            x: SOUND_CONTROL_LEFT + SOUND_BUTTON + SOUND_VALUE_W + 24.0,
+            y: top,
+            w: SOUND_BUTTON,
+            h: SOUND_BUTTON,
+        },
+        "+",
+        Color::srgba(0.53, 0.77, 0.96, 0.26),
+    );
 }
 
 fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
@@ -355,6 +1002,22 @@ fn spawn_option(
     spawn_box_with_label(commands, rect, base_color, label, 24.0, Some(action));
 }
 
+fn spawn_sound_option(
+    commands: &mut Commands,
+    action: SoundSettingsAction,
+    rect: ClickRect,
+    label: &str,
+    base_color: Color,
+) {
+    spawn_box_with_label(commands, rect, base_color, label, 26.0, None);
+    commands.spawn((
+        ClickRect { ..rect },
+        SoundSettingsOption { action },
+        Name::new("SoundSettingsClickArea"),
+        MenuEntity,
+    ));
+}
+
 fn spawn_box_with_label(
     commands: &mut Commands,
     rect: ClickRect,
@@ -406,6 +1069,18 @@ fn spawn_box_with_label(
             ));
         });
     }
+}
+
+fn sound_settings_content(audio_settings: &AudioSettings) -> String {
+    format!(
+        "Background Music {}   |   Action Effects {}",
+        format_volume_percent(audio_settings.music_volume),
+        format_volume_percent(audio_settings.effects_volume)
+    )
+}
+
+fn format_volume_percent(value: f32) -> String {
+    format!("{:>3}%", (value.clamp(0.0, 1.0) * 100.0).round() as u8)
 }
 
 fn mode_select_content(match_setup: &MatchSetup) -> String {
@@ -523,10 +1198,18 @@ fn action_selected(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
 fn handle_main_menu_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut overlay_state: ResMut<SoundSettingsOverlayState>,
 ) {
-    // 键盘兜底：回车进入配置页。
+    if overlay_state.open {
+        return;
+    }
+
+    // 键盘兜底：回车进入配置页，S 打开声音设置弹窗。
     if keyboard.just_pressed(KeyCode::Enter) {
         next_state.set(AppState::ModeSelect);
+    }
+    if keyboard.just_pressed(KeyCode::KeyS) {
+        overlay_state.open = true;
     }
 }
 
@@ -534,9 +1217,68 @@ fn handle_main_menu_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     mut next_state: ResMut<NextState<AppState>>,
-    query: Query<&ClickRect, With<MainMenuStartArea>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
+    start_query: Query<&ClickRect, With<MainMenuStartArea>>,
 ) {
-    // 鼠标主操作：点击开始区域进入配置页。
+    // 鼠标主操作：点击开始进入配置；声音设置由全局 Audio 入口打开。
+    if overlay_state.input_captured || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+
+    for rect in &start_query {
+        if rect.contains(cursor) {
+            next_state.set(AppState::ModeSelect);
+            return;
+        }
+    }
+}
+
+fn update_sound_settings_text(
+    audio_settings: Res<AudioSettings>,
+    mut summary_query: Query<&mut Text, (With<SoundSettingsText>, Without<SoundSettingsValueText>)>,
+    mut value_query: Query<
+        (&SoundSettingsValueText, &mut Text),
+        (With<SoundSettingsValueText>, Without<SoundSettingsText>),
+    >,
+) {
+    if !audio_settings.is_changed() {
+        return;
+    }
+
+    for mut text in &mut summary_query {
+        *text = Text::new(sound_settings_content(&audio_settings));
+    }
+
+    for (value_text, mut text) in &mut value_query {
+        *text = Text::new(match value_text.kind {
+            SoundSettingsValueKind::Music => format_volume_percent(audio_settings.music_volume),
+            SoundSettingsValueKind::Effects => format_volume_percent(audio_settings.effects_volume),
+        });
+    }
+}
+
+fn handle_sound_settings_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    if keyboard.just_pressed(KeyCode::Escape) || keyboard.just_pressed(KeyCode::Backspace) {
+        next_state.set(AppState::MainMenu);
+    }
+}
+
+fn handle_sound_settings_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    mut audio_settings: ResMut<AudioSettings>,
+    mut next_state: ResMut<NextState<AppState>>,
+    query: Query<(&ClickRect, &SoundSettingsOption)>,
+) {
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
@@ -547,11 +1289,26 @@ fn handle_main_menu_click(
         return;
     };
 
-    for rect in &query {
-        if rect.contains(cursor) {
-            next_state.set(AppState::ModeSelect);
-            return;
+    for (rect, option) in &query {
+        if !rect.contains(cursor) {
+            continue;
         }
+        apply_sound_settings_action(option.action, &mut audio_settings, &mut next_state);
+        return;
+    }
+}
+
+fn apply_sound_settings_action(
+    action: SoundSettingsAction,
+    audio_settings: &mut AudioSettings,
+    next_state: &mut NextState<AppState>,
+) {
+    match action {
+        SoundSettingsAction::MusicDown => audio_settings.adjust_music(-AudioSettings::STEP),
+        SoundSettingsAction::MusicUp => audio_settings.adjust_music(AudioSettings::STEP),
+        SoundSettingsAction::EffectsDown => audio_settings.adjust_effects(-AudioSettings::STEP),
+        SoundSettingsAction::EffectsUp => audio_settings.adjust_effects(AudioSettings::STEP),
+        SoundSettingsAction::Back => next_state.set(AppState::MainMenu),
     }
 }
 
@@ -559,7 +1316,12 @@ fn handle_mode_select_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut match_setup: ResMut<MatchSetup>,
     mut next_state: ResMut<NextState<AppState>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
 ) {
+    if overlay_state.open {
+        return;
+    }
+
     // 键盘兜底操作：保留最常用快捷键。
     if keyboard.just_pressed(KeyCode::Escape) {
         apply_mode_select_action(ModeSelectAction::Back, &mut match_setup, &mut next_state);
@@ -629,10 +1391,11 @@ fn handle_mode_select_click(
     windows: Query<&Window>,
     mut match_setup: ResMut<MatchSetup>,
     mut next_state: ResMut<NextState<AppState>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     query: Query<(&ClickRect, &ModeSelectOption)>,
 ) {
     // 鼠标主操作：点击命中对应配置项并立即生效。
-    if !mouse.just_pressed(MouseButton::Left) {
+    if overlay_state.input_captured || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     let Ok(window) = windows.single() else {
@@ -749,6 +1512,126 @@ mod tests {
 
         let bottom = rows.last().map(|(_, bottom)| *bottom).unwrap_or_default();
         assert!(bottom <= 720.0);
+    }
+
+    #[test]
+    fn main_menu_start_button_leaves_room_for_global_sound_entry() {
+        let start = ClickRect {
+            x: MENU_LEFT,
+            y: MAIN_START_TOP,
+            w: MAIN_START_WIDTH,
+            h: MAIN_START_HEIGHT,
+        };
+        let audio = global_sound_entry_rect();
+
+        assert!(audio.y + audio.h + 40.0 <= start.y);
+        assert!(start.y + start.h <= 720.0);
+    }
+
+    #[test]
+    fn sound_settings_actions_adjust_independent_channels() {
+        let mut audio_settings = AudioSettings {
+            music_volume: 0.5,
+            effects_volume: 0.5,
+        };
+        let mut next_state = NextState::<AppState>::default();
+
+        apply_sound_settings_action(
+            SoundSettingsAction::MusicUp,
+            &mut audio_settings,
+            &mut next_state,
+        );
+        apply_sound_settings_action(
+            SoundSettingsAction::EffectsDown,
+            &mut audio_settings,
+            &mut next_state,
+        );
+
+        assert!((audio_settings.music_volume - 0.6).abs() < f32::EPSILON);
+        assert!((audio_settings.effects_volume - 0.4).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn global_sound_actions_adjust_audio_and_close_overlay() {
+        let mut audio_settings = AudioSettings {
+            music_volume: 0.5,
+            effects_volume: 0.5,
+        };
+        let mut overlay_state = SoundSettingsOverlayState {
+            open: true,
+            input_captured: false,
+        };
+
+        apply_global_sound_action(
+            SoundSettingsAction::MusicDown,
+            &mut audio_settings,
+            &mut overlay_state,
+        );
+        apply_global_sound_action(
+            SoundSettingsAction::EffectsUp,
+            &mut audio_settings,
+            &mut overlay_state,
+        );
+
+        assert!((audio_settings.music_volume - 0.4).abs() < f32::EPSILON);
+        assert!((audio_settings.effects_volume - 0.6).abs() < f32::EPSILON);
+        assert!(overlay_state.open);
+
+        apply_global_sound_action(
+            SoundSettingsAction::Back,
+            &mut audio_settings,
+            &mut overlay_state,
+        );
+
+        assert!(!overlay_state.open);
+    }
+
+    #[test]
+    fn sound_settings_percent_text_is_clamped() {
+        assert_eq!(format_volume_percent(-0.4), "  0%");
+        assert_eq!(format_volume_percent(0.354), " 35%");
+        assert_eq!(format_volume_percent(1.4), "100%");
+    }
+
+    #[test]
+    fn global_sound_entry_and_panel_actions_have_stable_hit_targets() {
+        let entry = global_sound_entry_rect();
+        assert!(entry.contains(Vec2::new(
+            GLOBAL_SOUND_ENTRY_LEFT + 8.0,
+            GLOBAL_SOUND_ENTRY_TOP + 8.0
+        )));
+
+        let window = Window {
+            resolution: (1280, 720).into(),
+            ..default()
+        };
+        let panel = global_sound_panel_rect(&window);
+        assert_eq!(panel.w, GLOBAL_SOUND_PANEL_W);
+        assert_eq!(panel.h, GLOBAL_SOUND_PANEL_H);
+        let plus_right_edge = GLOBAL_SOUND_CONTROL_LEFT
+            + GLOBAL_SOUND_BUTTON
+            + GLOBAL_SOUND_VALUE_W
+            + 20.0
+            + GLOBAL_SOUND_BUTTON;
+        assert!(GLOBAL_SOUND_PANEL_W - plus_right_edge >= 24.0);
+
+        let music_up = Vec2::new(
+            panel.x + GLOBAL_SOUND_CONTROL_LEFT + GLOBAL_SOUND_BUTTON + GLOBAL_SOUND_VALUE_W + 28.0,
+            panel.y + GLOBAL_SOUND_ROW_TOP + 8.0,
+        );
+        assert_eq!(
+            global_sound_action_at(music_up, &window),
+            Some(SoundSettingsAction::MusicUp)
+        );
+
+        let close = Vec2::new(
+            panel.x + GLOBAL_SOUND_PANEL_W - GLOBAL_SOUND_ROW_LEFT - 8.0,
+            panel.y + GLOBAL_SOUND_PANEL_H - 42.0,
+        );
+        assert_eq!(
+            global_sound_action_at(close, &window),
+            Some(SoundSettingsAction::Back)
+        );
     }
 
     #[test]

@@ -105,10 +105,10 @@ fn tile_kind_for_index(index: usize) -> TileKind {
 
 fn jump_shortcut_target_for_index(index: usize) -> Option<u8> {
     match index {
-        7 => Some(19),
-        19 => Some(31),
-        31 => Some(43),
-        43 => Some(7),
+        7 => Some(18),
+        19 => Some(30),
+        31 => Some(42),
+        43 => Some(6),
         _ => None,
     }
 }
@@ -131,7 +131,7 @@ mod tests {
             .filter_map(|tile| tile.route_index.zip(tile.jump_shortcut_to))
             .collect::<Vec<_>>();
 
-        assert_eq!(shortcuts, vec![(7, 19), (19, 31), (31, 43), (43, 7)]);
+        assert_eq!(shortcuts, vec![(7, 18), (19, 30), (31, 42), (43, 6)]);
     }
 
     #[test]

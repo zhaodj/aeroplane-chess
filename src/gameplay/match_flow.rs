@@ -295,6 +295,27 @@ pub struct MatchResult {
     pub finished: bool,
 }
 
+pub const HANGAR_SLOT_OFFSETS: [Vec2; 4] = [
+    Vec2::new(-35.0, 35.0),
+    Vec2::new(35.0, 35.0),
+    Vec2::new(-35.0, -35.0),
+    Vec2::new(35.0, -35.0),
+];
+
+pub fn hangar_center_for_player(player_id: u8) -> Option<Vec2> {
+    match player_id {
+        1 => Some(Vec2::new(-265.104, 265.104)),
+        2 => Some(Vec2::new(265.317, 265.104)),
+        3 => Some(Vec2::new(-265.104, -265.104)),
+        4 => Some(Vec2::new(265.104, -265.104)),
+        _ => None,
+    }
+}
+
+fn required_hangar_center_for_player(player_id: u8) -> Vec2 {
+    hangar_center_for_player(player_id).expect("default player hangar center exists")
+}
+
 /// 构建开局所需资源：棋盘、玩家列表、队伍列表。
 pub fn build_match_resources(setup: &MatchSetup) -> (BoardLayout, PlayerRoster, TeamRoster) {
     let (players, teams) = build_match_rosters(setup);
@@ -327,7 +348,10 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         control: player_controls[0],
                     },
                     color: player_colors[0].to_color(),
-                    hangar_slots: build_hangar_slots(Vec2::new(-260.0, 260.0), pieces_per_player),
+                    hangar_slots: build_hangar_slots(
+                        required_hangar_center_for_player(1),
+                        pieces_per_player,
+                    ),
                     launch_position: Vec2::new(-316.104, 156.104),
                     launch_tile_index: 39,
                     home_lane_positions: vec![
@@ -347,7 +371,10 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         control: player_controls[1],
                     },
                     color: player_colors[1].to_color(),
-                    hangar_slots: build_hangar_slots(Vec2::new(260.0, 260.0), pieces_per_player),
+                    hangar_slots: build_hangar_slots(
+                        required_hangar_center_for_player(2),
+                        pieces_per_player,
+                    ),
                     launch_position: Vec2::new(155.896, 316.104),
                     launch_tile_index: 3,
                     home_lane_positions: vec![
@@ -381,7 +408,10 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         control: player_controls[0],
                     },
                     color: player_colors[0].to_color(),
-                    hangar_slots: build_hangar_slots(Vec2::new(-260.0, 260.0), pieces_per_player),
+                    hangar_slots: build_hangar_slots(
+                        required_hangar_center_for_player(1),
+                        pieces_per_player,
+                    ),
                     launch_position: Vec2::new(-316.104, 156.104),
                     launch_tile_index: 39,
                     home_lane_positions: vec![
@@ -401,7 +431,10 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         control: player_controls[1],
                     },
                     color: player_colors[1].to_color(),
-                    hangar_slots: build_hangar_slots(Vec2::new(260.0, 260.0), pieces_per_player),
+                    hangar_slots: build_hangar_slots(
+                        required_hangar_center_for_player(2),
+                        pieces_per_player,
+                    ),
                     launch_position: Vec2::new(155.896, 316.104),
                     launch_tile_index: 3,
                     home_lane_positions: vec![
@@ -421,7 +454,10 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         control: player_controls[2],
                     },
                     color: player_colors[2].to_color(),
-                    hangar_slots: build_hangar_slots(Vec2::new(-260.0, -260.0), pieces_per_player),
+                    hangar_slots: build_hangar_slots(
+                        required_hangar_center_for_player(3),
+                        pieces_per_player,
+                    ),
                     launch_position: Vec2::new(-156.104, -315.896),
                     launch_tile_index: 27,
                     home_lane_positions: vec![
@@ -441,7 +477,10 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                         control: player_controls[3],
                     },
                     color: player_colors[3].to_color(),
-                    hangar_slots: build_hangar_slots(Vec2::new(260.0, -260.0), pieces_per_player),
+                    hangar_slots: build_hangar_slots(
+                        required_hangar_center_for_player(4),
+                        pieces_per_player,
+                    ),
                     launch_position: Vec2::new(315.896, -155.896),
                     launch_tile_index: 15,
                     home_lane_positions: vec![
@@ -471,13 +510,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
 
 /// 生成机库停机位坐标（最多 4 格）。
 fn build_hangar_slots(anchor: Vec2, pieces_per_player: usize) -> Vec<Vec2> {
-    let offsets = [
-        Vec2::new(-35.0, 35.0),
-        Vec2::new(35.0, 35.0),
-        Vec2::new(-35.0, -35.0),
-        Vec2::new(35.0, -35.0),
-    ];
-    offsets
+    HANGAR_SLOT_OFFSETS
         .iter()
         .take(pieces_per_player)
         .map(|offset| anchor + *offset)
@@ -584,6 +617,22 @@ mod tests {
         assert_eq!(teams[0].player_ids, vec![1, 3]);
         assert_eq!(teams[1].player_ids, vec![2, 4]);
         assert!(players.iter().all(|player| player.hangar_slots.len() == 3));
+    }
+
+    #[test]
+    fn roster_hangar_slots_share_visual_hangar_centers() {
+        let mut two_vs_two_setup = setup(GameMode::TwoVsTwo);
+        two_vs_two_setup.pieces_per_player = 4;
+        let (players, _) = build_match_rosters(&two_vs_two_setup);
+
+        for player in players {
+            let center = hangar_center_for_player(player.state.player_id)
+                .expect("player has a visual hangar center");
+            assert_eq!(player.hangar_slots.len(), HANGAR_SLOT_OFFSETS.len());
+            for (slot, offset) in player.hangar_slots.iter().zip(HANGAR_SLOT_OFFSETS) {
+                assert_eq!(*slot, center + offset);
+            }
+        }
     }
 
     #[test]

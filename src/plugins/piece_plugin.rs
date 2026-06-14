@@ -4,6 +4,7 @@ use crate::constants::BOARD_Z_LAYER;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
+use crate::gameplay::skill_flow::{SkillRoster, dash_bonus};
 use crate::gameplay::turn_flow::{
     FINISH_DISTANCE, PieceEffectKind, TurnInputState, TurnState, world_position_for_piece,
 };
@@ -783,6 +784,9 @@ fn stack_visual_local_translation(
 fn update_piece_shield_badges(
     board_layout: Res<BoardLayout>,
     player_roster: Res<PlayerRoster>,
+    skill_roster: Res<SkillRoster>,
+    turn_state: Res<TurnState>,
+    input_state: Res<TurnInputState>,
     piece_query: PieceTransformQuery,
     mut badge_query: ShieldBadgeQuery,
     mut badge_text_query: ShieldBadgeTextQuery,
@@ -793,7 +797,17 @@ fn update_piece_shield_badges(
         .map(|(piece_id, piece_state, transform)| {
             (
                 piece_id.0,
-                shield_badge_info(piece_state.shield, piece_state.stack_shield),
+                shield_badge_info(
+                    piece_state.shield,
+                    piece_state.stack_shield,
+                    movement_buff_bonus_for_piece(
+                        piece_id.0,
+                        piece_state,
+                        &turn_state,
+                        &input_state,
+                        &skill_roster,
+                    ),
+                ),
                 visual_infos
                     .iter()
                     .find(|info| info.piece_id == piece_id.0)
@@ -850,12 +864,46 @@ fn update_piece_shield_badges(
     }
 }
 
-fn shield_badge_info(shield: u8, stack_shield: u8) -> Option<ShieldBadgeInfo> {
-    let label = shield_badge_label(shield, stack_shield)?;
-    let fill = match (shield, stack_shield) {
-        (_, 0) => Color::srgba(0.05, 0.34, 0.78, 0.95),
-        (0, _) => Color::srgba(0.05, 0.48, 0.36, 0.95),
-        (_, _) => Color::srgba(0.34, 0.22, 0.72, 0.95),
+fn movement_buff_bonus_for_piece(
+    piece_id: u8,
+    piece_state: &PieceState,
+    turn_state: &TurnState,
+    input_state: &TurnInputState,
+    skill_roster: &SkillRoster,
+) -> Option<u8> {
+    let bonus = dash_bonus(skill_roster, turn_state.current_player);
+    if bonus == 0
+        || piece_state.owner_player_id != turn_state.current_player
+        || !matches!(
+            piece_state.status,
+            PieceStatus::AtLaunch | PieceStatus::Active
+        )
+    {
+        return None;
+    }
+
+    let candidates = input_state.candidate_piece_ids();
+    if !candidates.is_empty() && !candidates.contains(&piece_id) {
+        return None;
+    }
+
+    Some(bonus)
+}
+
+fn shield_badge_info(
+    shield: u8,
+    stack_shield: u8,
+    movement_bonus: Option<u8>,
+) -> Option<ShieldBadgeInfo> {
+    let label = shield_badge_label(shield, stack_shield, movement_bonus)?;
+    let has_movement_bonus = movement_bonus.unwrap_or_default() > 0;
+    let fill = match (shield > 0, stack_shield > 0, has_movement_bonus) {
+        (false, false, true) => Color::srgba(0.86, 0.38, 0.05, 0.95),
+        (_, _, true) => Color::srgba(0.40, 0.22, 0.72, 0.95),
+        (true, false, false) => Color::srgba(0.05, 0.34, 0.78, 0.95),
+        (false, true, false) => Color::srgba(0.05, 0.48, 0.36, 0.95),
+        (true, true, false) => Color::srgba(0.34, 0.22, 0.72, 0.95),
+        (false, false, false) => return None,
     };
 
     Some(ShieldBadgeInfo {
@@ -866,13 +914,19 @@ fn shield_badge_info(shield: u8, stack_shield: u8) -> Option<ShieldBadgeInfo> {
     })
 }
 
-fn shield_badge_label(shield: u8, stack_shield: u8) -> Option<String> {
-    match (shield, stack_shield) {
-        (0, 0) => None,
-        (shield, 0) => Some(format!("SH{shield}")),
-        (0, stack_shield) => Some(format!("ST{stack_shield}")),
-        (shield, stack_shield) => Some(format!("SH{shield}+ST{stack_shield}")),
+fn shield_badge_label(shield: u8, stack_shield: u8, movement_bonus: Option<u8>) -> Option<String> {
+    let mut labels = Vec::new();
+    if shield > 0 {
+        labels.push(format!("SH{shield}"));
     }
+    if stack_shield > 0 {
+        labels.push(format!("ST{stack_shield}"));
+    }
+    if let Some(movement_bonus) = movement_bonus.filter(|bonus| *bonus > 0) {
+        labels.push(format!("D+{movement_bonus}"));
+    }
+
+    (!labels.is_empty()).then(|| labels.join("+"))
 }
 
 fn shield_badge_size(label: &str) -> Vec2 {
@@ -1185,13 +1239,63 @@ mod tests {
 
     #[test]
     fn shield_badge_labels_explain_personal_and_stack_buffs() {
-        assert_eq!(shield_badge_label(0, 0), None);
-        assert_eq!(shield_badge_label(1, 0), Some("SH1".to_string()));
-        assert_eq!(shield_badge_label(0, 1), Some("ST1".to_string()));
-        assert_eq!(shield_badge_label(2, 1), Some("SH2+ST1".to_string()));
+        assert_eq!(shield_badge_label(0, 0, None), None);
+        assert_eq!(shield_badge_label(1, 0, None), Some("SH1".to_string()));
+        assert_eq!(shield_badge_label(0, 1, None), Some("ST1".to_string()));
+        assert_eq!(
+            shield_badge_label(2, 1, Some(3)),
+            Some("SH2+ST1+D+3".to_string())
+        );
 
-        let combined = shield_badge_info(2, 1).expect("combined badge is visible");
-        assert_eq!(combined.label, "SH2+ST1");
+        let combined = shield_badge_info(2, 1, Some(3)).expect("combined badge is visible");
+        assert_eq!(combined.label, "SH2+ST1+D+3");
         assert!(combined.size.x > SHIELD_BADGE_MIN_SIZE.x);
+    }
+
+    #[test]
+    fn movement_buff_badge_marks_current_player_active_pieces() {
+        let mut turn_state = TurnState::opening_turn();
+        turn_state.current_player = 1;
+        let input_state = TurnInputState::default();
+        let skill_roster = SkillRoster {
+            players: vec![crate::gameplay::skill_flow::PlayerSkillState {
+                player_id: 1,
+                dash_charges: 0,
+                dash_armed: true,
+                snipe_charges: 0,
+                swap_charges: 0,
+                shield_charges: 0,
+                double_dice_charges: 0,
+                double_dice_armed: false,
+                skip_next_skill_turn: false,
+                skill_blocked_this_turn: false,
+            }],
+            last_skill_action: None,
+            active_turn_player: Some(1),
+            skill_used_this_turn: true,
+        };
+        let own_piece = piece_state(1, PieceStatus::Active, 0);
+        let enemy_piece = piece_state(2, PieceStatus::Active, 0);
+
+        assert_eq!(
+            movement_buff_bonus_for_piece(1, &own_piece, &turn_state, &input_state, &skill_roster),
+            Some(3)
+        );
+        assert_eq!(
+            movement_buff_bonus_for_piece(
+                2,
+                &enemy_piece,
+                &turn_state,
+                &input_state,
+                &skill_roster
+            ),
+            None
+        );
+        assert_eq!(
+            shield_badge_info(0, 0, Some(3))
+                .map(|badge| badge.label)
+                .as_deref(),
+            Some("D+3")
+        );
     }
 }

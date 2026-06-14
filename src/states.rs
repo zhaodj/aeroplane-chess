@@ -5,6 +5,7 @@ pub enum AppState {
     #[default]
     Boot,
     MainMenu,
+    SoundSettings,
     ModeSelect,
     CharacterSelect,
     SkillSelect,

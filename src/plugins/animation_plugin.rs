@@ -9,6 +9,8 @@ use crate::plugins::piece_plugin::PieceId;
 use crate::states::AppState;
 
 const PLANE_ICON_BASE_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
+const NORMAL_MOVE_SEGMENT_DURATION: f32 = 0.13;
+const FAST_MOVE_SEGMENT_DURATION: f32 = 0.045;
 
 /// 动画插件入口：把规则层的瞬时位置变化转成短视觉插值。
 pub struct AnimationPlugin;
@@ -88,7 +90,7 @@ fn capture_piece_motion(
     player_roster: Res<PlayerRoster>,
     mut query: ChangedPieceAnimationQuery,
 ) {
-    let segment_duration = if match_config.fast_mode { 0.025 } else { 0.085 };
+    let segment_duration = movement_segment_duration(match_config.fast_mode);
     for (entity, piece_state, mut transform, mut animation_state) in &mut query {
         let from = animation_state.logical_translation;
         let to = transform.translation;
@@ -171,6 +173,14 @@ fn animate_piece_motion(
 
 fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
+}
+
+fn movement_segment_duration(fast_mode: bool) -> f32 {
+    if fast_mode {
+        FAST_MOVE_SEGMENT_DURATION
+    } else {
+        NORMAL_MOVE_SEGMENT_DURATION
+    }
 }
 
 fn is_stale_transform_change(
@@ -364,6 +374,14 @@ mod tests {
     }
 
     #[test]
+    fn movement_animation_segments_are_slow_enough_to_read() {
+        assert_eq!(movement_segment_duration(false), 0.13);
+        assert_eq!(movement_segment_duration(true), 0.045);
+        assert!(movement_segment_duration(false) > 0.10);
+        assert!(movement_segment_duration(true) < movement_segment_duration(false));
+    }
+
+    #[test]
     fn launch_to_route_waypoints_include_first_main_tile() {
         let (board_layout, player_roster) = test_roster();
         let from =
@@ -460,7 +478,7 @@ mod tests {
         let (board_layout, player_roster) = test_roster();
         let start_progress = 15;
         let source_progress = 16;
-        let target_progress = 28;
+        let target_progress = 27;
         let from = world_position_for_piece(
             1,
             start_progress,

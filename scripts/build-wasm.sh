@@ -43,5 +43,7 @@ wasm-bindgen \
 
 echo "[3/3] copying web shell..."
 cp "${WEB_DIR}/index.html" "${DIST_DIR}/index.html"
+rm -rf "${DIST_DIR}/assets"
+cp -R "${ROOT_DIR}/assets" "${DIST_DIR}/assets"
 
 echo "done: ${DIST_DIR}"

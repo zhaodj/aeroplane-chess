@@ -5,7 +5,9 @@ use std::f32::consts::PI;
 
 use crate::constants::BOARD_Z_LAYER;
 use crate::domain::tile::TileKind;
-use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
+use crate::gameplay::match_flow::{
+    BoardLayout, HANGAR_SLOT_OFFSETS, PlayerRoster, hangar_center_for_player,
+};
 use crate::gameplay::turn_flow::TurnState;
 use crate::states::AppState;
 
@@ -74,6 +76,12 @@ struct DrawStyle {
     border: Color,
     border_width: f32,
     z: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct VisualRectGeometry {
+    center: Vec2,
+    size: Vec2,
 }
 
 #[derive(Clone, Copy)]
@@ -232,28 +240,38 @@ fn spawn_board(
         Vec2::ZERO,
         Vec2::splat(683.0),
         DrawStyle {
-            fill: Color::srgb(245.0 / 255.0, 245.0 / 255.0, 245.0 / 255.0),
-            border: Color::srgb(245.0 / 255.0, 245.0 / 255.0, 245.0 / 255.0),
+            fill: board_surface_color(),
+            border: board_surface_color(),
             border_width: 0.0,
             z: BOARD_Z_LAYER - 3.0,
         },
         "BoardBackdrop",
     );
 
-    // 先画矩形网格，再画三角区域，保证层次与 SVG 基本一致。
+    // 先画矩形网格，再画三角区域；停机坪只收窄内侧，外侧仍和跑道边缘对齐。
     for &rect in SVG_RECTS {
         if !should_draw_svg_rect(rect, &player_roster) {
             continue;
         }
 
+        let hangar_background = is_hangar_background_rect(rect);
+        let mut fill = board_palette.color_for_svg_fill(rect.fill);
+        if hangar_background {
+            fill = fill.mix(&Color::WHITE, 0.08);
+        }
+        let visual_rect = visual_rect_geometry(rect);
         spawn_square_with_border(
             &mut commands,
-            rect.center,
-            rect.size,
+            visual_rect.center,
+            visual_rect.size,
             DrawStyle {
-                fill: board_palette.color_for_svg_fill(rect.fill),
-                border: Color::BLACK,
-                border_width: 1.0,
+                fill,
+                border: if hangar_background {
+                    hangar_outline_color()
+                } else {
+                    board_grid_line_color()
+                },
+                border_width: if hangar_background { 1.6 } else { 0.65 },
                 z: BOARD_Z_LAYER - 1.0,
             },
             "SvgRect",
@@ -268,8 +286,8 @@ fn spawn_board(
             [tri.a, tri.b, tri.c],
             DrawStyle {
                 fill: board_palette.color_for_svg_fill(tri.fill),
-                border: Color::BLACK,
-                border_width: 1.0,
+                border: board_grid_line_color(),
+                border_width: 0.65,
                 z: BOARD_Z_LAYER - 0.9,
             },
             "SvgTri",
@@ -286,8 +304,8 @@ fn spawn_board(
             [launch.a, launch.b, launch.c],
             DrawStyle {
                 fill: launch_color,
-                border: Color::BLACK,
-                border_width: 1.0,
+                border: board_grid_line_color(),
+                border_width: 0.65,
                 z: BOARD_Z_LAYER - 0.75,
             },
             format!("LaunchTriangle_P{}", launch.player_id),
@@ -385,18 +403,11 @@ fn spawn_board(
     }
 
     // 固定机库圆槽（始终展示 4 槽，棋子数量少时仅部分被占用）。
-    for airport_center in [
-        Vec2::new(-260.0, 260.0),
-        Vec2::new(260.0, 260.0),
-        Vec2::new(-260.0, -260.0),
-        Vec2::new(260.0, -260.0),
-    ] {
-        for offset in [
-            Vec2::new(-35.0, 35.0),
-            Vec2::new(35.0, 35.0),
-            Vec2::new(-35.0, -35.0),
-            Vec2::new(35.0, -35.0),
-        ] {
+    for player_id in 1..=4 {
+        let Some(airport_center) = hangar_center_for_player(player_id) else {
+            continue;
+        };
+        for offset in HANGAR_SLOT_OFFSETS {
             spawn_circle_with_border(
                 &mut commands,
                 &mut meshes,
@@ -405,8 +416,8 @@ fn spawn_board(
                 24.5,
                 DrawStyle {
                     fill: Color::WHITE,
-                    border: Color::BLACK,
-                    border_width: 1.0,
+                    border: hangar_pad_outline_color(),
+                    border_width: 1.15,
                     z: BOARD_Z_LAYER + 0.20,
                 },
                 "HangarPad",
@@ -415,7 +426,7 @@ fn spawn_board(
     }
 
     for player in &player_roster.players {
-        if let Some(center) = airport_center_for_player(player.state.player_id) {
+        if let Some(center) = hangar_center_for_player(player.state.player_id) {
             spawn_player_dice_display(
                 &mut commands,
                 &mut meshes,
@@ -504,14 +515,49 @@ fn update_player_dice_displays(
     }
 }
 
-fn airport_center_for_player(player_id: u8) -> Option<Vec2> {
-    match player_id {
-        1 => Some(Vec2::new(-260.0, 260.0)),
-        2 => Some(Vec2::new(260.0, 260.0)),
-        3 => Some(Vec2::new(-260.0, -260.0)),
-        4 => Some(Vec2::new(260.0, -260.0)),
-        _ => None,
+fn board_surface_color() -> Color {
+    Color::srgb(0.965, 0.972, 0.982)
+}
+
+fn board_grid_line_color() -> Color {
+    Color::srgba(0.12, 0.16, 0.22, 0.30)
+}
+
+fn hangar_outline_color() -> Color {
+    Color::srgba(0.10, 0.14, 0.20, 0.22)
+}
+
+fn hangar_pad_outline_color() -> Color {
+    Color::srgba(0.08, 0.12, 0.18, 0.68)
+}
+
+fn is_hangar_background_rect(rect: SvgRect) -> bool {
+    (rect.size.x - 160.0).abs() < 0.001 && (rect.size.y - 160.0).abs() < 0.001
+}
+
+fn visual_rect_geometry(rect: SvgRect) -> VisualRectGeometry {
+    if is_hangar_background_rect(rect) {
+        let inset = 10.0;
+        let outer_direction = Vec2::new(rect.center.x.signum(), rect.center.y.signum());
+        return VisualRectGeometry {
+            center: rect.center + outer_direction * (inset * 0.5),
+            size: rect.size - Vec2::splat(inset),
+        };
     }
+
+    VisualRectGeometry {
+        center: rect.center,
+        size: rect.size,
+    }
+}
+
+#[cfg(test)]
+fn visual_rect_bounds(rect: SvgRect) -> (Vec2, Vec2) {
+    let geometry = visual_rect_geometry(rect);
+    (
+        geometry.center - geometry.size * 0.5,
+        geometry.center + geometry.size * 0.5,
+    )
 }
 
 fn pip_visible_for_roll(roll: u8, slot: DicePipSlot) -> bool {
@@ -1977,14 +2023,55 @@ mod tests {
     }
 
     #[test]
-    fn airport_centers_match_player_quadrants() {
-        assert_eq!(airport_center_for_player(1), Some(Vec2::new(-260.0, 260.0)));
-        assert_eq!(airport_center_for_player(2), Some(Vec2::new(260.0, 260.0)));
+    fn hangar_centers_match_visual_quadrants() {
         assert_eq!(
-            airport_center_for_player(3),
-            Some(Vec2::new(-260.0, -260.0))
+            hangar_center_for_player(1),
+            Some(Vec2::new(-265.104, 265.104))
         );
-        assert_eq!(airport_center_for_player(4), Some(Vec2::new(260.0, -260.0)));
-        assert_eq!(airport_center_for_player(9), None);
+        assert_eq!(
+            hangar_center_for_player(2),
+            Some(Vec2::new(265.317, 265.104))
+        );
+        assert_eq!(
+            hangar_center_for_player(3),
+            Some(Vec2::new(-265.104, -265.104))
+        );
+        assert_eq!(
+            hangar_center_for_player(4),
+            Some(Vec2::new(265.104, -265.104))
+        );
+        assert_eq!(hangar_center_for_player(9), None);
+    }
+
+    #[test]
+    fn hangar_backgrounds_are_visually_inset_from_runway_tiles() {
+        let hangar = svg_rect_at(Vec2::new(-260.104, 260.104));
+        let runway = svg_rect_at(Vec2::new(-300.104, 80.104));
+        let (hangar_min, hangar_max) = visual_rect_bounds(hangar);
+        let (original_min, original_max) = (
+            hangar.center - hangar.size * 0.5,
+            hangar.center + hangar.size * 0.5,
+        );
+
+        assert!(is_hangar_background_rect(hangar));
+        assert!(!is_hangar_background_rect(runway));
+        assert_eq!(
+            visual_rect_geometry(hangar),
+            VisualRectGeometry {
+                center: Vec2::new(-265.104, 265.104),
+                size: Vec2::new(150.0, 150.0)
+            }
+        );
+        assert_eq!(hangar_min.x, original_min.x);
+        assert_eq!(hangar_max.y, original_max.y);
+        assert!((original_max.x - hangar_max.x - 10.0).abs() < 0.001);
+        assert!((hangar_min.y - original_min.y - 10.0).abs() < 0.001);
+        assert_eq!(
+            visual_rect_geometry(runway),
+            VisualRectGeometry {
+                center: runway.center,
+                size: runway.size
+            }
+        );
     }
 }

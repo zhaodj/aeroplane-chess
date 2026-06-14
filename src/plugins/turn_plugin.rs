@@ -22,6 +22,7 @@ use crate::gameplay::turn_flow::{
     finish_turn_without_action, get_pending_action, pressed_selection_key, set_pending_actions,
     set_roll,
 };
+use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
 
@@ -98,9 +99,14 @@ fn execute_action_from_params(
     roll_value: u8,
     params: &mut TurnActionParams,
 ) {
+    let movement_roll_value = roll_value.saturating_add(dash_bonus(
+        &params.skill_roster,
+        params.turn_state.current_player,
+    ));
     execute_action(
         action,
         roll_value,
+        movement_roll_value,
         ActionResources {
             player_roster: &params.player_roster,
             team_roster: &params.team_roster,
@@ -630,9 +636,13 @@ fn execute_swap_on_turn_query(
 fn handle_human_roll_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     game_phase: Res<State<GamePhase>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut params: TurnActionParams,
 ) {
-    if !matches!(game_phase.get(), GamePhase::AwaitDice) || params.match_result.finished {
+    if overlay_state.open
+        || !matches!(game_phase.get(), GamePhase::AwaitDice)
+        || params.match_result.finished
+    {
         return;
     }
 
@@ -719,9 +729,13 @@ fn handle_human_roll_input(
 fn handle_human_action_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     game_phase: Res<State<GamePhase>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut params: TurnActionParams,
 ) {
-    if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || params.match_result.finished {
+    if overlay_state.open
+        || !matches!(game_phase.get(), GamePhase::AwaitPieceSelect)
+        || params.match_result.finished
+    {
         return;
     }
 
@@ -757,13 +771,14 @@ fn handle_human_action_click(
     windows: Query<&Window>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
     game_phase: Res<State<GamePhase>>,
+    overlay_state: Res<SoundSettingsOverlayState>,
     mut params: TurnActionParams,
 ) {
     if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || params.match_result.finished {
         return;
     }
 
-    if !mouse.just_pressed(MouseButton::Left) {
+    if overlay_state.input_captured || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
 
