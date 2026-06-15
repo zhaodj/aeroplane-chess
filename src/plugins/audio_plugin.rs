@@ -1,3 +1,4 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::{
@@ -12,6 +13,7 @@ use web_sys::HtmlAudioElement;
 use crate::gameplay::match_flow::MatchResult;
 use crate::gameplay::skill_flow::SkillRoster;
 use crate::gameplay::turn_flow::TurnState;
+use crate::platform::PointerInputState;
 use crate::states::AppState;
 
 /// 音频插件入口：播放背景音乐，并用短音效反馈掷骰、移动、碰撞、护盾和胜利。
@@ -214,12 +216,13 @@ fn capture_audio_interaction(
     mut audio_interaction: ResMut<AudioInteractionState>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    pointer: Res<PointerInputState>,
 ) {
     if audio_interaction.unlocked {
         return;
     }
 
-    if has_audio_unlock_input(&keyboard, &mouse) {
+    if has_audio_unlock_input(&keyboard, &mouse, &pointer) {
         audio_interaction.unlocked = true;
     }
 }
@@ -227,8 +230,10 @@ fn capture_audio_interaction(
 fn has_audio_unlock_input(
     keyboard: &ButtonInput<KeyCode>,
     mouse: &ButtonInput<MouseButton>,
+    pointer: &PointerInputState,
 ) -> bool {
     keyboard.get_just_pressed().next().is_some()
+        || pointer.just_pressed()
         || mouse.just_pressed(MouseButton::Left)
         || mouse.just_pressed(MouseButton::Right)
         || mouse.just_pressed(MouseButton::Middle)
@@ -269,53 +274,67 @@ fn sync_background_music_volume(audio_settings: Res<AudioSettings>) {
     });
 }
 
-fn play_audio_feedback(
-    mut commands: Commands,
-    audio_assets: Res<GameAudioAssets>,
-    audio_settings: Res<AudioSettings>,
-    audio_interaction: Res<AudioInteractionState>,
-    mut feedback_state: ResMut<AudioFeedbackState>,
-    turn_state: Res<TurnState>,
-    skill_roster: Res<SkillRoster>,
-    match_result: Res<MatchResult>,
-) {
-    if !audio_interaction.unlocked {
+#[derive(SystemParam)]
+struct AudioFeedbackParams<'w> {
+    audio_assets: Res<'w, GameAudioAssets>,
+    audio_settings: Res<'w, AudioSettings>,
+    audio_interaction: Res<'w, AudioInteractionState>,
+    feedback_state: ResMut<'w, AudioFeedbackState>,
+    turn_state: Res<'w, TurnState>,
+    skill_roster: Res<'w, SkillRoster>,
+    match_result: Res<'w, MatchResult>,
+}
+
+fn play_audio_feedback(mut commands: Commands, mut params: AudioFeedbackParams) {
+    if !params.audio_interaction.unlocked {
         return;
     }
 
-    if !match_result.finished {
-        feedback_state.victory_played = false;
-    } else if !feedback_state.victory_played {
+    if !params.match_result.finished {
+        params.feedback_state.victory_played = false;
+    } else if !params.feedback_state.victory_played {
         spawn_sound_effect(
             &mut commands,
-            &audio_assets,
-            &audio_settings,
+            &params.audio_assets,
+            &params.audio_settings,
             SoundEffect::Victory,
         );
-        feedback_state.victory_played = true;
+        params.feedback_state.victory_played = true;
         return;
     }
 
-    if turn_state.last_action != feedback_state.last_action {
-        feedback_state
+    if params.turn_state.last_action != params.feedback_state.last_action {
+        params
+            .feedback_state
             .last_action
-            .clone_from(&turn_state.last_action);
-        if let Some(note) = turn_state.last_action.as_deref()
+            .clone_from(&params.turn_state.last_action);
+        if let Some(note) = params.turn_state.last_action.as_deref()
             && let Some(effect) = classify_feedback_note(note)
         {
-            spawn_sound_effect(&mut commands, &audio_assets, &audio_settings, effect);
+            spawn_sound_effect(
+                &mut commands,
+                &params.audio_assets,
+                &params.audio_settings,
+                effect,
+            );
             return;
         }
     }
 
-    if skill_roster.last_skill_action != feedback_state.last_skill_action {
-        feedback_state
+    if params.skill_roster.last_skill_action != params.feedback_state.last_skill_action {
+        params
+            .feedback_state
             .last_skill_action
-            .clone_from(&skill_roster.last_skill_action);
-        if let Some(note) = skill_roster.last_skill_action.as_deref()
+            .clone_from(&params.skill_roster.last_skill_action);
+        if let Some(note) = params.skill_roster.last_skill_action.as_deref()
             && let Some(effect) = classify_feedback_note(note)
         {
-            spawn_sound_effect(&mut commands, &audio_assets, &audio_settings, effect);
+            spawn_sound_effect(
+                &mut commands,
+                &params.audio_assets,
+                &params.audio_settings,
+                effect,
+            );
         }
     }
 }

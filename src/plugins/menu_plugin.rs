@@ -4,6 +4,7 @@ use crate::data::game_mode::GameMode;
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
+use crate::platform::PointerInputState;
 use crate::plugins::audio_plugin::AudioSettings;
 use crate::states::AppState;
 
@@ -145,6 +146,13 @@ enum SoundSettingsAction {
 struct SoundSettingsOption {
     action: SoundSettingsAction,
 }
+
+type SoundSettingsValueQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static SoundSettingsValueText, &'static mut Text),
+    (With<SoundSettingsValueText>, Without<SoundSettingsText>),
+>;
 
 const MENU_LEFT: f32 = 96.0;
 const MAIN_START_TOP: f32 = 250.0;
@@ -411,13 +419,12 @@ fn spawn_global_sound_panel_button(
 fn update_sound_overlay_input_capture(
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    pointer: Res<PointerInputState>,
 ) {
     overlay_state.input_captured = false;
 
     if overlay_state.open
-        && (mouse.just_pressed(MouseButton::Left)
+        && (pointer.just_pressed()
             || keyboard.just_pressed(KeyCode::Escape)
             || keyboard.just_pressed(KeyCode::Backspace))
     {
@@ -425,13 +432,7 @@ fn update_sound_overlay_input_capture(
         return;
     }
 
-    if !mouse.just_pressed(MouseButton::Left) {
-        return;
-    }
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor) = window.cursor_position() else {
+    let Some(cursor) = pointer.just_pressed_position() else {
         return;
     };
 
@@ -489,18 +490,15 @@ fn handle_global_sound_overlay_input(
 }
 
 fn handle_global_sound_overlay_click(
-    mouse: Res<ButtonInput<MouseButton>>,
+    pointer: Res<PointerInputState>,
     windows: Query<&Window>,
     mut audio_settings: ResMut<AudioSettings>,
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
 ) {
-    if !mouse.just_pressed(MouseButton::Left) {
-        return;
-    }
-    let Ok(window) = windows.single() else {
+    let Some(cursor) = pointer.just_pressed_position() else {
         return;
     };
-    let Some(cursor) = window.cursor_position() else {
+    let Ok(window) = windows.single() else {
         return;
     };
 
@@ -1214,20 +1212,16 @@ fn handle_main_menu_input(
 }
 
 fn handle_main_menu_click(
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    pointer: Res<PointerInputState>,
     mut next_state: ResMut<NextState<AppState>>,
     overlay_state: Res<SoundSettingsOverlayState>,
     start_query: Query<&ClickRect, With<MainMenuStartArea>>,
 ) {
     // 鼠标主操作：点击开始进入配置；声音设置由全局 Audio 入口打开。
-    if overlay_state.input_captured || !mouse.just_pressed(MouseButton::Left) {
+    if overlay_state.input_captured {
         return;
     }
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor) = window.cursor_position() else {
+    let Some(cursor) = pointer.just_pressed_position() else {
         return;
     };
 
@@ -1242,10 +1236,7 @@ fn handle_main_menu_click(
 fn update_sound_settings_text(
     audio_settings: Res<AudioSettings>,
     mut summary_query: Query<&mut Text, (With<SoundSettingsText>, Without<SoundSettingsValueText>)>,
-    mut value_query: Query<
-        (&SoundSettingsValueText, &mut Text),
-        (With<SoundSettingsValueText>, Without<SoundSettingsText>),
-    >,
+    mut value_query: SoundSettingsValueQuery,
 ) {
     if !audio_settings.is_changed() {
         return;
@@ -1273,19 +1264,12 @@ fn handle_sound_settings_input(
 }
 
 fn handle_sound_settings_click(
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    pointer: Res<PointerInputState>,
     mut audio_settings: ResMut<AudioSettings>,
     mut next_state: ResMut<NextState<AppState>>,
     query: Query<(&ClickRect, &SoundSettingsOption)>,
 ) {
-    if !mouse.just_pressed(MouseButton::Left) {
-        return;
-    }
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor) = window.cursor_position() else {
+    let Some(cursor) = pointer.just_pressed_position() else {
         return;
     };
 
@@ -1387,21 +1371,17 @@ fn handle_mode_select_input(
 }
 
 fn handle_mode_select_click(
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    pointer: Res<PointerInputState>,
     mut match_setup: ResMut<MatchSetup>,
     mut next_state: ResMut<NextState<AppState>>,
     overlay_state: Res<SoundSettingsOverlayState>,
     query: Query<(&ClickRect, &ModeSelectOption)>,
 ) {
     // 鼠标主操作：点击命中对应配置项并立即生效。
-    if overlay_state.input_captured || !mouse.just_pressed(MouseButton::Left) {
+    if overlay_state.input_captured {
         return;
     }
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor) = window.cursor_position() else {
+    let Some(cursor) = pointer.just_pressed_position() else {
         return;
     };
 

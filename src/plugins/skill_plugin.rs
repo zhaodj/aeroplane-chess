@@ -12,6 +12,7 @@ use crate::gameplay::skill_flow::{
     sync_turn_skill_usage,
 };
 use crate::gameplay::turn_flow::TurnState;
+use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
@@ -431,8 +432,8 @@ fn handle_human_snipe_key_select(
 
 /// Snipe 目标选择的鼠标分支（点击高亮目标棋子）。
 fn handle_human_snipe_click(
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    pointer: Res<PointerInputState>,
+    device_profile: Res<DeviceProfile>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
     overlay_state: Res<SoundSettingsOverlayState>,
     mut params: SnipeTargetParams,
@@ -442,23 +443,20 @@ fn handle_human_snipe_click(
     {
         return;
     }
-    if overlay_state.input_captured || !mouse.just_pressed(MouseButton::Left) {
-        return;
-    }
-
-    let Ok(window) = windows.single() else {
+    if overlay_state.input_captured || !pointer.just_pressed() {
         return;
     };
-    let Some(cursor_position) = window.cursor_position() else {
+    let Some(pointer_position) = pointer.just_pressed_position() else {
         return;
     };
     let Ok((camera, camera_transform)) = camera_query.single() else {
         return;
     };
-    let Ok(cursor_world) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
+    let Ok(cursor_world) = camera.viewport_to_world_2d(camera_transform, pointer_position) else {
         return;
     };
 
+    let pick_radius = device_profile.piece_pick_radius_world();
     let mut selected_piece_id = None;
     let mut best_distance_sq = f32::MAX;
     for (piece_id, _, _, transform) in &mut params.piece_query {
@@ -474,7 +472,7 @@ fn handle_human_snipe_click(
             .translation
             .truncate()
             .distance_squared(cursor_world);
-        if distance_sq <= 28.0 * 28.0 && distance_sq < best_distance_sq {
+        if distance_sq <= pick_radius * pick_radius && distance_sq < best_distance_sq {
             best_distance_sq = distance_sq;
             selected_piece_id = Some(piece_id.0);
         }

@@ -22,6 +22,7 @@ use crate::gameplay::turn_flow::{
     finish_turn_without_action, get_pending_action, pressed_selection_key, set_pending_actions,
     set_roll,
 };
+use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::{AppState, GamePhase};
@@ -70,6 +71,17 @@ impl TurnUiRequest {
     }
 }
 
+type TurnPieceQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PieceId,
+        &'static HangarSlot,
+        &'static mut PieceState,
+        &'static mut Transform,
+    ),
+>;
+
 #[derive(SystemParam)]
 struct TurnActionParams<'w, 's> {
     input_state: ResMut<'w, TurnInputState>,
@@ -82,16 +94,7 @@ struct TurnActionParams<'w, 's> {
     team_roster: Res<'w, TeamRoster>,
     skill_roster: ResMut<'w, SkillRoster>,
     match_result: ResMut<'w, MatchResult>,
-    piece_query: Query<
-        'w,
-        's,
-        (
-            &'static PieceId,
-            &'static HangarSlot,
-            &'static mut PieceState,
-            &'static mut Transform,
-        ),
-    >,
+    piece_query: TurnPieceQuery<'w, 's>,
 }
 
 fn execute_action_from_params(
@@ -183,11 +186,13 @@ fn drive_ai_turn_loop(
     let current_player = params.turn_state.current_player;
     maybe_arm_dash_for_ai_after_roll(
         current_player,
-        params.match_config.ai_difficulty,
-        roll,
-        params.match_config.launch_rule,
-        &params.board_layout,
-        &params.player_roster,
+        AiDashEvaluation {
+            ai_difficulty: params.match_config.ai_difficulty,
+            roll,
+            launch_rule: params.match_config.launch_rule,
+            board_layout: &params.board_layout,
+            player_roster: &params.player_roster,
+        },
         &mut params.skill_roster,
         &mut params.piece_query,
     );
@@ -365,17 +370,21 @@ fn try_ai_double_dice(
 }
 
 /// AI 在掷骰后评估是否需要临时预备 Dash（仅当存在可移动动作）。
-fn maybe_arm_dash_for_ai_after_roll(
-    current_player: u8,
+struct AiDashEvaluation<'a> {
     ai_difficulty: AiDifficulty,
     roll: DiceRoll,
     launch_rule: LaunchRule,
-    board_layout: &BoardLayout,
-    player_roster: &PlayerRoster,
+    board_layout: &'a BoardLayout,
+    player_roster: &'a PlayerRoster,
+}
+
+fn maybe_arm_dash_for_ai_after_roll(
+    current_player: u8,
+    evaluation: AiDashEvaluation,
     skill_roster: &mut SkillRoster,
-    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    piece_query: &mut TurnPieceQuery,
 ) {
-    if ai_difficulty == AiDifficulty::Easy {
+    if evaluation.ai_difficulty == AiDifficulty::Easy {
         return;
     }
 
@@ -391,11 +400,11 @@ fn maybe_arm_dash_for_ai_after_roll(
 
     let has_movable_action = collect_actions(
         current_player,
-        roll,
+        evaluation.roll,
         0,
-        launch_rule,
-        board_layout,
-        player_roster,
+        evaluation.launch_rule,
+        evaluation.board_layout,
+        evaluation.player_roster,
         piece_query,
     )
     .iter()
@@ -741,12 +750,14 @@ fn handle_human_action_input(
 
     refresh_pending_actions_for_dash(
         &mut params.input_state,
-        &params.turn_state,
-        &params.board_layout,
-        &params.player_roster,
+        DashRefreshContext {
+            turn_state: &params.turn_state,
+            board_layout: &params.board_layout,
+            player_roster: &params.player_roster,
+            skill_roster: &params.skill_roster,
+            launch_rule: params.match_config.launch_rule,
+        },
         &mut params.piece_query,
-        &params.skill_roster,
-        params.match_config.launch_rule,
         &mut params.next_phase,
     );
 
@@ -767,8 +778,8 @@ fn handle_human_action_input(
 
 /// 人类玩家“选棋阶段”鼠标点击处理（点击高亮棋子）。
 fn handle_human_action_click(
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    pointer: Res<PointerInputState>,
+    device_profile: Res<DeviceProfile>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
     game_phase: Res<State<GamePhase>>,
     overlay_state: Res<SoundSettingsOverlayState>,
@@ -778,34 +789,33 @@ fn handle_human_action_click(
         return;
     }
 
-    if overlay_state.input_captured || !mouse.just_pressed(MouseButton::Left) {
-        return;
-    }
-
-    let Ok(window) = windows.single() else {
+    if overlay_state.input_captured || !pointer.just_pressed() {
         return;
     };
-    let Some(cursor_position) = window.cursor_position() else {
+    let Some(pointer_position) = pointer.just_pressed_position() else {
         return;
     };
     let Ok((camera, camera_transform)) = camera_query.single() else {
         return;
     };
-    let Ok(cursor_world) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
+    let Ok(cursor_world) = camera.viewport_to_world_2d(camera_transform, pointer_position) else {
         return;
     };
 
     refresh_pending_actions_for_dash(
         &mut params.input_state,
-        &params.turn_state,
-        &params.board_layout,
-        &params.player_roster,
+        DashRefreshContext {
+            turn_state: &params.turn_state,
+            board_layout: &params.board_layout,
+            player_roster: &params.player_roster,
+            skill_roster: &params.skill_roster,
+            launch_rule: params.match_config.launch_rule,
+        },
         &mut params.piece_query,
-        &params.skill_roster,
-        params.match_config.launch_rule,
         &mut params.next_phase,
     );
 
+    let pick_radius = device_profile.piece_pick_radius_world();
     let mut selected_piece_id = None;
     let mut best_distance_sq = f32::MAX;
     for (piece_id, _, _, transform) in &mut params.piece_query {
@@ -821,7 +831,7 @@ fn handle_human_action_click(
             .translation
             .truncate()
             .distance_squared(cursor_world);
-        if distance_sq <= 28.0 * 28.0 && distance_sq < best_distance_sq {
+        if distance_sq <= pick_radius * pick_radius && distance_sq < best_distance_sq {
             best_distance_sq = distance_sq;
             selected_piece_id = Some(piece_id.0);
         }
@@ -842,28 +852,32 @@ fn handle_human_action_click(
 }
 
 /// Dash 预备后刷新候选动作，确保 UI 与可选列表同步。
+struct DashRefreshContext<'a> {
+    turn_state: &'a TurnState,
+    board_layout: &'a BoardLayout,
+    player_roster: &'a PlayerRoster,
+    skill_roster: &'a SkillRoster,
+    launch_rule: LaunchRule,
+}
+
 fn refresh_pending_actions_for_dash(
     input_state: &mut TurnInputState,
-    turn_state: &TurnState,
-    board_layout: &BoardLayout,
-    player_roster: &PlayerRoster,
-    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-    skill_roster: &SkillRoster,
-    launch_rule: LaunchRule,
+    context: DashRefreshContext,
+    piece_query: &mut TurnPieceQuery,
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
-    let move_bonus = dash_bonus(skill_roster, turn_state.current_player);
+    let move_bonus = dash_bonus(context.skill_roster, context.turn_state.current_player);
     if move_bonus == 0 || input_state.candidate_piece_ids().is_empty() {
         return;
     }
 
     let refreshed_actions = collect_actions(
-        turn_state.current_player,
-        DiceRoll(turn_state.last_roll.unwrap_or_default()),
+        context.turn_state.current_player,
+        DiceRoll(context.turn_state.last_roll.unwrap_or_default()),
         move_bonus,
-        launch_rule,
-        board_layout,
-        player_roster,
+        context.launch_rule,
+        context.board_layout,
+        context.player_roster,
         piece_query,
     );
     if refreshed_actions.is_empty() {
@@ -872,7 +886,7 @@ fn refresh_pending_actions_for_dash(
 
     set_pending_actions(
         input_state,
-        turn_state.last_roll.unwrap_or_default(),
+        context.turn_state.last_roll.unwrap_or_default(),
         refreshed_actions,
         next_phase,
     );
@@ -1133,11 +1147,13 @@ mod tests {
 
         maybe_arm_dash_for_ai_after_roll(
             2,
-            AiDifficulty::Normal,
-            DiceRoll(2),
-            LaunchRule::SixOnly,
-            &board_layout,
-            &player_roster,
+            AiDashEvaluation {
+                ai_difficulty: AiDifficulty::Normal,
+                roll: DiceRoll(2),
+                launch_rule: LaunchRule::SixOnly,
+                board_layout: &board_layout,
+                player_roster: &player_roster,
+            },
             &mut skill_roster,
             &mut query,
         );

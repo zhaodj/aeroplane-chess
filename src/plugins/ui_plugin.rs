@@ -10,6 +10,7 @@ use crate::gameplay::skill_flow::{
     is_legal_shield_target, is_legal_snipe_target, player_skill_state,
 };
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
+use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::PieceId;
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
@@ -248,7 +249,6 @@ const HUD_SKILL_ROW_TOPS: [f32; 5] = [158.0, 182.0, 206.0, 230.0, 254.0];
 const HUD_SKILL_ROW_HEIGHT: f32 = 24.0;
 const HUD_ROLL_BUTTON_TOP: f32 = 286.0;
 const HUD_ROLL_BUTTON_HEIGHT: f32 = 30.0;
-const HUD_COMPACT_WIDTH: f32 = 900.0;
 
 #[derive(Clone, Copy, Default)]
 struct SkillBoardAvailability {
@@ -281,11 +281,10 @@ fn spawn_hud(
     mut commands: Commands,
     mut hud_fold_state: ResMut<HudFoldState>,
     mut event_log: ResMut<HudEventLogState>,
-    windows: Query<&Window>,
+    device_profile: Res<DeviceProfile>,
 ) {
     event_log.entries.clear();
-    let compact_window = windows.single().map(is_compact_window).unwrap_or(false);
-    hud_fold_state.collapsed = compact_window;
+    hud_fold_state.collapsed = device_profile.should_start_hud_collapsed();
     let panel_visibility = if hud_fold_state.collapsed {
         Visibility::Hidden
     } else {
@@ -654,11 +653,20 @@ fn update_hud(
 
 fn handle_hud_toggle(
     keyboard: Res<ButtonInput<KeyCode>>,
+    pointer: Res<PointerInputState>,
+    windows: Query<&Window>,
     overlay_state: Res<SoundSettingsOverlayState>,
     mut hud_fold_state: ResMut<HudFoldState>,
     mut collapsible_query: Query<&mut Visibility, With<HudCollapsible>>,
 ) {
-    if overlay_state.open || !keyboard.just_pressed(KeyCode::Tab) {
+    let pointer_toggled = pointer.just_pressed_position().is_some_and(|position| {
+        windows
+            .single()
+            .map(|window| hud_toggle_rect(window.width()).contains(position))
+            .unwrap_or(false)
+    });
+
+    if overlay_state.open || (!keyboard.just_pressed(KeyCode::Tab) && !pointer_toggled) {
         return;
     }
 
@@ -673,9 +681,30 @@ fn handle_hud_toggle(
     }
 }
 
-fn is_compact_window(window: &Window) -> bool {
-    let window_width = window.width().min(window.physical_width() as f32);
-    window_width < HUD_COMPACT_WIDTH
+#[derive(Clone, Copy)]
+struct ScreenRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl ScreenRect {
+    fn contains(self, point: Vec2) -> bool {
+        point.x >= self.x
+            && point.x <= self.x + self.w
+            && point.y >= self.y
+            && point.y <= self.y + self.h
+    }
+}
+
+fn hud_toggle_rect(window_width: f32) -> ScreenRect {
+    ScreenRect {
+        x: (window_width - 220.0).max(8.0),
+        y: 8.0,
+        w: 212.0,
+        h: 36.0,
+    }
 }
 
 fn candidate_piece_hint(
@@ -762,7 +791,7 @@ fn skill_button_color(ready: bool, can_use_skill: bool) -> Color {
 }
 
 fn handle_skill_panel_click(
-    mouse: Res<ButtonInput<MouseButton>>,
+    pointer: Res<PointerInputState>,
     windows: Query<&Window>,
     overlay_state: Res<SoundSettingsOverlayState>,
     mut params: SkillPanelClickParams,
@@ -774,10 +803,12 @@ fn handle_skill_panel_click(
             params.game_phase.get(),
             GamePhase::AwaitDice | GamePhase::AwaitPieceSelect
         )
-        || !mouse.just_pressed(MouseButton::Left)
     {
         return;
     }
+    let Some(cursor) = pointer.just_pressed_position() else {
+        return;
+    };
 
     let Some(current_player) = params
         .player_roster
@@ -792,9 +823,6 @@ fn handle_skill_panel_click(
     }
 
     let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor) = window.cursor_position() else {
         return;
     };
     let (panel_left, panel_right) = hud_skill_panel_bounds(window.width());

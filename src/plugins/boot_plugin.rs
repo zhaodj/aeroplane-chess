@@ -5,6 +5,7 @@ use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
+use crate::platform::DeviceProfile;
 use crate::states::AppState;
 
 /// 启动插件：初始化相机与默认 MatchSetup，并跳转主菜单。
@@ -22,10 +23,6 @@ impl Plugin for BootPlugin {
 }
 
 const BOARD_WORLD_SIZE: f32 = 683.0;
-const BOARD_SCREEN_PADDING: f32 = 24.0;
-const HUD_RESERVED_WIDTH: f32 = 308.0;
-const HUD_COMPACT_WIDTH: f32 = 900.0;
-
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
     commands.insert_resource(MatchSetup {
@@ -55,6 +52,7 @@ fn advance_to_main_menu(mut next_state: ResMut<NextState<AppState>>) {
 
 fn fit_in_game_camera(
     windows: Query<&Window>,
+    device_profile: Res<DeviceProfile>,
     mut camera_query: Query<(&mut Transform, &mut Projection), With<Camera>>,
 ) {
     let Ok(window) = windows.single() else {
@@ -62,12 +60,12 @@ fn fit_in_game_camera(
     };
     let window_width = window.width().max(1.0);
     let window_height = window.height().max(1.0);
-    let compact = window_width < HUD_COMPACT_WIDTH;
-    let reserved_width = if compact { 0.0 } else { HUD_RESERVED_WIDTH };
+    let reserved_width = device_profile.hud_reserved_width();
     let board_area_width = (window_width - reserved_width).max(240.0);
-    let target_pixels = (board_area_width.min(window_height) - BOARD_SCREEN_PADDING).max(240.0);
+    let target_pixels =
+        (board_area_width.min(window_height) - device_profile.board_screen_padding()).max(240.0);
     let camera_scale = (BOARD_WORLD_SIZE / target_pixels).max(1.0);
-    let board_screen_center_x = if compact {
+    let board_screen_center_x = if reserved_width <= f32::EPSILON {
         window_width * 0.5
     } else {
         board_area_width * 0.5

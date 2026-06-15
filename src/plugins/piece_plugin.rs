@@ -1,3 +1,4 @@
+use bevy::ecs::system::SystemParam;
 use bevy::{prelude::*, sprite::Anchor};
 
 use crate::constants::BOARD_Z_LAYER;
@@ -147,6 +148,22 @@ type ShieldBadgeTextQuery<'w, 's> = Query<
     ),
     (Without<PieceId>, Without<PieceShieldBadge>),
 >;
+
+#[derive(SystemParam)]
+struct ShieldBadgeData<'w, 's> {
+    board_layout: Res<'w, BoardLayout>,
+    player_roster: Res<'w, PlayerRoster>,
+    skill_roster: Res<'w, SkillRoster>,
+    turn_state: Res<'w, TurnState>,
+    input_state: Res<'w, TurnInputState>,
+    piece_query: PieceTransformQuery<'w, 's>,
+}
+
+#[derive(SystemParam)]
+struct ShieldBadgeNodes<'w, 's> {
+    badge_query: ShieldBadgeQuery<'w, 's>,
+    badge_text_query: ShieldBadgeTextQuery<'w, 's>,
+}
 
 type PieceVisualQuery<'w, 's> = Query<
     'w,
@@ -781,18 +798,11 @@ fn stack_visual_local_translation(
     )
 }
 
-fn update_piece_shield_badges(
-    board_layout: Res<BoardLayout>,
-    player_roster: Res<PlayerRoster>,
-    skill_roster: Res<SkillRoster>,
-    turn_state: Res<TurnState>,
-    input_state: Res<TurnInputState>,
-    piece_query: PieceTransformQuery,
-    mut badge_query: ShieldBadgeQuery,
-    mut badge_text_query: ShieldBadgeTextQuery,
-) {
-    let visual_infos = piece_visual_infos(&piece_query, &board_layout, &player_roster);
-    let pieces = piece_query
+fn update_piece_shield_badges(data: ShieldBadgeData, mut nodes: ShieldBadgeNodes) {
+    let visual_infos =
+        piece_visual_infos(&data.piece_query, &data.board_layout, &data.player_roster);
+    let pieces = data
+        .piece_query
         .iter()
         .map(|(piece_id, piece_state, transform)| {
             (
@@ -803,9 +813,9 @@ fn update_piece_shield_badges(
                     movement_buff_bonus_for_piece(
                         piece_id.0,
                         piece_state,
-                        &turn_state,
-                        &input_state,
-                        &skill_roster,
+                        &data.turn_state,
+                        &data.input_state,
+                        &data.skill_roster,
                     ),
                 ),
                 visual_infos
@@ -817,7 +827,7 @@ fn update_piece_shield_badges(
         })
         .collect::<Vec<_>>();
 
-    for (badge, mut sprite, mut transform, mut visibility) in &mut badge_query {
+    for (badge, mut sprite, mut transform, mut visibility) in &mut nodes.badge_query {
         let Some((_, shield_info, translation)) = pieces
             .iter()
             .find(|(piece_id, _, _)| *piece_id == badge.piece_id)
@@ -840,7 +850,7 @@ fn update_piece_shield_badges(
     }
 
     for (badge_text, mut text, mut text_color, mut transform, mut visibility) in
-        &mut badge_text_query
+        &mut nodes.badge_text_query
     {
         let Some((_, shield_info, translation)) = pieces
             .iter()

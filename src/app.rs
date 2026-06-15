@@ -1,29 +1,29 @@
 use bevy::prelude::*;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use bevy::winit::WinitSettings;
 
-use crate::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::platform::{self, PlatformPlugin};
 use crate::plugins::AeroplaneChessPlugins;
 use crate::states::{AppState, GamePhase};
 
 pub fn run() {
     let default_plugins = DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "Aeroplane Chess".into(),
-            resolution: (WINDOW_WIDTH, WINDOW_HEIGHT).into(),
-            resizable: true,
-            canvas: Some("canvas#bevy".into()),
-            fit_canvas_to_parent: true,
-            ..default()
-        }),
+        primary_window: Some(platform::primary_window()),
         ..default()
     });
     #[cfg(target_arch = "wasm32")]
     let default_plugins = default_plugins.disable::<bevy::audio::AudioPlugin>();
 
-    App::new()
-        .insert_resource(ClearColor(Color::srgb(0.92, 0.95, 1.0)))
+    let mut app = App::new();
+    app.insert_resource(ClearColor(Color::srgb(0.92, 0.95, 1.0)))
         .add_plugins(default_plugins)
+        .add_plugins(PlatformPlugin)
         .init_state::<AppState>()
         .init_state::<GamePhase>()
-        .add_plugins(AeroplaneChessPlugins)
-        .run();
+        .add_plugins(AeroplaneChessPlugins);
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    app.insert_resource(WinitSettings::mobile());
+
+    app.run();
 }
