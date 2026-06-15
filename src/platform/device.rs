@@ -127,7 +127,7 @@ impl DeviceProfile {
 }
 
 pub fn primary_window() -> Window {
-    let window = Window {
+    let mut window = Window {
         title: "Aeroplane Chess".into(),
         resolution: (WINDOW_WIDTH, WINDOW_HEIGHT).into(),
         resizable: true,
@@ -136,16 +136,18 @@ pub fn primary_window() -> Window {
         ..default()
     };
 
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        let mut window = window;
-        window.resizable = false;
-        window.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Primary);
-        return window;
-    }
-
+    configure_primary_window(&mut window);
     window
 }
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn configure_primary_window(window: &mut Window) {
+    window.resizable = false;
+    window.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Primary);
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn configure_primary_window(_window: &mut Window) {}
 
 #[cfg(target_arch = "wasm32")]
 fn canvas_selector() -> Option<String> {

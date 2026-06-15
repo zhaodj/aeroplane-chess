@@ -6,6 +6,33 @@ ANDROID_DIR="${ROOT_DIR}/platforms/android"
 APP_DIR="${ANDROID_DIR}/app"
 PROFILE="${1:-debug}"
 ABI="${ANDROID_ABI:-arm64-v8a}"
+DEFAULT_ANDROID_SDK_ROOT="${HOME}/Library/Android/sdk"
+DEFAULT_NDK_VERSION="26.1.10909125"
+DEFAULT_JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+HOMEBREW_GRADLE="/opt/homebrew/opt/gradle@8/bin/gradle"
+
+if [ -z "${ANDROID_SDK_ROOT:-}" ] && [ -d "${DEFAULT_ANDROID_SDK_ROOT}" ]; then
+  export ANDROID_SDK_ROOT="${DEFAULT_ANDROID_SDK_ROOT}"
+fi
+
+if [ -n "${ANDROID_SDK_ROOT:-}" ]; then
+  export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+fi
+
+if [ -z "${ANDROID_NDK_ROOT:-}" ] && [ -d "${ANDROID_SDK_ROOT:-}/ndk/${DEFAULT_NDK_VERSION}" ]; then
+  export ANDROID_NDK_ROOT="${ANDROID_SDK_ROOT}/ndk/${DEFAULT_NDK_VERSION}"
+fi
+
+if [ -n "${ANDROID_NDK_ROOT:-}" ]; then
+  export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT}}"
+  if [ -d "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/darwin-x86_64/bin" ]; then
+    export PATH="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/darwin-x86_64/bin:${PATH}"
+  fi
+fi
+
+if [ -d "${DEFAULT_JAVA_HOME}" ]; then
+  export JAVA_HOME="${DEFAULT_JAVA_HOME}"
+fi
 
 case "${ABI}" in
   arm64-v8a)
@@ -19,11 +46,11 @@ esac
 
 case "${PROFILE}" in
   debug)
-    CARGO_PROFILE_ARGS=()
+    CARGO_BUILD_ARGS=(build --lib)
     GRADLE_TASK="assembleDebug"
     ;;
   release)
-    CARGO_PROFILE_ARGS=(--release)
+    CARGO_BUILD_ARGS=(build --lib --release)
     GRADLE_TASK="assembleRelease"
     ;;
   *)
@@ -33,6 +60,7 @@ case "${PROFILE}" in
 esac
 
 MISSING=0
+GRADLE_CMD=""
 
 if ! command -v cargo-ndk >/dev/null 2>&1; then
   echo "error: cargo-ndk not found."
@@ -50,7 +78,15 @@ if [ -z "${ANDROID_NDK_ROOT:-}" ] || [ ! -d "${ANDROID_NDK_ROOT:-}" ]; then
   MISSING=1
 fi
 
-if [ ! -x "${ANDROID_DIR}/gradlew" ] && ! command -v gradle >/dev/null 2>&1; then
+if [ -x "${ANDROID_DIR}/gradlew" ]; then
+  GRADLE_CMD="${ANDROID_DIR}/gradlew"
+elif command -v gradle >/dev/null 2>&1; then
+  GRADLE_CMD="$(command -v gradle)"
+elif [ -x "${HOMEBREW_GRADLE}" ]; then
+  GRADLE_CMD="${HOMEBREW_GRADLE}"
+fi
+
+if [ -z "${GRADLE_CMD}" ]; then
   echo "error: Gradle not found. Install Android Studio/Gradle or add a Gradle wrapper in ${ANDROID_DIR}."
   MISSING=1
 fi
@@ -66,16 +102,9 @@ echo "[1/2] building Rust shared library for ${ABI}..."
 cargo ndk \
   -t "${ABI}" \
   -o "${APP_DIR}/src/main/jniLibs" \
-  build \
-  --lib \
-  "${CARGO_PROFILE_ARGS[@]}"
+  "${CARGO_BUILD_ARGS[@]}"
 
 pushd "${ANDROID_DIR}" >/dev/null
-if [ -x "./gradlew" ]; then
-  GRADLE_CMD="./gradlew"
-else
-  GRADLE_CMD="gradle"
-fi
 
 echo "[2/2] assembling Android APK (${PROFILE})..."
 "${GRADLE_CMD}" "${GRADLE_TASK}"

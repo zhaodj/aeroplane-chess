@@ -4,15 +4,29 @@
 
 ## 前置
 
-1. 安装 Android Studio，并确保 `ANDROID_SDK_ROOT` 指向 SDK 目录。
-2. 安装 NDK Side by side，并设置 `ANDROID_NDK_ROOT` 指向实际 NDK 目录。
-3. 安装构建工具：
+本机已安装并配置：
+
+- Android SDK：`~/Library/Android/sdk`
+- SDK Platform：`platforms;android-34`
+- Build Tools：`build-tools;34.0.0`
+- NDK：`ndk;26.1.10909125`
+- CMake：`cmake;3.22.1`
+- Platform Tools：`platform-tools`
+- Emulator：`emulator`
+- AVD：`aeroplane_tablet_api34`
+- System Image：`system-images;android-34;google_apis;arm64-v8a`
+- JDK：Homebrew `openjdk@17`
+- Gradle：Homebrew `gradle@8`
+- Rust Android target：`aarch64-linux-android`
+- Rust 构建工具：`cargo-ndk`
+
+新机器需要安装 Android Studio 或 Android command-line tools，并确保 `ANDROID_SDK_ROOT`、`ANDROID_NDK_ROOT` 指向实际目录。还需要安装构建工具：
 
 ```bash
 cargo install cargo-ndk
 ```
 
-如果 `platforms/android/` 下没有 Gradle wrapper，需要系统里有 `gradle` 命令，或用 Android Studio 打开该目录构建。
+如果 `platforms/android/` 下没有 Gradle wrapper，需要系统里有 `gradle` 命令，或安装 Homebrew `gradle@8`。当前脚本会自动识别 `/opt/homebrew/opt/gradle@8/bin/gradle`。
 
 ## 构建
 
@@ -30,6 +44,26 @@ Release 包：
 
 ```text
 platforms/android/app/build/outputs/apk/
+```
+
+## 模拟器测试
+
+启动本机 Pixel Tablet AVD：
+
+```bash
+emulator -avd aeroplane_tablet_api34
+```
+
+安装 debug APK：
+
+```bash
+adb install -r platforms/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+查看已连接设备：
+
+```bash
+adb devices
 ```
 
 ## 设备目标

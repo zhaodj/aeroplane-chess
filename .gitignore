@@ -1,3 +1,10 @@
 /target
 /dist
 .DS_Store
+
+# Android build outputs
+/platforms/android/.gradle/
+/platforms/android/build/
+/platforms/android/app/build/
+/platforms/android/app/.cxx/
+/platforms/android/app/src/main/jniLibs/
