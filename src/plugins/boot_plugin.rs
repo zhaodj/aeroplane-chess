@@ -60,23 +60,46 @@ fn fit_in_game_camera(
     };
     let window_width = window.width().max(1.0);
     let window_height = window.height().max(1.0);
-    let reserved_width = device_profile.hud_reserved_width();
-    let board_area_width = (window_width - reserved_width).max(240.0);
-    let target_pixels =
-        (board_area_width.min(window_height) - device_profile.board_screen_padding()).max(240.0);
-    let camera_scale = (BOARD_WORLD_SIZE / target_pixels).max(1.0);
-    let board_screen_center_x = if reserved_width <= f32::EPSILON {
-        window_width * 0.5
-    } else {
-        board_area_width * 0.5
-    };
-    let camera_x = (window_width * 0.5 - board_screen_center_x) * camera_scale;
+    let camera_scale = centered_board_camera_scale(window_width, window_height, *device_profile);
 
     for (mut transform, mut projection) in &mut camera_query {
         if let Projection::Orthographic(orthographic) = &mut *projection {
             orthographic.scale = camera_scale;
-            transform.translation.x = camera_x;
+            transform.translation.x = 0.0;
             transform.translation.y = 0.0;
         }
+    }
+}
+
+fn centered_board_camera_scale(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> f32 {
+    let target_pixels =
+        (window_width.min(window_height) - device_profile.board_screen_padding()).max(240.0);
+    (BOARD_WORLD_SIZE / target_pixels).max(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn centered_board_camera_ignores_hud_reservation() {
+        let profile = DeviceProfile::from_window_size(1280.0, 720.0);
+        let scale = centered_board_camera_scale(1280.0, 720.0, profile);
+        let expected_target = 720.0 - profile.board_screen_padding();
+
+        assert!((scale - (BOARD_WORLD_SIZE / expected_target).max(1.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn centered_board_camera_uses_short_side_on_tablet() {
+        let profile = DeviceProfile::from_window_size(2560.0, 1600.0);
+        let scale = centered_board_camera_scale(2560.0, 1600.0, profile);
+        let expected_target = 1600.0 - profile.board_screen_padding();
+
+        assert!((scale - (BOARD_WORLD_SIZE / expected_target).max(1.0)).abs() < f32::EPSILON);
     }
 }

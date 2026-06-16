@@ -15,6 +15,7 @@ use crate::gameplay::turn_flow::TurnState;
 use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
+use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
 use crate::states::{AppState, GamePhase};
 
 /// 技能插件：处理技能输入、目标选择与技能效果执行。
@@ -434,8 +435,11 @@ fn handle_human_snipe_key_select(
 fn handle_human_snipe_click(
     pointer: Res<PointerInputState>,
     device_profile: Res<DeviceProfile>,
+    windows: Query<&Window>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
     overlay_state: Res<SoundSettingsOverlayState>,
+    player_roster: Res<PlayerRoster>,
+    hud_state: Res<PlayerHudState>,
     mut params: SnipeTargetParams,
 ) {
     if !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
@@ -449,6 +453,18 @@ fn handle_human_snipe_click(
     let Some(pointer_position) = pointer.just_pressed_position() else {
         return;
     };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    if player_hud_point_is_interactive(
+        pointer_position,
+        window,
+        *device_profile,
+        &player_roster,
+        &hud_state,
+    ) {
+        return;
+    }
     let Ok((camera, camera_transform)) = camera_query.single() else {
         return;
     };

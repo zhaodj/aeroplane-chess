@@ -29,6 +29,7 @@ impl Plugin for MenuPlugin {
             .add_systems(
                 Update,
                 (
+                    update_main_menu_layout.run_if(in_state(AppState::MainMenu)),
                     handle_main_menu_input.run_if(in_state(AppState::MainMenu)),
                     handle_main_menu_click.run_if(in_state(AppState::MainMenu)),
                     update_mode_select_text.run_if(in_state(AppState::ModeSelect)),
@@ -57,12 +58,6 @@ struct MenuEntity;
 /// 常驻声音入口实体。
 struct GlobalSoundEntry;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GlobalSoundEntryAnchor {
-    Left,
-    Right,
-}
-
 #[derive(Component)]
 /// 全局声音弹窗实体。
 struct GlobalSoundModal;
@@ -74,6 +69,14 @@ struct GlobalSoundEntity;
 #[derive(Component)]
 /// 主菜单开始按钮点击区域标记。
 struct MainMenuStartArea;
+
+#[derive(Component)]
+/// 主菜单标题节点标记。
+struct MainMenuTitleNode;
+
+#[derive(Component)]
+/// 主菜单开始按钮视觉节点标记。
+struct MainMenuStartButton;
 
 #[derive(Component)]
 /// 声音设置页摘要文本节点。
@@ -161,7 +164,9 @@ type SoundSettingsValueQuery<'w, 's> = Query<
 >;
 
 const MENU_LEFT: f32 = 96.0;
-const MAIN_START_TOP: f32 = 250.0;
+const MAIN_TITLE_WIDTH: f32 = 620.0;
+const MAIN_MENU_BLOCK_HEIGHT: f32 = 204.0;
+const MAIN_START_TOP_IN_BLOCK: f32 = 122.0;
 const MAIN_START_WIDTH: f32 = 360.0;
 const MAIN_START_HEIGHT: f32 = 62.0;
 const MAIN_BUTTON_GAP: f32 = 22.0;
@@ -203,6 +208,10 @@ const CONTROL_ROW_GAP: f32 = 44.0;
 const BOTTOM_ROW_TOP: f32 = 646.0;
 const COLOR_SWATCH_W: f32 = 54.0;
 const COLOR_SWATCH_H: f32 = 32.0;
+const MODE_LAYOUT_BASE_LEFT: f32 = MENU_LEFT;
+const MODE_LAYOUT_BASE_TOP: f32 = 22.0;
+const MODE_LAYOUT_WIDTH: f32 = 760.0;
+const MODE_LAYOUT_HEIGHT: f32 = BOTTOM_ROW_TOP + OPTION_H + 6.0 - MODE_LAYOUT_BASE_TOP;
 
 fn spawn_global_sound_overlay(mut commands: Commands) {
     commands
@@ -424,7 +433,6 @@ fn spawn_global_sound_panel_button(
 
 fn update_sound_overlay_input_capture(
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
-    app_state: Res<State<AppState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     pointer: Res<PointerInputState>,
     windows: Query<&Window>,
@@ -447,8 +455,7 @@ fn update_sound_overlay_input_capture(
         return;
     };
 
-    overlay_state.input_captured =
-        global_sound_entry_rect(window, app_state.get()).contains(cursor);
+    overlay_state.input_captured = global_sound_entry_rect(window).contains(cursor);
 }
 
 fn update_global_sound_overlay(
@@ -468,9 +475,8 @@ fn update_global_sound_overlay(
     } else {
         Visibility::Hidden
     };
-    let entry_anchor = global_sound_entry_anchor(app_state.get());
     for (mut node, mut visibility) in &mut entry_query {
-        apply_global_sound_entry_anchor(&mut node, entry_anchor);
+        apply_global_sound_entry_position(&mut node);
         *visibility = entry_visibility;
     }
 
@@ -508,7 +514,6 @@ fn handle_global_sound_overlay_input(
 
 fn handle_global_sound_overlay_click(
     pointer: Res<PointerInputState>,
-    app_state: Res<State<AppState>>,
     windows: Query<&Window>,
     mut audio_settings: ResMut<AudioSettings>,
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
@@ -532,7 +537,7 @@ fn handle_global_sound_overlay_click(
         return;
     }
 
-    if global_sound_entry_rect(window, app_state.get()).contains(cursor) {
+    if global_sound_entry_rect(window).contains(cursor) {
         overlay_state.open = true;
     }
 }
@@ -551,39 +556,16 @@ fn apply_global_sound_action(
     }
 }
 
-fn global_sound_entry_anchor(app_state: &AppState) -> GlobalSoundEntryAnchor {
-    if matches!(app_state, AppState::InGame) {
-        GlobalSoundEntryAnchor::Left
-    } else {
-        GlobalSoundEntryAnchor::Right
-    }
-}
-
-fn apply_global_sound_entry_anchor(node: &mut Node, anchor: GlobalSoundEntryAnchor) {
-    match anchor {
-        GlobalSoundEntryAnchor::Left => {
-            node.left = Val::Px(GLOBAL_SOUND_ENTRY_LEFT);
-            node.right = Val::Auto;
-        }
-        GlobalSoundEntryAnchor::Right => {
-            node.left = Val::Auto;
-            node.right = Val::Px(GLOBAL_SOUND_ENTRY_LEFT);
-        }
-    }
+fn apply_global_sound_entry_position(node: &mut Node) {
+    node.left = Val::Auto;
+    node.right = Val::Px(GLOBAL_SOUND_ENTRY_LEFT);
     node.top = Val::Px(GLOBAL_SOUND_ENTRY_TOP);
 }
 
-fn global_sound_entry_rect(window: &Window, app_state: &AppState) -> ClickRect {
-    let x = match global_sound_entry_anchor(app_state) {
-        GlobalSoundEntryAnchor::Left => GLOBAL_SOUND_ENTRY_LEFT,
-        GlobalSoundEntryAnchor::Right => {
-            (window.width() - GLOBAL_SOUND_ENTRY_W - GLOBAL_SOUND_ENTRY_LEFT)
-                .max(GLOBAL_SOUND_ENTRY_LEFT)
-        }
-    };
-
+fn global_sound_entry_rect(window: &Window) -> ClickRect {
     ClickRect {
-        x,
+        x: (window.width() - GLOBAL_SOUND_ENTRY_W - GLOBAL_SOUND_ENTRY_LEFT)
+            .max(GLOBAL_SOUND_ENTRY_LEFT),
         y: GLOBAL_SOUND_ENTRY_TOP,
         w: GLOBAL_SOUND_ENTRY_W,
         h: GLOBAL_SOUND_ENTRY_H,
@@ -656,10 +638,13 @@ fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettings
 }
 
 fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
-    // 主菜单：标题 + 开始与声音设置入口。
-    let window_width = windows.single().map(Window::width).unwrap_or(1280.0);
-    let title_left = ((window_width - 520.0) * 0.5).max(MENU_LEFT);
-    let start_rect = main_menu_start_rect(window_width);
+    // 主菜单：标题 + 开始按钮按当前窗口居中。
+    let (window_width, window_height) = windows
+        .single()
+        .map(|window| (window.width(), window.height()))
+        .unwrap_or((1280.0, 720.0));
+    let title_rect = main_menu_title_rect(window_width, window_height);
+    let start_rect = main_menu_start_rect(window_width, window_height);
 
     commands.spawn((
         Text::new("Aeroplane Chess"),
@@ -668,17 +653,20 @@ fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        TextLayout::new_with_justify(Justify::Center),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(130.0),
-            left: Val::Px(title_left),
+            top: Val::Px(title_rect.y),
+            left: Val::Px(title_rect.x),
+            width: Val::Px(title_rect.w),
             ..default()
         },
         Name::new("MainMenuTitle"),
+        MainMenuTitleNode,
         MenuEntity,
     ));
 
-    spawn_box_with_label(
+    let start_button = spawn_box_with_label(
         &mut commands,
         start_rect,
         Color::srgba(0.42, 0.61, 0.88, 0.30),
@@ -686,6 +674,7 @@ fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
         30.0,
         None,
     );
+    commands.entity(start_button).insert(MainMenuStartButton);
 
     commands.spawn((
         MainMenuStartArea,
@@ -695,12 +684,101 @@ fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
     ));
 }
 
-fn main_menu_start_rect(window_width: f32) -> ClickRect {
+fn main_menu_title_rect(window_width: f32, window_height: f32) -> ClickRect {
+    let width = MAIN_TITLE_WIDTH.min((window_width - 32.0).max(280.0));
     ClickRect {
-        x: ((window_width - MAIN_START_WIDTH) * 0.5).max(MENU_LEFT),
-        y: MAIN_START_TOP,
-        w: MAIN_START_WIDTH,
+        x: centered_axis(window_width, width, 16.0),
+        y: main_menu_block_top(window_height),
+        w: width,
+        h: 72.0,
+    }
+}
+
+fn main_menu_start_rect(window_width: f32, window_height: f32) -> ClickRect {
+    let width = MAIN_START_WIDTH.min((window_width - 32.0).max(240.0));
+    ClickRect {
+        x: centered_axis(window_width, width, 16.0),
+        y: main_menu_block_top(window_height) + MAIN_START_TOP_IN_BLOCK,
+        w: width,
         h: MAIN_START_HEIGHT,
+    }
+}
+
+fn main_menu_block_top(window_height: f32) -> f32 {
+    centered_axis(
+        window_height,
+        MAIN_MENU_BLOCK_HEIGHT,
+        GLOBAL_SOUND_ENTRY_TOP + GLOBAL_SOUND_ENTRY_H + 24.0,
+    )
+}
+
+fn centered_axis(container: f32, item: f32, min_margin: f32) -> f32 {
+    if container <= item + min_margin * 2.0 {
+        min_margin
+    } else {
+        (container - item) * 0.5
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ModeSelectLayout {
+    left: f32,
+    top: f32,
+}
+
+impl ModeSelectLayout {
+    fn rect(self, rect: ClickRect) -> ClickRect {
+        ClickRect {
+            x: self.x(rect.x),
+            y: self.y(rect.y),
+            ..rect
+        }
+    }
+
+    fn x(self, x: f32) -> f32 {
+        self.left + x - MODE_LAYOUT_BASE_LEFT
+    }
+
+    fn y(self, y: f32) -> f32 {
+        self.top + y - MODE_LAYOUT_BASE_TOP
+    }
+}
+
+fn mode_select_layout(window_width: f32, window_height: f32) -> ModeSelectLayout {
+    ModeSelectLayout {
+        left: centered_axis(window_width, MODE_LAYOUT_WIDTH, 16.0),
+        top: centered_axis(window_height, MODE_LAYOUT_HEIGHT, 16.0),
+    }
+}
+
+fn update_main_menu_layout(
+    windows: Query<&Window>,
+    mut title_query: Query<&mut Node, (With<MainMenuTitleNode>, Without<MainMenuStartButton>)>,
+    mut start_button_query: Query<
+        &mut Node,
+        (With<MainMenuStartButton>, Without<MainMenuTitleNode>),
+    >,
+    mut start_area_query: Query<&mut ClickRect, With<MainMenuStartArea>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let title_rect = main_menu_title_rect(window.width(), window.height());
+    let start_rect = main_menu_start_rect(window.width(), window.height());
+
+    for mut node in &mut title_query {
+        node.left = Val::Px(title_rect.x);
+        node.top = Val::Px(title_rect.y);
+        node.width = Val::Px(title_rect.w);
+    }
+    for mut node in &mut start_button_query {
+        node.left = Val::Px(start_rect.x);
+        node.top = Val::Px(start_rect.y);
+        node.width = Val::Px(start_rect.w);
+        node.height = Val::Px(start_rect.h);
+    }
+    for mut rect in &mut start_area_query {
+        *rect = start_rect;
     }
 }
 
@@ -847,8 +925,17 @@ fn spawn_sound_row(
     );
 }
 
-fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
+fn spawn_mode_select(
+    mut commands: Commands,
+    match_setup: Res<MatchSetup>,
+    windows: Query<&Window>,
+) {
     // 对局配置页：按“模式/颜色/棋子数/人机控制/开始返回”分区渲染。
+    let (window_width, window_height) = windows
+        .single()
+        .map(|window| (window.width(), window.height()))
+        .unwrap_or((1280.0, 720.0));
+    let layout = mode_select_layout(window_width, window_height);
     commands.spawn((
         Text::new(mode_select_content(&match_setup)),
         TextFont {
@@ -859,8 +946,8 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
         TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(22.0),
-            left: Val::Px(MENU_LEFT),
+            top: Val::Px(layout.y(22.0)),
+            left: Val::Px(layout.x(MENU_LEFT)),
             width: Val::Px(760.0),
             ..default()
         },
@@ -869,28 +956,28 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
         MenuEntity,
     ));
 
-    spawn_section_label(&mut commands, "Mode", MODE_ROW_TOP + 7.0);
+    spawn_section_label(&mut commands, layout, "Mode", MODE_ROW_TOP + 7.0);
     spawn_option(
         &mut commands,
         ModeSelectAction::SetMode(GameMode::OneVsOne),
-        ClickRect {
+        layout.rect(ClickRect {
             x: OPTION_LEFT,
             y: MODE_ROW_TOP,
             w: OPTION_W,
             h: OPTION_H,
-        },
+        }),
         "1v1",
         Color::srgba(0.53, 0.77, 0.96, 0.26),
     );
     spawn_option(
         &mut commands,
         ModeSelectAction::SetMode(GameMode::TwoVsTwo),
-        ClickRect {
+        layout.rect(ClickRect {
             x: OPTION_LEFT + OPTION_W + OPTION_GAP,
             y: MODE_ROW_TOP,
             w: OPTION_W,
             h: OPTION_H,
-        },
+        }),
         "2v2",
         Color::srgba(0.53, 0.77, 0.96, 0.26),
     );
@@ -899,6 +986,7 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
         let row_top = COLOR_ROW_START_TOP + player_index as f32 * COLOR_ROW_GAP;
         spawn_section_label(
             &mut commands,
+            layout,
             &format!("P{} Color", player_index + 1),
             row_top + 5.0,
         );
@@ -910,46 +998,56 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
                     player_index,
                     color: *choice,
                 },
-                ClickRect {
+                layout.rect(ClickRect {
                     x,
                     y: row_top,
                     w: COLOR_SWATCH_W,
                     h: COLOR_SWATCH_H,
-                },
+                }),
                 "",
                 choice.to_color(),
             );
         }
     }
 
-    spawn_section_label(&mut commands, "Pieces / Player", PIECES_ROW_TOP + 7.0);
+    spawn_section_label(
+        &mut commands,
+        layout,
+        "Pieces / Player",
+        PIECES_ROW_TOP + 7.0,
+    );
     for pieces in 1..=4u8 {
         let x = OPTION_LEFT + (pieces as f32 - 1.0) * (OPTION_W * 0.7 + OPTION_GAP);
         spawn_option(
             &mut commands,
             ModeSelectAction::SetPieces(pieces),
-            ClickRect {
+            layout.rect(ClickRect {
                 x,
                 y: PIECES_ROW_TOP,
                 w: OPTION_W * 0.7,
                 h: OPTION_H,
-            },
+            }),
             &pieces.to_string(),
             Color::srgba(0.53, 0.77, 0.96, 0.26),
         );
     }
 
-    spawn_section_label(&mut commands, "Launch Rule", LAUNCH_RULE_ROW_TOP + 7.0);
+    spawn_section_label(
+        &mut commands,
+        layout,
+        "Launch Rule",
+        LAUNCH_RULE_ROW_TOP + 7.0,
+    );
     for (rule_index, launch_rule) in LaunchRule::ALL.iter().enumerate() {
         spawn_option(
             &mut commands,
             ModeSelectAction::SetLaunchRule(*launch_rule),
-            ClickRect {
+            layout.rect(ClickRect {
                 x: OPTION_LEFT + rule_index as f32 * (OPTION_W + OPTION_GAP),
                 y: LAUNCH_RULE_ROW_TOP,
                 w: OPTION_W,
                 h: OPTION_H,
-            },
+            }),
             launch_rule.label(),
             Color::srgba(0.53, 0.77, 0.96, 0.26),
         );
@@ -959,6 +1057,7 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
         let row_top = CONTROL_ROW_START_TOP + player_index as f32 * CONTROL_ROW_GAP;
         spawn_section_label(
             &mut commands,
+            layout,
             &format!("P{} Control", player_index + 1),
             row_top + 7.0,
         );
@@ -968,12 +1067,12 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
                 player_index,
                 control: PlayerControl::Human,
             },
-            ClickRect {
+            layout.rect(ClickRect {
                 x: OPTION_LEFT,
                 y: row_top,
                 w: OPTION_W,
                 h: OPTION_H,
-            },
+            }),
             "Human",
             Color::srgba(0.53, 0.77, 0.96, 0.26),
         );
@@ -983,12 +1082,12 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
                 player_index,
                 control: PlayerControl::Ai,
             },
-            ClickRect {
+            layout.rect(ClickRect {
                 x: OPTION_LEFT + OPTION_W + OPTION_GAP,
                 y: row_top,
                 w: OPTION_W,
                 h: OPTION_H,
-            },
+            }),
             "AI",
             Color::srgba(0.53, 0.77, 0.96, 0.26),
         );
@@ -997,30 +1096,30 @@ fn spawn_mode_select(mut commands: Commands, match_setup: Res<MatchSetup>) {
     spawn_option(
         &mut commands,
         ModeSelectAction::StartMatch,
-        ClickRect {
+        layout.rect(ClickRect {
             x: OPTION_LEFT,
             y: BOTTOM_ROW_TOP,
             w: OPTION_W * 1.58,
             h: OPTION_H + 6.0,
-        },
+        }),
         "Start Match",
         Color::srgba(0.40, 0.72, 0.55, 0.40),
     );
     spawn_option(
         &mut commands,
         ModeSelectAction::Back,
-        ClickRect {
+        layout.rect(ClickRect {
             x: OPTION_LEFT + OPTION_W * 1.58 + OPTION_GAP,
             y: BOTTOM_ROW_TOP,
             w: OPTION_W * 1.2,
             h: OPTION_H + 6.0,
-        },
+        }),
         "Back",
         Color::srgba(0.72, 0.54, 0.44, 0.28),
     );
 }
 
-fn spawn_section_label(commands: &mut Commands, label: &str, top: f32) {
+fn spawn_section_label(commands: &mut Commands, layout: ModeSelectLayout, label: &str, top: f32) {
     // 左侧分区标题。
     commands.spawn((
         Text::new(label),
@@ -1031,8 +1130,8 @@ fn spawn_section_label(commands: &mut Commands, label: &str, top: f32) {
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(top),
-            left: Val::Px(SECTION_LABEL_X),
+            top: Val::Px(layout.y(top)),
+            left: Val::Px(layout.x(SECTION_LABEL_X)),
             ..default()
         },
         Name::new(format!("ModeLabel{label}")),
@@ -1074,7 +1173,7 @@ fn spawn_box_with_label(
     label: &str,
     font_size: f32,
     action: Option<ModeSelectAction>,
-) {
+) -> Entity {
     // 通用方块渲染器：用于按钮底板与色块选项。
     let mut entity = commands.spawn((
         Node {
@@ -1094,6 +1193,7 @@ fn spawn_box_with_label(
         Name::new("MenuOptionBox"),
         MenuEntity,
     ));
+    let entity_id = entity.id();
     if let Some(action) = action {
         entity.insert((
             ClickRect { ..rect },
@@ -1118,6 +1218,7 @@ fn spawn_box_with_label(
             ));
         });
     }
+    entity_id
 }
 
 fn sound_settings_content(audio_settings: &AudioSettings) -> String {
@@ -1549,10 +1650,20 @@ mod tests {
     }
 
     #[test]
+    fn mode_select_layout_centers_content_on_wide_screens() {
+        let layout = mode_select_layout(1280.0, 720.0);
+
+        assert!((layout.left - (1280.0 - MODE_LAYOUT_WIDTH) * 0.5).abs() < f32::EPSILON);
+        assert!((layout.top - (720.0 - MODE_LAYOUT_HEIGHT) * 0.5).abs() < f32::EPSILON);
+        assert_eq!(layout.x(MODE_LAYOUT_BASE_LEFT), layout.left);
+        assert_eq!(layout.y(MODE_LAYOUT_BASE_TOP), layout.top);
+    }
+
+    #[test]
     fn main_menu_start_button_leaves_room_for_global_sound_entry() {
         let window = test_window();
-        let start = main_menu_start_rect(window.width());
-        let audio = global_sound_entry_rect(&window, &AppState::MainMenu);
+        let start = main_menu_start_rect(window.width(), window.height());
+        let audio = global_sound_entry_rect(&window);
 
         assert!(audio.y + audio.h + 40.0 <= start.y);
         assert!(start.y + start.h <= 720.0);
@@ -1560,14 +1671,13 @@ mod tests {
     }
 
     #[test]
-    fn global_sound_entry_moves_away_from_ingame_hud() {
+    fn global_sound_entry_stays_top_right_on_every_page() {
         let window = test_window();
-        let menu_entry = global_sound_entry_rect(&window, &AppState::MainMenu);
-        let ingame_entry = global_sound_entry_rect(&window, &AppState::InGame);
+        let entry = global_sound_entry_rect(&window);
 
-        assert!(menu_entry.x > window.width() * 0.5);
-        assert_eq!(ingame_entry.x, GLOBAL_SOUND_ENTRY_LEFT);
-        assert!(ingame_entry.x + ingame_entry.w < window.width() * 0.5);
+        assert!(entry.x > window.width() * 0.5);
+        assert_eq!(entry.x + entry.w + GLOBAL_SOUND_ENTRY_LEFT, window.width());
+        assert_eq!(entry.y, GLOBAL_SOUND_ENTRY_TOP);
     }
 
     #[test]
@@ -1638,7 +1748,7 @@ mod tests {
     #[test]
     fn global_sound_entry_and_panel_actions_have_stable_hit_targets() {
         let window = test_window();
-        let entry = global_sound_entry_rect(&window, &AppState::MainMenu);
+        let entry = global_sound_entry_rect(&window);
         assert!(entry.contains(Vec2::new(entry.x + 8.0, entry.y + 8.0)));
         assert!(entry.x > window.width() * 0.5);
 

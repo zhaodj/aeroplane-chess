@@ -1,13 +1,14 @@
-use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::constants::HUD_Z_LAYER;
+use crate::data::game_mode::GameMode;
 use crate::domain::piece::PieceState;
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster};
 use crate::gameplay::skill_flow::{
-    SkillRoster, can_use_skill_this_turn, is_active_teammate_piece, is_current_player_active_piece,
-    is_legal_shield_target, is_legal_snipe_target, player_skill_state,
+    PlayerSkillState, SkillRoster, can_use_skill_this_turn, is_active_teammate_piece,
+    is_current_player_active_piece, is_legal_shield_target, is_legal_snipe_target,
+    player_skill_state,
 };
 use crate::gameplay::turn_flow::{TurnInputState, TurnState};
 use crate::platform::{DeviceProfile, PointerInputState};
@@ -17,17 +18,20 @@ use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiReque
 use crate::plugins::turn_plugin::TurnUiRequest;
 use crate::states::{AppState, GamePhase};
 
-/// UI 插件：负责 HUD 与结果页渲染及交互。
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<HudFoldState>()
-            .init_resource::<HudEventLogState>()
+        app.init_resource::<PlayerHudState>()
             .add_systems(OnEnter(AppState::InGame), spawn_hud)
             .add_systems(
                 Update,
-                (update_hud, handle_hud_toggle, handle_skill_panel_click)
+                (
+                    handle_player_hud_click,
+                    update_player_hud_layout,
+                    update_hud_content,
+                )
+                    .chain()
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnEnter(AppState::Result), spawn_result_screen)
@@ -41,150 +45,86 @@ impl Plugin for UiPlugin {
 }
 
 #[derive(Component)]
-/// HUD 实体分组标记。
 struct HudEntity;
 
 #[derive(Component)]
-/// HUD 可折叠区标记。
-struct HudCollapsible;
-
-#[derive(Component)]
-/// 结果页实体分组标记。
 struct ResultEntity;
 
 #[derive(Component)]
-/// HUD 主状态文本节点。
-struct HudPrimaryText;
+struct PlayerHudEntry {
+    player_id: u8,
+}
 
 #[derive(Component)]
-/// HUD 技能文本节点。
-struct HudSkillsText;
+struct PlayerHudEntryText {
+    player_id: u8,
+}
 
 #[derive(Component)]
-/// HUD 提示文本节点。
-struct HudPromptText;
+struct PlayerHudPanel;
 
 #[derive(Component)]
-/// HUD 最近事件文本节点。
-struct HudEventsText;
+struct PlayerHudPanelText;
 
 #[derive(Component)]
-/// HUD 技能按钮元数据。
 struct HudSkillButton {
     action: SkillUiAction,
 }
 
 #[derive(Component)]
-/// HUD 掷骰按钮背景。
 struct HudRollButton;
 
 #[derive(Component)]
-/// HUD 掷骰按钮文本。
 struct HudRollButtonText;
 
-#[derive(Component)]
-/// HUD 折叠提示文本节点。
-struct HudToggleHintText;
-
 #[derive(Resource, Default)]
-/// HUD 折叠状态。
-struct HudFoldState {
-    collapsed: bool,
+pub struct PlayerHudState {
+    active_player: Option<u8>,
 }
 
-#[derive(Resource, Default)]
-/// HUD 最近事件去重日志。
-struct HudEventLogState {
-    entries: Vec<String>,
-}
-
-impl HudEventLogState {
-    fn record(&mut self, message: &str) {
-        if message.trim().is_empty() || self.entries.last().is_some_and(|last| last == message) {
-            return;
-        }
-
-        self.entries.push(compact_hud_event(message));
-        const MAX_EVENTS: usize = 2;
-        if self.entries.len() > MAX_EVENTS {
-            self.entries.remove(0);
-        }
-    }
-
-    fn format(&self) -> String {
-        if self.entries.is_empty() {
-            "Events\n-".to_string()
-        } else {
-            format!("Events\n{}", self.entries.join("\n"))
-        }
-    }
-}
-
-fn compact_hud_event(message: &str) -> String {
-    const MAX_EVENT_CHARS: usize = 42;
-    let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() <= MAX_EVENT_CHARS {
-        return compact;
-    }
-
-    let mut shortened = compact
-        .chars()
-        .take(MAX_EVENT_CHARS.saturating_sub(3))
-        .collect::<String>();
-    shortened.push_str("...");
-    shortened
-}
-
-type HudPrimaryQuery<'w, 's> = Query<
+type HudPieceQuery<'w, 's> = Query<'w, 's, (&'static PieceId, &'static PieceState)>;
+type PlayerHudEntryLayoutQuery<'w, 's> =
+    Query<'w, 's, (&'static PlayerHudEntry, &'static mut Node), Without<PlayerHudPanel>>;
+type PlayerHudEntryStyleQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PlayerHudEntry,
+        &'static mut BackgroundColor,
+        &'static mut BorderColor,
+    ),
+    (Without<HudSkillButton>, Without<HudRollButton>),
+>;
+type PlayerHudEntryTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static PlayerHudEntryText, &'static mut Text),
+    (Without<PlayerHudPanelText>, Without<HudRollButtonText>),
+>;
+type PlayerHudPanelTextQuery<'w, 's> = Query<
     'w,
     's,
     &'static mut Text,
     (
-        With<HudPrimaryText>,
-        Without<HudSkillsText>,
-        Without<HudPromptText>,
-        Without<HudEventsText>,
-        Without<HudToggleHintText>,
+        With<PlayerHudPanelText>,
+        Without<PlayerHudEntryText>,
         Without<HudRollButtonText>,
     ),
 >;
-type HudSkillsQuery<'w, 's> = Query<
+type HudSkillButtonQuery<'w, 's> = Query<
     'w,
     's,
-    &'static mut Text,
-    (
-        With<HudSkillsText>,
-        Without<HudPrimaryText>,
-        Without<HudPromptText>,
-        Without<HudEventsText>,
-        Without<HudToggleHintText>,
-        Without<HudRollButtonText>,
-    ),
+    (&'static HudSkillButton, &'static mut BackgroundColor),
+    (Without<PlayerHudEntry>, Without<HudRollButton>),
 >;
-type HudPromptQuery<'w, 's> = Query<
+type HudRollButtonQuery<'w, 's> = Query<
     'w,
     's,
-    &'static mut Text,
+    &'static mut BackgroundColor,
     (
-        With<HudPromptText>,
-        Without<HudPrimaryText>,
-        Without<HudSkillsText>,
-        Without<HudEventsText>,
-        Without<HudToggleHintText>,
-        Without<HudRollButtonText>,
-    ),
->;
-type HudEventsQuery<'w, 's> = Query<
-    'w,
-    's,
-    &'static mut Text,
-    (
-        With<HudEventsText>,
-        Without<HudPrimaryText>,
-        Without<HudSkillsText>,
-        Without<HudPromptText>,
-        Without<HudToggleHintText>,
-        Without<HudRollButtonText>,
+        With<HudRollButton>,
+        Without<PlayerHudEntry>,
+        Without<HudSkillButton>,
     ),
 >;
 type HudRollButtonTextQuery<'w, 's> = Query<
@@ -193,79 +133,57 @@ type HudRollButtonTextQuery<'w, 's> = Query<
     &'static mut Text,
     (
         With<HudRollButtonText>,
-        Without<HudPrimaryText>,
-        Without<HudSkillsText>,
-        Without<HudPromptText>,
-        Without<HudEventsText>,
-        Without<HudToggleHintText>,
+        Without<PlayerHudEntryText>,
+        Without<PlayerHudPanelText>,
     ),
 >;
-type HudToggleHintQuery<'w, 's> = Query<
-    'w,
-    's,
-    &'static mut Text,
-    (
-        With<HudToggleHintText>,
-        Without<HudPrimaryText>,
-        Without<HudSkillsText>,
-        Without<HudPromptText>,
-        Without<HudEventsText>,
-        Without<HudRollButtonText>,
-    ),
->;
-type HudSkillButtonQuery<'w, 's> =
-    Query<'w, 's, (&'static HudSkillButton, &'static mut BackgroundColor), Without<HudRollButton>>;
-type HudRollButtonQuery<'w, 's> =
-    Query<'w, 's, &'static mut BackgroundColor, (With<HudRollButton>, Without<HudSkillButton>)>;
-type HudPieceQuery<'w, 's> = Query<'w, 's, (&'static PieceId, &'static PieceState)>;
 
-#[derive(SystemParam)]
-struct HudData<'w, 's> {
-    match_config: Res<'w, MatchConfig>,
-    player_roster: Res<'w, PlayerRoster>,
-    match_result: Res<'w, MatchResult>,
-    skill_roster: Res<'w, SkillRoster>,
-    skill_target_state: Res<'w, SkillTargetState>,
-    input_state: Res<'w, TurnInputState>,
-    turn_state: Res<'w, TurnState>,
-    game_phase: Res<'w, State<GamePhase>>,
-    hud_fold_state: Res<'w, HudFoldState>,
-    event_log: ResMut<'w, HudEventLogState>,
-    piece_query: HudPieceQuery<'w, 's>,
-}
-
-#[derive(SystemParam)]
-struct HudTextQueries<'w, 's> {
-    primary_query: HudPrimaryQuery<'w, 's>,
-    skills_query: HudSkillsQuery<'w, 's>,
-    prompt_query: HudPromptQuery<'w, 's>,
-    events_query: HudEventsQuery<'w, 's>,
-    roll_button_text_query: HudRollButtonTextQuery<'w, 's>,
-    toggle_hint_query: HudToggleHintQuery<'w, 's>,
-}
-
-#[derive(SystemParam)]
-struct SkillPanelClickParams<'w> {
-    game_phase: Res<'w, State<GamePhase>>,
-    match_result: Res<'w, MatchResult>,
-    player_roster: Res<'w, PlayerRoster>,
-    turn_state: Res<'w, TurnState>,
-    hud_fold_state: Res<'w, HudFoldState>,
-    skill_ui_request: ResMut<'w, SkillUiRequest>,
-    turn_ui_request: ResMut<'w, TurnUiRequest>,
-}
-
-const HUD_PANEL_WIDTH: f32 = 276.0;
-const HUD_PANEL_HEIGHT: f32 = 462.0;
-const HUD_PANEL_MARGIN: f32 = 16.0;
-const HUD_CONTENT_INSET: f32 = 12.0;
-const HUD_TEXT_WIDTH: f32 = HUD_PANEL_WIDTH - HUD_CONTENT_INSET * 2.0;
-const HUD_SKILL_ROW_TOPS: [f32; 5] = [158.0, 182.0, 206.0, 230.0, 254.0];
+const HUD_EDGE_MARGIN: f32 = 10.0;
+const HUD_ENTRY_W: f32 = 86.0;
+const HUD_ENTRY_H: f32 = 48.0;
+const HUD_PANEL_W: f32 = 312.0;
+const HUD_PANEL_H: f32 = 338.0;
+const HUD_PANEL_INSET: f32 = 14.0;
+const HUD_PANEL_GAP: f32 = 12.0;
 const HUD_SKILL_ROW_HEIGHT: f32 = 24.0;
-const HUD_ROLL_BUTTON_TOP: f32 = 286.0;
-const HUD_ROLL_BUTTON_HEIGHT: f32 = 30.0;
-const HUD_PROMPT_TOP: f32 = 326.0;
-const HUD_EVENTS_TOP: f32 = 402.0;
+const HUD_SKILL_ROW_GAP: f32 = 4.0;
+const HUD_SKILL_ROW_START: f32 = 156.0;
+const HUD_ROLL_BUTTON_TOP: f32 = 296.0;
+const HUD_ROLL_BUTTON_H: f32 = 28.0;
+const TOP_RIGHT_AUDIO_W: f32 = 108.0;
+const TOP_RIGHT_AUDIO_H: f32 = 38.0;
+const TOP_RIGHT_AUDIO_MARGIN: f32 = 16.0;
+const HUD_SKILL_ACTIONS: [SkillUiAction; 5] = [
+    SkillUiAction::Dash,
+    SkillUiAction::Snipe,
+    SkillUiAction::Swap,
+    SkillUiAction::Shield,
+    SkillUiAction::DoubleDice,
+];
+
+#[derive(Clone, Copy, Debug)]
+struct ScreenRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl ScreenRect {
+    fn contains(self, point: Vec2) -> bool {
+        point.x >= self.x
+            && point.x <= self.x + self.w
+            && point.y >= self.y
+            && point.y <= self.y + self.h
+    }
+
+    fn overlaps(self, other: Self) -> bool {
+        self.x < other.x + other.w
+            && self.x + self.w > other.x
+            && self.y < other.y + other.h
+            && self.y + self.h > other.y
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 struct SkillBoardAvailability {
@@ -294,436 +212,635 @@ impl SkillBoardAvailability {
     }
 }
 
+enum PlayerHudPanelAction {
+    Roll,
+    Skill(SkillUiAction),
+}
+
 fn spawn_hud(
     mut commands: Commands,
-    mut hud_fold_state: ResMut<HudFoldState>,
-    mut event_log: ResMut<HudEventLogState>,
-    device_profile: Res<DeviceProfile>,
+    mut hud_state: ResMut<PlayerHudState>,
+    player_roster: Res<PlayerRoster>,
 ) {
-    event_log.entries.clear();
-    hud_fold_state.collapsed = device_profile.should_start_hud_collapsed();
-    let panel_visibility = if hud_fold_state.collapsed {
-        Visibility::Hidden
-    } else {
-        Visibility::Visible
-    };
+    hud_state.active_player = None;
 
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(HUD_PANEL_MARGIN),
-            right: Val::Px(HUD_PANEL_MARGIN),
-            width: Val::Px(HUD_PANEL_WIDTH),
-            height: Val::Px(HUD_PANEL_HEIGHT),
-            border: UiRect::all(Val::Px(1.0)),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.98, 0.99, 1.0, 0.97)),
-        BorderColor::all(Color::srgba(0.56, 0.64, 0.76, 0.36)),
-        ZIndex(0),
-        panel_visibility,
-        Name::new("HudPanelBackdrop"),
-        HudCollapsible,
-        HudEntity,
-    ));
-    commands.spawn((
-        Text::new("Loading HUD..."),
-        TextFont {
-            font_size: 16.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.10, 0.16, 0.24)),
-        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
-        ZIndex(1),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(28.0),
-            right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET),
-            width: Val::Px(HUD_TEXT_WIDTH),
-            ..default()
-        },
-        panel_visibility,
-        Name::new("HudPrimaryText"),
-        HudPrimaryText,
-        HudCollapsible,
-        HudEntity,
-    ));
-    for (row_index, action) in [
-        SkillUiAction::Dash,
-        SkillUiAction::Snipe,
-        SkillUiAction::Swap,
-        SkillUiAction::Shield,
-        SkillUiAction::DoubleDice,
-    ]
-    .iter()
-    .enumerate()
-    {
-        commands.spawn((
+    for player in &player_roster.players {
+        let player_id = player.state.player_id;
+        commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(HUD_ENTRY_W),
+                    height: Val::Px(HUD_ENTRY_H),
+                    border: UiRect::all(Val::Px(2.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    padding: UiRect::horizontal(Val::Px(6.0)),
+                    ..default()
+                },
+                BackgroundColor(player.color.mix(&Color::WHITE, 0.68).with_alpha(0.90)),
+                BorderColor::all(Color::srgba(0.10, 0.16, 0.24, 0.36)),
+                ZIndex(32),
+                Name::new(format!("PlayerHudEntryP{player_id}")),
+                PlayerHudEntry { player_id },
+                HudEntity,
+            ))
+            .with_children(|parent| {
+                parent.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: 14.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.08, 0.12, 0.18)),
+                    TextLayout::new_with_justify(Justify::Center),
+                    Name::new(format!("PlayerHudEntryTextP{player_id}")),
+                    PlayerHudEntryText { player_id },
+                ));
+            });
+    }
+
+    commands
+        .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET),
-                top: Val::Px(HUD_SKILL_ROW_TOPS[row_index]),
-                width: Val::Px(HUD_TEXT_WIDTH),
-                height: Val::Px(HUD_SKILL_ROW_HEIGHT),
+                width: Val::Px(HUD_PANEL_W),
+                height: Val::Px(HUD_PANEL_H),
+                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BackgroundColor(skill_button_color(false, false)),
-            ZIndex(1),
-            panel_visibility,
-            Name::new(format!("HudSkillButton{:?}", action)),
-            HudSkillButton { action: *action },
-            HudCollapsible,
+            BackgroundColor(Color::srgba(0.98, 0.99, 1.0, 0.97)),
+            BorderColor::all(Color::srgba(0.34, 0.42, 0.55, 0.42)),
+            ZIndex(40),
+            Visibility::Hidden,
+            Name::new("PlayerHudPanel"),
+            PlayerHudPanel,
             HudEntity,
-        ));
-    }
-    commands.spawn((
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
+                ZIndex(41),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(HUD_PANEL_INSET),
+                    top: Val::Px(14.0),
+                    width: Val::Px(HUD_PANEL_W - HUD_PANEL_INSET * 2.0),
+                    ..default()
+                },
+                Name::new("PlayerHudPanelText"),
+                PlayerHudPanelText,
+            ));
+
+            for action in HUD_SKILL_ACTIONS {
+                spawn_panel_button(
+                    panel,
+                    panel_skill_button_rect(action),
+                    skill_action_label(action),
+                    Some(action),
+                );
+            }
+
+            spawn_panel_button(panel, panel_roll_button_rect(), "Roll", None);
+        });
+}
+
+fn spawn_panel_button(
+    panel: &mut ChildSpawnerCommands<'_>,
+    rect: ScreenRect,
+    label: &str,
+    action: Option<SkillUiAction>,
+) {
+    let mut entity = panel.spawn((
         Node {
             position_type: PositionType::Absolute,
-            right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET),
-            top: Val::Px(HUD_ROLL_BUTTON_TOP),
-            width: Val::Px(HUD_TEXT_WIDTH),
-            height: Val::Px(HUD_ROLL_BUTTON_HEIGHT),
+            left: Val::Px(rect.x),
+            top: Val::Px(rect.y),
+            width: Val::Px(rect.w),
+            height: Val::Px(rect.h),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::horizontal(Val::Px(6.0)),
             ..default()
         },
         BackgroundColor(skill_button_color(false, false)),
-        ZIndex(1),
-        panel_visibility,
-        Name::new("HudRollButton"),
-        HudRollButton,
-        HudCollapsible,
-        HudEntity,
+        ZIndex(42),
+        Name::new(format!("PlayerHudButton{label}")),
     ));
-    commands.spawn((
-        Text::new("Roll [Space]"),
-        TextFont {
-            font_size: 15.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.09, 0.16, 0.24)),
-        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
-        ZIndex(2),
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET + 10.0),
-            top: Val::Px(HUD_ROLL_BUTTON_TOP + 5.0),
-            width: Val::Px(HUD_TEXT_WIDTH - 20.0),
-            ..default()
-        },
-        panel_visibility,
-        Name::new("HudRollButtonText"),
-        HudRollButtonText,
-        HudCollapsible,
-        HudEntity,
-    ));
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: 16.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.20, 0.28, 0.40)),
-        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
-        ZIndex(1),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(132.0),
-            right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET),
-            width: Val::Px(HUD_TEXT_WIDTH),
-            ..default()
-        },
-        panel_visibility,
-        Name::new("HudSkillsText"),
-        HudSkillsText,
-        HudCollapsible,
-        HudEntity,
-    ));
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: 16.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.28, 0.35, 0.46)),
-        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
-        ZIndex(1),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(HUD_PROMPT_TOP),
-            right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET),
-            width: Val::Px(HUD_TEXT_WIDTH),
-            ..default()
-        },
-        panel_visibility,
-        Name::new("HudPromptText"),
-        HudPromptText,
-        HudCollapsible,
-        HudEntity,
-    ));
-    commands.spawn((
-        Text::new("Events\n-"),
-        TextFont {
-            font_size: 13.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.18, 0.25, 0.34)),
-        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
-        ZIndex(1),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(HUD_EVENTS_TOP),
-            right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET),
-            width: Val::Px(HUD_TEXT_WIDTH),
-            ..default()
-        },
-        panel_visibility,
-        Name::new("HudEventsText"),
-        HudEventsText,
-        HudCollapsible,
-        HudEntity,
-    ));
-    commands.spawn((
-        Text::new("HUD: Expanded [Tab]"),
-        TextFont {
-            font_size: 14.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.18, 0.26, 0.38)),
-        ZIndex(2),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(12.0),
-            right: Val::Px(16.0),
-            ..default()
-        },
-        Name::new("HudToggleHintText"),
-        HudToggleHintText,
-        HudEntity,
-    ));
+    if let Some(action) = action {
+        entity.insert(HudSkillButton { action });
+    } else {
+        entity.insert(HudRollButton);
+    }
+
+    entity.with_children(|parent| {
+        let mut text_entity = parent.spawn((
+            Text::new(label),
+            TextFont {
+                font_size: 14.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.09, 0.16, 0.24)),
+            TextLayout::new_with_justify(Justify::Center),
+            Name::new(format!("PlayerHudButtonLabel{label}")),
+        ));
+        if action.is_none() {
+            text_entity.insert(HudRollButtonText);
+        }
+    });
 }
 
-fn update_hud(
-    mut data: HudData,
-    mut text_queries: HudTextQueries,
+fn update_player_hud_layout(
+    windows: Query<&Window>,
+    device_profile: Res<DeviceProfile>,
+    hud_state: Res<PlayerHudState>,
+    player_roster: Res<PlayerRoster>,
+    mut entry_query: PlayerHudEntryLayoutQuery,
+    mut panel_query: Query<(&mut Node, &mut Visibility), With<PlayerHudPanel>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let window_width = window.width();
+    let window_height = window.height();
+
+    for (entry, mut node) in &mut entry_query {
+        let rect = player_hud_entry_rect(
+            window_width,
+            window_height,
+            *device_profile,
+            entry.player_id,
+        );
+        apply_rect_to_node(&mut node, rect);
+    }
+
+    let active_player = hud_state.active_player.filter(|player_id| {
+        player_roster
+            .players
+            .iter()
+            .any(|player| player.state.player_id == *player_id)
+    });
+    for (mut node, mut visibility) in &mut panel_query {
+        if let Some(player_id) = active_player {
+            let rect =
+                player_hud_panel_rect(window_width, window_height, *device_profile, player_id);
+            apply_rect_to_node(&mut node, rect);
+            *visibility = Visibility::Visible;
+        } else {
+            *visibility = Visibility::Hidden;
+        }
+    }
+}
+
+fn update_hud_content(
+    mut hud_state: ResMut<PlayerHudState>,
+    match_config: Res<MatchConfig>,
+    player_roster: Res<PlayerRoster>,
+    skill_roster: Res<SkillRoster>,
+    skill_target_state: Res<SkillTargetState>,
+    input_state: Res<TurnInputState>,
+    turn_state: Res<TurnState>,
+    game_phase: Res<State<GamePhase>>,
+    match_result: Res<MatchResult>,
+    piece_query: HudPieceQuery,
+    mut entry_style_query: PlayerHudEntryStyleQuery,
+    mut entry_text_query: PlayerHudEntryTextQuery,
+    mut panel_text_query: PlayerHudPanelTextQuery,
     mut skill_button_query: HudSkillButtonQuery,
     mut roll_button_query: HudRollButtonQuery,
+    mut roll_button_text_query: HudRollButtonTextQuery,
 ) {
-    let Ok(mut primary_text) = text_queries.primary_query.single_mut() else {
-        return;
-    };
-    let Ok(mut skills_text_node) = text_queries.skills_query.single_mut() else {
-        return;
-    };
-    let Ok(mut prompt_text_node) = text_queries.prompt_query.single_mut() else {
-        return;
-    };
-    let Ok(mut events_text_node) = text_queries.events_query.single_mut() else {
-        return;
-    };
-    let Ok(mut roll_button_text) = text_queries.roll_button_text_query.single_mut() else {
-        return;
-    };
-    let Ok(mut toggle_hint_text) = text_queries.toggle_hint_query.single_mut() else {
-        return;
-    };
-
-    let roll_text = match data.turn_state.last_roll {
-        Some(value) => value.to_string(),
-        None => "-".to_string(),
-    };
-    let current_profile = data
-        .player_roster
-        .players
-        .iter()
-        .find(|player| player.state.player_id == data.turn_state.current_player);
-    let current_control = current_profile
-        .map(|player| match player.state.control {
-            PlayerControl::Human => "Human",
-            PlayerControl::Ai => "AI",
-        })
-        .unwrap_or("-");
-    let board_availability = current_profile
-        .map(|player| {
-            SkillBoardAvailability::from_query(
-                data.turn_state.current_player,
-                player.state.team_id,
-                &data.piece_query,
-            )
-        })
-        .unwrap_or_default();
-    let phase_label = match data.game_phase.get() {
-        GamePhase::AwaitDice => "Roll",
-        GamePhase::AwaitPieceSelect => "Choose Piece",
-        GamePhase::CheckVictory => "Victory Check",
-        _ => "Resolving",
-    };
-    let result_text = if data.match_result.finished {
-        format!(
-            "Result: Team {} wins",
-            data.match_result.winner_team_id.unwrap_or_default()
-        )
-    } else {
-        "Result: in progress".to_string()
-    };
-    let is_human_turn = matches!(current_control, "Human");
-    let can_use_skill = can_use_skill_this_turn(&data.skill_roster, data.turn_state.current_player)
-        && is_human_turn;
-    let current_skills = player_skill_state(&data.skill_roster, data.turn_state.current_player);
-    let roll_button_ready = is_human_turn
-        && matches!(data.game_phase.get(), GamePhase::AwaitDice)
-        && !data.match_result.finished;
-    if let Ok(mut roll_button_background) = roll_button_query.single_mut() {
-        *roll_button_background =
-            BackgroundColor(skill_button_color(roll_button_ready, is_human_turn));
+    if hud_state.active_player.is_some()
+        && !player_roster
+            .players
+            .iter()
+            .any(|player| Some(player.state.player_id) == hud_state.active_player)
+    {
+        hud_state.active_player = None;
     }
-    *roll_button_text = Text::new(if roll_button_ready {
-        "Roll [Space]"
-    } else {
-        "Roll locked"
+
+    for (entry, mut background, mut border) in &mut entry_style_query {
+        let is_current = entry.player_id == turn_state.current_player;
+        let is_active = hud_state.active_player == Some(entry.player_id);
+        let color = player_roster
+            .players
+            .iter()
+            .find(|player| player.state.player_id == entry.player_id)
+            .map(|player| player.color)
+            .unwrap_or(Color::srgb(0.78, 0.82, 0.89));
+        *background = BackgroundColor(
+            color
+                .mix(&Color::WHITE, if is_current { 0.42 } else { 0.68 })
+                .with_alpha(if is_active { 0.98 } else { 0.90 }),
+        );
+        *border = BorderColor::all(if is_active {
+            Color::srgba(0.06, 0.10, 0.16, 0.94)
+        } else if is_current {
+            Color::srgba(0.12, 0.22, 0.32, 0.76)
+        } else {
+            Color::srgba(0.10, 0.16, 0.24, 0.32)
+        });
+    }
+
+    for (entry_text, mut text) in &mut entry_text_query {
+        let control = player_roster
+            .players
+            .iter()
+            .find(|player| player.state.player_id == entry_text.player_id)
+            .map(|player| control_label(player.state.control))
+            .unwrap_or("-");
+        let marker = if entry_text.player_id == turn_state.current_player {
+            "*"
+        } else {
+            ""
+        };
+        *text = Text::new(format!("P{}{}\n{}", entry_text.player_id, marker, control));
+    }
+
+    let active_player_id = hud_state.active_player;
+    let active_profile = active_player_id.and_then(|player_id| {
+        player_roster
+            .players
+            .iter()
+            .find(|player| player.state.player_id == player_id)
     });
 
+    let mut roll_ready = false;
+    let mut can_use_skill = false;
+    let mut board_availability = SkillBoardAvailability::default();
+    if let Some(player) = active_profile {
+        let is_current_player = player.state.player_id == turn_state.current_player;
+        let is_human_turn = is_current_player && player.state.control == PlayerControl::Human;
+        roll_ready = is_human_turn
+            && matches!(game_phase.get(), GamePhase::AwaitDice)
+            && !match_result.finished;
+        can_use_skill =
+            is_human_turn && can_use_skill_this_turn(&skill_roster, player.state.player_id);
+        if is_current_player {
+            board_availability = SkillBoardAvailability::from_query(
+                player.state.player_id,
+                player.state.team_id,
+                &piece_query,
+            );
+        }
+    }
+
+    for mut text in &mut panel_text_query {
+        *text = Text::new(active_profile.map_or_else(String::new, |player| {
+            format_player_panel_text(
+                player.state.player_id,
+                player.state.team_id,
+                player.state.control,
+                player.state.player_id == turn_state.current_player,
+                game_phase.get(),
+                player_skill_state(&skill_roster, player.state.player_id),
+                panel_prompt_text(
+                    player.state.player_id == turn_state.current_player,
+                    player.state.control,
+                    game_phase.get(),
+                    &input_state,
+                    &skill_target_state,
+                ),
+            )
+        }));
+    }
+
+    let active_skills =
+        active_player_id.and_then(|player_id| player_skill_state(&skill_roster, player_id));
     for (button, mut background) in &mut skill_button_query {
-        let ready = current_skills
+        let ready = active_skills
             .map(|skills| {
                 is_skill_button_ready(
                     button.action,
                     skills,
                     can_use_skill,
-                    data.game_phase.get(),
-                    data.match_config.mode,
+                    game_phase.get(),
+                    match_config.mode,
                     board_availability,
                 )
             })
             .unwrap_or(false);
         *background = BackgroundColor(skill_button_color(ready, can_use_skill));
     }
-    let stacked_hint = if matches!(data.game_phase.get(), GamePhase::AwaitPieceSelect) {
-        "Highlighted teammate stacks share one shield.".to_string()
-    } else {
-        String::new()
-    };
-    let prompt_text = if is_human_turn {
-        data.skill_target_state
-            .prompt
-            .as_deref()
-            .or(data.input_state.prompt.as_deref())
-            .unwrap_or("Space: roll | Q/S/A/W/E: skills")
-    } else {
-        "AI turn in progress"
-    };
-    let candidate_hint = candidate_piece_hint(&data.input_state, &data.skill_target_state);
-    let skill_text = current_skills
-        .map(|skills| {
-            format_skill_panel(
-                skills,
-                is_human_turn,
-                can_use_skill,
-                data.match_config.mode,
-                data.game_phase.get(),
-            )
-        })
-        .unwrap_or_else(|| {
-            "Skills\nDash [E]: -\nSnipe [S]: -\nSwap [A]: -\nShield [Q]: -\nDoubleDice [W]: -"
-                .to_string()
-        });
 
-    if let Some(skill_note) = data.skill_roster.last_skill_action.as_deref() {
-        data.event_log.record(skill_note);
+    for mut background in &mut roll_button_query {
+        *background = BackgroundColor(skill_button_color(roll_ready, active_profile.is_some()));
     }
-    if let Some(action_note) = data.turn_state.last_action.as_deref() {
-        data.event_log.record(action_note);
+    for mut text in &mut roll_button_text_query {
+        *text = Text::new(if roll_ready { "Roll" } else { "Roll locked" });
     }
-    if data.match_result.finished {
-        data.event_log.record(&result_text);
-    }
-
-    *primary_text = Text::new(format!(
-        "Mode: {:?} | AI: {:?}\nP{} ({}) | Round {}\nPhase: {} | Roll {}\n{}",
-        data.match_config.mode,
-        data.match_config.ai_difficulty,
-        data.turn_state.current_player,
-        current_control,
-        data.turn_state.turn_index,
-        phase_label,
-        roll_text,
-        result_text,
-    ));
-    *skills_text_node = Text::new(skill_text);
-    *prompt_text_node = Text::new(if stacked_hint.is_empty() {
-        format_prompt_text(prompt_text, &candidate_hint)
-    } else {
-        format!(
-            "{}\n{}",
-            format_prompt_text(prompt_text, &candidate_hint),
-            stacked_hint
-        )
-    });
-    *events_text_node = Text::new(data.event_log.format());
-    *toggle_hint_text = Text::new(if data.hud_fold_state.collapsed {
-        format!(
-            "P{} {} | Roll {} | HUD [Tab]",
-            data.turn_state.current_player, current_control, roll_text
-        )
-    } else {
-        format!(
-            "P{} {} | Roll {} | Hide [Tab]",
-            data.turn_state.current_player, current_control, roll_text
-        )
-    });
 }
 
-fn handle_hud_toggle(
-    keyboard: Res<ButtonInput<KeyCode>>,
+fn handle_player_hud_click(
     pointer: Res<PointerInputState>,
     windows: Query<&Window>,
+    device_profile: Res<DeviceProfile>,
     overlay_state: Res<SoundSettingsOverlayState>,
-    mut hud_fold_state: ResMut<HudFoldState>,
-    mut collapsible_query: Query<&mut Visibility, With<HudCollapsible>>,
+    player_roster: Res<PlayerRoster>,
+    game_phase: Res<State<GamePhase>>,
+    match_result: Res<MatchResult>,
+    turn_state: Res<TurnState>,
+    mut hud_state: ResMut<PlayerHudState>,
+    mut skill_ui_request: ResMut<SkillUiRequest>,
+    mut turn_ui_request: ResMut<TurnUiRequest>,
 ) {
-    let pointer_toggled = pointer.just_pressed_position().is_some_and(|position| {
-        windows
-            .single()
-            .map(|window| hud_toggle_rect(window.width()).contains(position))
-            .unwrap_or(false)
-    });
+    if overlay_state.open || overlay_state.input_captured || match_result.finished {
+        return;
+    }
+    let Some(cursor) = pointer.just_pressed_position() else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
 
-    if overlay_state.open || (!keyboard.just_pressed(KeyCode::Tab) && !pointer_toggled) {
+    for player in &player_roster.players {
+        let player_id = player.state.player_id;
+        let rect =
+            player_hud_entry_rect(window.width(), window.height(), *device_profile, player_id);
+        if rect.contains(cursor) {
+            hud_state.active_player = if hud_state.active_player == Some(player_id) {
+                None
+            } else {
+                Some(player_id)
+            };
+            return;
+        }
+    }
+
+    let Some(active_player_id) = hud_state.active_player else {
+        return;
+    };
+    let panel_rect = player_hud_panel_rect(
+        window.width(),
+        window.height(),
+        *device_profile,
+        active_player_id,
+    );
+    if !panel_rect.contains(cursor) {
+        hud_state.active_player = None;
         return;
     }
 
-    hud_fold_state.collapsed = !hud_fold_state.collapsed;
-    let next_visibility = if hud_fold_state.collapsed {
-        Visibility::Hidden
-    } else {
-        Visibility::Visible
+    let Some(player) = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == active_player_id)
+    else {
+        return;
     };
-    for mut visibility in &mut collapsible_query {
-        *visibility = next_visibility;
+    let is_actionable_turn = active_player_id == turn_state.current_player
+        && player.state.control == PlayerControl::Human;
+    if !is_actionable_turn {
+        return;
+    }
+
+    let Some(action) = player_hud_panel_action_at(cursor, panel_rect) else {
+        return;
+    };
+    match action {
+        PlayerHudPanelAction::Roll => {
+            if matches!(game_phase.get(), GamePhase::AwaitDice) {
+                turn_ui_request.queue_roll();
+            }
+        }
+        PlayerHudPanelAction::Skill(skill_action) => {
+            if matches!(
+                game_phase.get(),
+                GamePhase::AwaitDice | GamePhase::AwaitPieceSelect
+            ) {
+                skill_ui_request.queue(skill_action);
+            }
+        }
     }
 }
 
-#[derive(Clone, Copy)]
-struct ScreenRect {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-}
-
-impl ScreenRect {
-    fn contains(self, point: Vec2) -> bool {
-        point.x >= self.x
-            && point.x <= self.x + self.w
-            && point.y >= self.y
-            && point.y <= self.y + self.h
+pub fn player_hud_point_is_interactive(
+    point: Vec2,
+    window: &Window,
+    device_profile: DeviceProfile,
+    player_roster: &PlayerRoster,
+    hud_state: &PlayerHudState,
+) -> bool {
+    for player in &player_roster.players {
+        let rect = player_hud_entry_rect(
+            window.width(),
+            window.height(),
+            device_profile,
+            player.state.player_id,
+        );
+        if rect.contains(point) {
+            return true;
+        }
     }
+
+    hud_state.active_player.is_some_and(|player_id| {
+        player_hud_panel_rect(window.width(), window.height(), device_profile, player_id)
+            .contains(point)
+    })
 }
 
-fn hud_toggle_rect(window_width: f32) -> ScreenRect {
+fn gameplay_board_screen_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> ScreenRect {
+    let size = (window_width.min(window_height) - device_profile.board_screen_padding()).max(240.0);
     ScreenRect {
-        x: (window_width - 220.0).max(8.0),
-        y: 8.0,
-        w: 212.0,
-        h: 36.0,
+        x: (window_width - size) * 0.5,
+        y: (window_height - size) * 0.5,
+        w: size,
+        h: size,
+    }
+}
+
+fn player_hud_entry_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+    player_id: u8,
+) -> ScreenRect {
+    let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
+    let mut rect = match player_id {
+        1 => ScreenRect {
+            x: board.x + HUD_EDGE_MARGIN,
+            y: board.y + HUD_EDGE_MARGIN,
+            w: HUD_ENTRY_W,
+            h: HUD_ENTRY_H,
+        },
+        2 => ScreenRect {
+            x: board.x + board.w - HUD_ENTRY_W - HUD_EDGE_MARGIN,
+            y: board.y + HUD_EDGE_MARGIN,
+            w: HUD_ENTRY_W,
+            h: HUD_ENTRY_H,
+        },
+        3 => ScreenRect {
+            x: board.x + HUD_EDGE_MARGIN,
+            y: board.y + board.h - HUD_ENTRY_H - HUD_EDGE_MARGIN,
+            w: HUD_ENTRY_W,
+            h: HUD_ENTRY_H,
+        },
+        _ => ScreenRect {
+            x: board.x + board.w - HUD_ENTRY_W - HUD_EDGE_MARGIN,
+            y: board.y + board.h - HUD_ENTRY_H - HUD_EDGE_MARGIN,
+            w: HUD_ENTRY_W,
+            h: HUD_ENTRY_H,
+        },
+    };
+    rect = clamp_rect_to_window(rect, window_width, window_height);
+
+    let audio = top_right_audio_rect(window_width);
+    if player_id == 2 && rect.overlaps(audio) {
+        rect.y = (audio.y + audio.h + HUD_EDGE_MARGIN)
+            .min((window_height - rect.h - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN));
+    }
+    rect
+}
+
+fn player_hud_panel_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+    player_id: u8,
+) -> ScreenRect {
+    let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
+    let left_outside = board.x - HUD_PANEL_W - HUD_PANEL_GAP;
+    let right_outside = board.x + board.w + HUD_PANEL_GAP;
+    let x = match player_id {
+        1 | 3 if left_outside >= HUD_EDGE_MARGIN => left_outside,
+        1 | 3 => board.x + HUD_PANEL_GAP,
+        _ if right_outside + HUD_PANEL_W <= window_width - HUD_EDGE_MARGIN => right_outside,
+        _ => board.x + board.w - HUD_PANEL_W - HUD_PANEL_GAP,
+    };
+    let y = match player_id {
+        1 | 2 => board.y + HUD_ENTRY_H + HUD_PANEL_GAP,
+        _ => board.y + board.h - HUD_PANEL_H - HUD_ENTRY_H - HUD_PANEL_GAP,
+    };
+    clamp_rect_to_window(
+        ScreenRect {
+            x,
+            y,
+            w: HUD_PANEL_W,
+            h: HUD_PANEL_H,
+        },
+        window_width,
+        window_height,
+    )
+}
+
+fn clamp_rect_to_window(rect: ScreenRect, window_width: f32, window_height: f32) -> ScreenRect {
+    let max_x = (window_width - rect.w - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN);
+    let max_y = (window_height - rect.h - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN);
+    ScreenRect {
+        x: rect.x.clamp(HUD_EDGE_MARGIN, max_x),
+        y: rect.y.clamp(HUD_EDGE_MARGIN, max_y),
+        ..rect
+    }
+}
+
+fn top_right_audio_rect(window_width: f32) -> ScreenRect {
+    ScreenRect {
+        x: (window_width - TOP_RIGHT_AUDIO_W - TOP_RIGHT_AUDIO_MARGIN).max(TOP_RIGHT_AUDIO_MARGIN),
+        y: TOP_RIGHT_AUDIO_MARGIN,
+        w: TOP_RIGHT_AUDIO_W,
+        h: TOP_RIGHT_AUDIO_H,
+    }
+}
+
+fn apply_rect_to_node(node: &mut Node, rect: ScreenRect) {
+    node.left = Val::Px(rect.x);
+    node.top = Val::Px(rect.y);
+    node.width = Val::Px(rect.w);
+    node.height = Val::Px(rect.h);
+}
+
+fn panel_skill_button_rect(action: SkillUiAction) -> ScreenRect {
+    let index = HUD_SKILL_ACTIONS
+        .iter()
+        .position(|candidate| *candidate == action)
+        .unwrap_or_default() as f32;
+    ScreenRect {
+        x: HUD_PANEL_INSET,
+        y: HUD_SKILL_ROW_START + index * (HUD_SKILL_ROW_HEIGHT + HUD_SKILL_ROW_GAP),
+        w: HUD_PANEL_W - HUD_PANEL_INSET * 2.0,
+        h: HUD_SKILL_ROW_HEIGHT,
+    }
+}
+
+fn panel_roll_button_rect() -> ScreenRect {
+    ScreenRect {
+        x: HUD_PANEL_INSET,
+        y: HUD_ROLL_BUTTON_TOP,
+        w: HUD_PANEL_W - HUD_PANEL_INSET * 2.0,
+        h: HUD_ROLL_BUTTON_H,
+    }
+}
+
+fn player_hud_panel_action_at(
+    cursor: Vec2,
+    panel_rect: ScreenRect,
+) -> Option<PlayerHudPanelAction> {
+    let local = Vec2::new(cursor.x - panel_rect.x, cursor.y - panel_rect.y);
+    if panel_roll_button_rect().contains(local) {
+        return Some(PlayerHudPanelAction::Roll);
+    }
+
+    HUD_SKILL_ACTIONS.iter().find_map(|action| {
+        panel_skill_button_rect(*action)
+            .contains(local)
+            .then_some(PlayerHudPanelAction::Skill(*action))
+    })
+}
+
+fn control_label(control: PlayerControl) -> &'static str {
+    match control {
+        PlayerControl::Human => "Human",
+        PlayerControl::Ai => "AI",
+    }
+}
+
+fn skill_action_label(action: SkillUiAction) -> &'static str {
+    match action {
+        SkillUiAction::Dash => "Dash",
+        SkillUiAction::Snipe => "Snipe",
+        SkillUiAction::Swap => "Swap",
+        SkillUiAction::Shield => "Shield",
+        SkillUiAction::DoubleDice => "Double",
+    }
+}
+
+fn panel_prompt_text(
+    is_current_player: bool,
+    control: PlayerControl,
+    phase: &GamePhase,
+    input_state: &TurnInputState,
+    skill_target_state: &SkillTargetState,
+) -> String {
+    if !is_current_player {
+        return "Waiting".to_string();
+    }
+    if control == PlayerControl::Ai {
+        return "AI is playing".to_string();
+    }
+
+    let base = match phase {
+        GamePhase::AwaitDice => "Ready to roll or use a skill",
+        GamePhase::AwaitPieceSelect => "Choose a highlighted piece",
+        GamePhase::ResolveSkillEffect => skill_target_state
+            .prompt
+            .as_deref()
+            .unwrap_or("Choose a highlighted target"),
+        _ => "Resolving action",
+    };
+    match candidate_piece_hint(input_state, skill_target_state) {
+        Some(hint) => format!("{base}\n{hint}"),
+        None => base.to_string(),
     }
 }
 
@@ -751,19 +868,64 @@ fn candidate_piece_hint(
     ))
 }
 
-fn format_prompt_text(prompt_text: &str, candidate_hint: &Option<String>) -> String {
-    match candidate_hint {
-        Some(hint) => format!("Prompt: {prompt_text}\n{hint}"),
-        None => format!("Prompt: {prompt_text}"),
-    }
+fn format_player_panel_text(
+    player_id: u8,
+    team_id: u8,
+    control: PlayerControl,
+    is_current_player: bool,
+    phase: &GamePhase,
+    skills: Option<&PlayerSkillState>,
+    prompt: String,
+) -> String {
+    let turn_state = if is_current_player {
+        match (control, phase) {
+            (PlayerControl::Human, GamePhase::AwaitDice) => "Turn: ready",
+            (PlayerControl::Human, GamePhase::AwaitPieceSelect) => "Turn: choose piece",
+            (PlayerControl::Human, GamePhase::ResolveSkillEffect) => "Turn: choose target",
+            (PlayerControl::Human, _) => "Turn: resolving",
+            (PlayerControl::Ai, _) => "Turn: AI",
+        }
+    } else {
+        "Turn: waiting"
+    };
+    let skill_summary = skills.map_or_else(
+        || "Skills: unavailable".to_string(),
+        |skills| {
+            let armed = match (skills.dash_armed, skills.double_dice_armed) {
+                (true, true) => " | Armed: Dash, Double",
+                (true, false) => " | Armed: Dash",
+                (false, true) => " | Armed: Double",
+                (false, false) => "",
+            };
+            format!(
+                "Skills: Dash {}  Snipe {}\nSwap {}  Shield {}  Double {}{}",
+                skills.dash_charges,
+                skills.snipe_charges,
+                skills.swap_charges,
+                skills.shield_charges,
+                skills.double_dice_charges,
+                armed
+            )
+        },
+    );
+
+    format!(
+        "P{} {} | Team {}\n{}\n{}\n{}",
+        player_id,
+        control_label(control),
+        team_id,
+        turn_state,
+        skill_summary,
+        prompt
+    )
 }
 
 fn is_skill_button_ready(
     action: SkillUiAction,
-    skills: &crate::gameplay::skill_flow::PlayerSkillState,
+    skills: &PlayerSkillState,
     can_use_skill: bool,
     phase: &GamePhase,
-    mode: crate::data::game_mode::GameMode,
+    mode: GameMode,
     board_availability: SkillBoardAvailability,
 ) -> bool {
     if !can_use_skill {
@@ -782,7 +944,7 @@ fn is_skill_button_ready(
         }
         SkillUiAction::Swap => {
             matches!(phase, GamePhase::AwaitDice)
-                && mode == crate::data::game_mode::GameMode::TwoVsTwo
+                && mode == GameMode::TwoVsTwo
                 && skills.swap_charges > 0
                 && board_availability.active_self
                 && board_availability.active_teammate
@@ -800,158 +962,14 @@ fn is_skill_button_ready(
     }
 }
 
-fn skill_button_color(ready: bool, can_use_skill: bool) -> Color {
+fn skill_button_color(ready: bool, available_context: bool) -> Color {
     if ready {
-        Color::srgba(0.53, 0.77, 0.96, 0.42)
-    } else if can_use_skill {
-        Color::srgba(0.78, 0.82, 0.89, 0.28)
+        Color::srgba(0.45, 0.70, 0.92, 0.52)
+    } else if available_context {
+        Color::srgba(0.76, 0.82, 0.89, 0.34)
     } else {
-        Color::srgba(0.70, 0.73, 0.79, 0.16)
+        Color::srgba(0.70, 0.73, 0.79, 0.18)
     }
-}
-
-fn handle_skill_panel_click(
-    pointer: Res<PointerInputState>,
-    windows: Query<&Window>,
-    overlay_state: Res<SoundSettingsOverlayState>,
-    mut params: SkillPanelClickParams,
-) {
-    if params.hud_fold_state.collapsed
-        || params.match_result.finished
-        || overlay_state.input_captured
-        || !matches!(
-            params.game_phase.get(),
-            GamePhase::AwaitDice | GamePhase::AwaitPieceSelect
-        )
-    {
-        return;
-    }
-    let Some(cursor) = pointer.just_pressed_position() else {
-        return;
-    };
-
-    let Some(current_player) = params
-        .player_roster
-        .players
-        .iter()
-        .find(|player| player.state.player_id == params.turn_state.current_player)
-    else {
-        return;
-    };
-    if current_player.state.control != PlayerControl::Human {
-        return;
-    }
-
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let (panel_left, panel_right) = hud_skill_panel_bounds(window.width());
-    if cursor.x < panel_left || cursor.x > panel_right {
-        return;
-    }
-
-    if cursor_in_vertical_band(cursor.y, HUD_ROLL_BUTTON_TOP, HUD_ROLL_BUTTON_HEIGHT) {
-        if matches!(params.game_phase.get(), GamePhase::AwaitDice) {
-            params.turn_ui_request.queue_roll();
-        }
-        return;
-    }
-
-    let Some(action) = skill_action_for_cursor_y(cursor.y) else {
-        return;
-    };
-    params.skill_ui_request.queue(action);
-}
-
-fn hud_skill_panel_bounds(window_width: f32) -> (f32, f32) {
-    let panel_left = (window_width - HUD_PANEL_MARGIN - HUD_PANEL_WIDTH).max(HUD_PANEL_MARGIN);
-    let content_left = panel_left + HUD_CONTENT_INSET;
-    (content_left, content_left + HUD_TEXT_WIDTH)
-}
-
-fn skill_action_for_cursor_y(cursor_y: f32) -> Option<SkillUiAction> {
-    HUD_SKILL_ROW_TOPS
-        .iter()
-        .enumerate()
-        .find_map(|(index, row_top)| {
-            cursor_in_vertical_band(cursor_y, *row_top, HUD_SKILL_ROW_HEIGHT).then_some(index)
-        })
-        .and_then(|index| match index {
-            0 => Some(SkillUiAction::Dash),
-            1 => Some(SkillUiAction::Snipe),
-            2 => Some(SkillUiAction::Swap),
-            3 => Some(SkillUiAction::Shield),
-            4 => Some(SkillUiAction::DoubleDice),
-            _ => None,
-        })
-}
-
-fn cursor_in_vertical_band(cursor_y: f32, top: f32, height: f32) -> bool {
-    cursor_y >= top && cursor_y <= top + height
-}
-
-fn format_skill_panel(
-    skills: &crate::gameplay::skill_flow::PlayerSkillState,
-    is_human_turn: bool,
-    can_use_skill: bool,
-    mode: crate::data::game_mode::GameMode,
-    phase: &GamePhase,
-) -> String {
-    let header = if is_human_turn {
-        if skills.skill_blocked_this_turn {
-            "Skills blocked by event"
-        } else if can_use_skill {
-            "Skills ready"
-        } else {
-            "Skill slot spent"
-        }
-    } else {
-        "AI skills auto"
-    };
-    let dash_state = if skills.dash_armed {
-        "armed +3 move"
-    } else if skills.dash_charges == 0 {
-        "cooldown"
-    } else {
-        "ready"
-    };
-    let snipe_state = if matches!(phase, GamePhase::ResolveSkillEffect) {
-        "targeting"
-    } else if skills.snipe_charges == 0 {
-        "reloading"
-    } else {
-        "ready"
-    };
-    let swap_state = if mode == crate::data::game_mode::GameMode::TwoVsTwo {
-        if skills.swap_charges == 0 {
-            "empty"
-        } else {
-            "ready"
-        }
-    } else {
-        "locked (2v2)"
-    };
-    let shield_state = if skills.shield_charges == 0 {
-        "empty"
-    } else {
-        "ready"
-    };
-    let dice_state = if skills.double_dice_armed {
-        "armed"
-    } else if skills.double_dice_charges == 0 {
-        "empty"
-    } else {
-        "ready"
-    };
-
-    format!(
-        "{header}\nDash E: {dash_state} ({})\nSnipe S: {snipe_state} ({})\nSwap A: {swap_state} ({})\nShield Q: {shield_state} ({})\nDouble W: {dice_state} ({})",
-        skills.dash_charges,
-        skills.snipe_charges,
-        skills.swap_charges,
-        skills.shield_charges,
-        skills.double_dice_charges,
-    )
 }
 
 fn cleanup_hud(mut commands: Commands, query: Query<Entity, (With<HudEntity>, Without<ChildOf>)>) {
@@ -1018,24 +1036,73 @@ fn cleanup_result(
 mod tests {
     use super::*;
 
-    #[test]
-    fn hud_event_log_keeps_recent_compact_entries() {
-        let mut log = HudEventLogState::default();
-
-        log.record("P1 rolled 6 and launched piece #1");
-        log.record("P2 rolled 3 but had no legal action");
-        log.record("P1 resolved DoubleDice into 11 and moved a very long highlighted action");
-
-        let formatted = log.format();
-        assert!(!formatted.contains("P1 rolled 6"));
-        assert!(formatted.contains("P2 rolled 3"));
-        assert!(formatted.contains("..."));
-        assert!(formatted.lines().count() <= 3);
+    fn test_profile(width: f32, height: f32) -> DeviceProfile {
+        DeviceProfile::from_window_size(width, height)
     }
 
     #[test]
-    fn hud_prompt_and_event_regions_have_vertical_breathing_room() {
-        assert!(HUD_PROMPT_TOP + 64.0 <= HUD_EVENTS_TOP);
-        assert!(HUD_EVENTS_TOP + 48.0 <= HUD_PANEL_HEIGHT);
+    fn player_hud_entries_follow_centered_board_corners() {
+        let profile = test_profile(1280.0, 720.0);
+        let board = gameplay_board_screen_rect(1280.0, 720.0, profile);
+        let p1 = player_hud_entry_rect(1280.0, 720.0, profile, 1);
+        let p2 = player_hud_entry_rect(1280.0, 720.0, profile, 2);
+        let p3 = player_hud_entry_rect(1280.0, 720.0, profile, 3);
+        let p4 = player_hud_entry_rect(1280.0, 720.0, profile, 4);
+
+        assert!((p1.x - (board.x + HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+        assert!((p1.y - (board.y + HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+        assert!((p2.x + p2.w - (board.x + board.w - HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+        assert!((p3.y + p3.h - (board.y + board.h - HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+        assert!((p4.x + p4.w - (board.x + board.w - HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn top_right_player_entry_does_not_cover_audio_entry() {
+        let profile = test_profile(360.0, 640.0);
+        let p2 = player_hud_entry_rect(360.0, 640.0, profile, 2);
+        let audio = top_right_audio_rect(360.0);
+
+        assert!(!p2.overlaps(audio));
+    }
+
+    #[test]
+    fn player_hud_panel_stays_inside_common_windows() {
+        for (width, height) in [(1280.0, 720.0), (2560.0, 1600.0), (640.0, 360.0)] {
+            let profile = test_profile(width, height);
+            for player_id in 1..=4 {
+                let panel = player_hud_panel_rect(width, height, profile, player_id);
+                assert!(panel.x >= HUD_EDGE_MARGIN);
+                assert!(panel.y >= HUD_EDGE_MARGIN);
+                assert!(panel.x + panel.w <= width - HUD_EDGE_MARGIN || width < panel.w);
+                assert!(panel.y + panel.h <= height - HUD_EDGE_MARGIN || height < panel.h);
+            }
+        }
+    }
+
+    #[test]
+    fn panel_hit_targets_map_to_expected_actions() {
+        let panel = ScreenRect {
+            x: 100.0,
+            y: 80.0,
+            w: HUD_PANEL_W,
+            h: HUD_PANEL_H,
+        };
+        let dash = panel_skill_button_rect(SkillUiAction::Dash);
+        let roll = panel_roll_button_rect();
+
+        assert!(matches!(
+            player_hud_panel_action_at(
+                Vec2::new(panel.x + dash.x + 4.0, panel.y + dash.y + 4.0),
+                panel
+            ),
+            Some(PlayerHudPanelAction::Skill(SkillUiAction::Dash))
+        ));
+        assert!(matches!(
+            player_hud_panel_action_at(
+                Vec2::new(panel.x + roll.x + 4.0, panel.y + roll.y + 4.0),
+                panel
+            ),
+            Some(PlayerHudPanelAction::Roll)
+        ));
     }
 }

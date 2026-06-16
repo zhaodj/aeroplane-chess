@@ -25,6 +25,7 @@ use crate::gameplay::turn_flow::{
 use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
+use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
 use crate::states::{AppState, GamePhase};
 
 /// 回合驱动插件：整合 AI/人类输入并推进回合结算流程。
@@ -780,9 +781,11 @@ fn handle_human_action_input(
 fn handle_human_action_click(
     pointer: Res<PointerInputState>,
     device_profile: Res<DeviceProfile>,
+    windows: Query<&Window>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
     game_phase: Res<State<GamePhase>>,
     overlay_state: Res<SoundSettingsOverlayState>,
+    hud_state: Res<PlayerHudState>,
     mut params: TurnActionParams,
 ) {
     if !matches!(game_phase.get(), GamePhase::AwaitPieceSelect) || params.match_result.finished {
@@ -795,6 +798,18 @@ fn handle_human_action_click(
     let Some(pointer_position) = pointer.just_pressed_position() else {
         return;
     };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    if player_hud_point_is_interactive(
+        pointer_position,
+        window,
+        *device_profile,
+        &params.player_roster,
+        &hud_state,
+    ) {
+        return;
+    }
     let Ok((camera, camera_transform)) = camera_query.single() else {
         return;
     };
