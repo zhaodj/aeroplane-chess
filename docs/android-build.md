@@ -15,6 +15,7 @@
 - Emulator：`emulator`
 - AVD：`aeroplane_tablet_api34`
 - System Image：`system-images;android-34;google_apis;arm64-v8a`
+- GameActivity：`androidx.games:games-activity:3.0.5`
 - JDK：Homebrew `openjdk@17`
 - Gradle：Homebrew `gradle@8`
 - Rust Android target：`aarch64-linux-android`

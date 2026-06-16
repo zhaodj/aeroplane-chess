@@ -57,6 +57,12 @@ struct MenuEntity;
 /// 常驻声音入口实体。
 struct GlobalSoundEntry;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlobalSoundEntryAnchor {
+    Left,
+    Right,
+}
+
 #[derive(Component)]
 /// 全局声音弹窗实体。
 struct GlobalSoundModal;
@@ -203,7 +209,7 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(GLOBAL_SOUND_ENTRY_LEFT),
+                right: Val::Px(GLOBAL_SOUND_ENTRY_LEFT),
                 top: Val::Px(GLOBAL_SOUND_ENTRY_TOP),
                 width: Val::Px(GLOBAL_SOUND_ENTRY_W),
                 height: Val::Px(GLOBAL_SOUND_ENTRY_H),
@@ -418,8 +424,10 @@ fn spawn_global_sound_panel_button(
 
 fn update_sound_overlay_input_capture(
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
+    app_state: Res<State<AppState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     pointer: Res<PointerInputState>,
+    windows: Query<&Window>,
 ) {
     overlay_state.input_captured = false;
 
@@ -435,15 +443,22 @@ fn update_sound_overlay_input_capture(
     let Some(cursor) = pointer.just_pressed_position() else {
         return;
     };
+    let Ok(window) = windows.single() else {
+        return;
+    };
 
-    overlay_state.input_captured = global_sound_entry_rect().contains(cursor);
+    overlay_state.input_captured =
+        global_sound_entry_rect(window, app_state.get()).contains(cursor);
 }
 
 fn update_global_sound_overlay(
     app_state: Res<State<AppState>>,
     audio_settings: Res<AudioSettings>,
     overlay_state: Res<SoundSettingsOverlayState>,
-    mut entry_query: Query<&mut Visibility, (With<GlobalSoundEntry>, Without<GlobalSoundModal>)>,
+    mut entry_query: Query<
+        (&mut Node, &mut Visibility),
+        (With<GlobalSoundEntry>, Without<GlobalSoundModal>),
+    >,
     mut modal_query: Query<&mut Visibility, (With<GlobalSoundModal>, Without<GlobalSoundEntry>)>,
     mut value_query: Query<(&SoundSettingsValueText, &mut Text)>,
 ) {
@@ -453,7 +468,9 @@ fn update_global_sound_overlay(
     } else {
         Visibility::Hidden
     };
-    for mut visibility in &mut entry_query {
+    let entry_anchor = global_sound_entry_anchor(app_state.get());
+    for (mut node, mut visibility) in &mut entry_query {
+        apply_global_sound_entry_anchor(&mut node, entry_anchor);
         *visibility = entry_visibility;
     }
 
@@ -491,6 +508,7 @@ fn handle_global_sound_overlay_input(
 
 fn handle_global_sound_overlay_click(
     pointer: Res<PointerInputState>,
+    app_state: Res<State<AppState>>,
     windows: Query<&Window>,
     mut audio_settings: ResMut<AudioSettings>,
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
@@ -514,7 +532,7 @@ fn handle_global_sound_overlay_click(
         return;
     }
 
-    if global_sound_entry_rect().contains(cursor) {
+    if global_sound_entry_rect(window, app_state.get()).contains(cursor) {
         overlay_state.open = true;
     }
 }
@@ -533,9 +551,39 @@ fn apply_global_sound_action(
     }
 }
 
-fn global_sound_entry_rect() -> ClickRect {
+fn global_sound_entry_anchor(app_state: &AppState) -> GlobalSoundEntryAnchor {
+    if matches!(app_state, AppState::InGame) {
+        GlobalSoundEntryAnchor::Left
+    } else {
+        GlobalSoundEntryAnchor::Right
+    }
+}
+
+fn apply_global_sound_entry_anchor(node: &mut Node, anchor: GlobalSoundEntryAnchor) {
+    match anchor {
+        GlobalSoundEntryAnchor::Left => {
+            node.left = Val::Px(GLOBAL_SOUND_ENTRY_LEFT);
+            node.right = Val::Auto;
+        }
+        GlobalSoundEntryAnchor::Right => {
+            node.left = Val::Auto;
+            node.right = Val::Px(GLOBAL_SOUND_ENTRY_LEFT);
+        }
+    }
+    node.top = Val::Px(GLOBAL_SOUND_ENTRY_TOP);
+}
+
+fn global_sound_entry_rect(window: &Window, app_state: &AppState) -> ClickRect {
+    let x = match global_sound_entry_anchor(app_state) {
+        GlobalSoundEntryAnchor::Left => GLOBAL_SOUND_ENTRY_LEFT,
+        GlobalSoundEntryAnchor::Right => {
+            (window.width() - GLOBAL_SOUND_ENTRY_W - GLOBAL_SOUND_ENTRY_LEFT)
+                .max(GLOBAL_SOUND_ENTRY_LEFT)
+        }
+    };
+
     ClickRect {
-        x: GLOBAL_SOUND_ENTRY_LEFT,
+        x,
         y: GLOBAL_SOUND_ENTRY_TOP,
         w: GLOBAL_SOUND_ENTRY_W,
         h: GLOBAL_SOUND_ENTRY_H,
@@ -607,8 +655,12 @@ fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettings
         .find_map(|(action, rect)| rect.contains(local).then_some(*action))
 }
 
-fn spawn_main_menu(mut commands: Commands) {
+fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
     // 主菜单：标题 + 开始与声音设置入口。
+    let window_width = windows.single().map(Window::width).unwrap_or(1280.0);
+    let title_left = ((window_width - 520.0) * 0.5).max(MENU_LEFT);
+    let start_rect = main_menu_start_rect(window_width);
+
     commands.spawn((
         Text::new("Aeroplane Chess"),
         TextFont {
@@ -619,7 +671,7 @@ fn spawn_main_menu(mut commands: Commands) {
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(130.0),
-            left: Val::Px(MENU_LEFT),
+            left: Val::Px(title_left),
             ..default()
         },
         Name::new("MainMenuTitle"),
@@ -628,12 +680,7 @@ fn spawn_main_menu(mut commands: Commands) {
 
     spawn_box_with_label(
         &mut commands,
-        ClickRect {
-            x: MENU_LEFT,
-            y: MAIN_START_TOP,
-            w: MAIN_START_WIDTH,
-            h: MAIN_START_HEIGHT,
-        },
+        start_rect,
         Color::srgba(0.42, 0.61, 0.88, 0.30),
         "Start Match",
         30.0,
@@ -642,15 +689,19 @@ fn spawn_main_menu(mut commands: Commands) {
 
     commands.spawn((
         MainMenuStartArea,
-        ClickRect {
-            x: MENU_LEFT,
-            y: MAIN_START_TOP,
-            w: MAIN_START_WIDTH,
-            h: MAIN_START_HEIGHT,
-        },
+        start_rect,
         Name::new("MainMenuStartArea"),
         MenuEntity,
     ));
+}
+
+fn main_menu_start_rect(window_width: f32) -> ClickRect {
+    ClickRect {
+        x: ((window_width - MAIN_START_WIDTH) * 0.5).max(MENU_LEFT),
+        y: MAIN_START_TOP,
+        w: MAIN_START_WIDTH,
+        h: MAIN_START_HEIGHT,
+    }
 }
 
 fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSettings>) {
@@ -1429,7 +1480,10 @@ fn apply_mode_select_action(
     }
 }
 
-fn cleanup_menu(mut commands: Commands, query: Query<Entity, With<MenuEntity>>) {
+fn cleanup_menu(
+    mut commands: Commands,
+    query: Query<Entity, (With<MenuEntity>, Without<ChildOf>)>,
+) {
     // 退出菜单状态时清理所有临时 UI 实体。
     for entity in &query {
         commands.entity(entity).despawn();
@@ -1496,16 +1550,24 @@ mod tests {
 
     #[test]
     fn main_menu_start_button_leaves_room_for_global_sound_entry() {
-        let start = ClickRect {
-            x: MENU_LEFT,
-            y: MAIN_START_TOP,
-            w: MAIN_START_WIDTH,
-            h: MAIN_START_HEIGHT,
-        };
-        let audio = global_sound_entry_rect();
+        let window = test_window();
+        let start = main_menu_start_rect(window.width());
+        let audio = global_sound_entry_rect(&window, &AppState::MainMenu);
 
         assert!(audio.y + audio.h + 40.0 <= start.y);
         assert!(start.y + start.h <= 720.0);
+        assert!(start.x > MENU_LEFT);
+    }
+
+    #[test]
+    fn global_sound_entry_moves_away_from_ingame_hud() {
+        let window = test_window();
+        let menu_entry = global_sound_entry_rect(&window, &AppState::MainMenu);
+        let ingame_entry = global_sound_entry_rect(&window, &AppState::InGame);
+
+        assert!(menu_entry.x > window.width() * 0.5);
+        assert_eq!(ingame_entry.x, GLOBAL_SOUND_ENTRY_LEFT);
+        assert!(ingame_entry.x + ingame_entry.w < window.width() * 0.5);
     }
 
     #[test]
@@ -1575,16 +1637,11 @@ mod tests {
 
     #[test]
     fn global_sound_entry_and_panel_actions_have_stable_hit_targets() {
-        let entry = global_sound_entry_rect();
-        assert!(entry.contains(Vec2::new(
-            GLOBAL_SOUND_ENTRY_LEFT + 8.0,
-            GLOBAL_SOUND_ENTRY_TOP + 8.0
-        )));
+        let window = test_window();
+        let entry = global_sound_entry_rect(&window, &AppState::MainMenu);
+        assert!(entry.contains(Vec2::new(entry.x + 8.0, entry.y + 8.0)));
+        assert!(entry.x > window.width() * 0.5);
 
-        let window = Window {
-            resolution: (1280, 720).into(),
-            ..default()
-        };
         let panel = global_sound_panel_rect(&window);
         assert_eq!(panel.w, GLOBAL_SOUND_PANEL_W);
         assert_eq!(panel.h, GLOBAL_SOUND_PANEL_H);
@@ -1612,6 +1669,13 @@ mod tests {
             global_sound_action_at(close, &window),
             Some(SoundSettingsAction::Back)
         );
+    }
+
+    fn test_window() -> Window {
+        Window {
+            resolution: (1280, 720).into(),
+            ..default()
+        }
     }
 
     #[test]

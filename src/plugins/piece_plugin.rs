@@ -1036,7 +1036,10 @@ fn piece_effect_text_color(kind: PieceEffectKind) -> Color {
     }
 }
 
-fn cleanup_pieces(mut commands: Commands, query: Query<Entity, With<PieceEntity>>) {
+fn cleanup_pieces(
+    mut commands: Commands,
+    query: Query<Entity, (With<PieceEntity>, Without<ChildOf>)>,
+) {
     for entity in &query {
         commands.entity(entity).despawn();
     }

@@ -104,8 +104,8 @@ impl HudEventLogState {
             return;
         }
 
-        self.entries.push(message.to_string());
-        const MAX_EVENTS: usize = 4;
+        self.entries.push(compact_hud_event(message));
+        const MAX_EVENTS: usize = 2;
         if self.entries.len() > MAX_EVENTS {
             self.entries.remove(0);
         }
@@ -118,6 +118,21 @@ impl HudEventLogState {
             format!("Events\n{}", self.entries.join("\n"))
         }
     }
+}
+
+fn compact_hud_event(message: &str) -> String {
+    const MAX_EVENT_CHARS: usize = 42;
+    let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= MAX_EVENT_CHARS {
+        return compact;
+    }
+
+    let mut shortened = compact
+        .chars()
+        .take(MAX_EVENT_CHARS.saturating_sub(3))
+        .collect::<String>();
+    shortened.push_str("...");
+    shortened
 }
 
 type HudPrimaryQuery<'w, 's> = Query<
@@ -241,7 +256,7 @@ struct SkillPanelClickParams<'w> {
 }
 
 const HUD_PANEL_WIDTH: f32 = 276.0;
-const HUD_PANEL_HEIGHT: f32 = 430.0;
+const HUD_PANEL_HEIGHT: f32 = 462.0;
 const HUD_PANEL_MARGIN: f32 = 16.0;
 const HUD_CONTENT_INSET: f32 = 12.0;
 const HUD_TEXT_WIDTH: f32 = HUD_PANEL_WIDTH - HUD_CONTENT_INSET * 2.0;
@@ -249,6 +264,8 @@ const HUD_SKILL_ROW_TOPS: [f32; 5] = [158.0, 182.0, 206.0, 230.0, 254.0];
 const HUD_SKILL_ROW_HEIGHT: f32 = 24.0;
 const HUD_ROLL_BUTTON_TOP: f32 = 286.0;
 const HUD_ROLL_BUTTON_HEIGHT: f32 = 30.0;
+const HUD_PROMPT_TOP: f32 = 326.0;
+const HUD_EVENTS_TOP: f32 = 402.0;
 
 #[derive(Clone, Copy, Default)]
 struct SkillBoardAvailability {
@@ -431,7 +448,7 @@ fn spawn_hud(
         ZIndex(1),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(326.0),
+            top: Val::Px(HUD_PROMPT_TOP),
             right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET),
             width: Val::Px(HUD_TEXT_WIDTH),
             ..default()
@@ -453,7 +470,7 @@ fn spawn_hud(
         ZIndex(1),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(374.0),
+            top: Val::Px(HUD_EVENTS_TOP),
             right: Val::Px(HUD_PANEL_MARGIN + HUD_CONTENT_INSET),
             width: Val::Px(HUD_TEXT_WIDTH),
             ..default()
@@ -584,12 +601,15 @@ fn update_hud(
     } else {
         String::new()
     };
-    let prompt_text = data
-        .skill_target_state
-        .prompt
-        .as_deref()
-        .or(data.input_state.prompt.as_deref())
-        .unwrap_or("Space roll | Q Shield | S Snipe | A Swap | W Double | E Dash");
+    let prompt_text = if is_human_turn {
+        data.skill_target_state
+            .prompt
+            .as_deref()
+            .or(data.input_state.prompt.as_deref())
+            .unwrap_or("Space: roll | Q/S/A/W/E: skills")
+    } else {
+        "AI turn in progress"
+    };
     let candidate_hint = candidate_piece_hint(&data.input_state, &data.skill_target_state);
     let skill_text = current_skills
         .map(|skills| {
@@ -934,7 +954,7 @@ fn format_skill_panel(
     )
 }
 
-fn cleanup_hud(mut commands: Commands, query: Query<Entity, With<HudEntity>>) {
+fn cleanup_hud(mut commands: Commands, query: Query<Entity, (With<HudEntity>, Without<ChildOf>)>) {
     for entity in &query {
         commands.entity(entity).despawn();
     }
@@ -985,8 +1005,37 @@ fn handle_result_input(
     }
 }
 
-fn cleanup_result(mut commands: Commands, query: Query<Entity, With<ResultEntity>>) {
+fn cleanup_result(
+    mut commands: Commands,
+    query: Query<Entity, (With<ResultEntity>, Without<ChildOf>)>,
+) {
     for entity in &query {
         commands.entity(entity).despawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hud_event_log_keeps_recent_compact_entries() {
+        let mut log = HudEventLogState::default();
+
+        log.record("P1 rolled 6 and launched piece #1");
+        log.record("P2 rolled 3 but had no legal action");
+        log.record("P1 resolved DoubleDice into 11 and moved a very long highlighted action");
+
+        let formatted = log.format();
+        assert!(!formatted.contains("P1 rolled 6"));
+        assert!(formatted.contains("P2 rolled 3"));
+        assert!(formatted.contains("..."));
+        assert!(formatted.lines().count() <= 3);
+    }
+
+    #[test]
+    fn hud_prompt_and_event_regions_have_vertical_breathing_room() {
+        assert!(HUD_PROMPT_TOP + 64.0 <= HUD_EVENTS_TOP);
+        assert!(HUD_EVENTS_TOP + 48.0 <= HUD_PANEL_HEIGHT);
     }
 }

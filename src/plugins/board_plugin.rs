@@ -483,7 +483,10 @@ fn spawn_board(
     }
 }
 
-fn cleanup_board(mut commands: Commands, query: Query<Entity, With<BoardSceneEntity>>) {
+fn cleanup_board(
+    mut commands: Commands,
+    query: Query<Entity, (With<BoardSceneEntity>, Without<ChildOf>)>,
+) {
     for entity in &query {
         commands.entity(entity).despawn();
     }
