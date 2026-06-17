@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 
-use crate::constants::HUD_Z_LAYER;
 use crate::data::game_mode::GameMode;
 use crate::domain::piece::PieceState;
 use crate::domain::player::PlayerControl;
@@ -37,7 +36,10 @@ impl Plugin for UiPlugin {
             .add_systems(OnEnter(AppState::Result), spawn_result_screen)
             .add_systems(
                 Update,
-                handle_result_input.run_if(in_state(AppState::Result)),
+                (
+                    handle_result_input.run_if(in_state(AppState::Result)),
+                    handle_result_click.run_if(in_state(AppState::Result)),
+                ),
             )
             .add_systems(OnExit(AppState::InGame), cleanup_hud)
             .add_systems(OnExit(AppState::Result), cleanup_result);
@@ -49,6 +51,12 @@ struct HudEntity;
 
 #[derive(Component)]
 struct ResultEntity;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResultAction {
+    RestartMatch,
+    MainMenu,
+}
 
 #[derive(Component)]
 struct PlayerHudEntry {
@@ -153,6 +161,12 @@ const HUD_ROLL_BUTTON_H: f32 = 28.0;
 const TOP_RIGHT_AUDIO_W: f32 = 108.0;
 const TOP_RIGHT_AUDIO_H: f32 = 38.0;
 const TOP_RIGHT_AUDIO_MARGIN: f32 = 16.0;
+const RESULT_PANEL_W: f32 = 460.0;
+const RESULT_PANEL_H: f32 = 286.0;
+const RESULT_BUTTON_W: f32 = 168.0;
+const RESULT_BUTTON_H: f32 = 46.0;
+const RESULT_BUTTON_GAP: f32 = 18.0;
+const RESULT_BUTTON_TOP: f32 = 214.0;
 const HUD_SKILL_ACTIONS: [SkillUiAction; 5] = [
     SkillUiAction::Dash,
     SkillUiAction::Snipe,
@@ -980,31 +994,85 @@ fn cleanup_hud(mut commands: Commands, query: Query<Entity, (With<HudEntity>, Wi
 
 fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
     let winner = match_result.winner_team_id.unwrap_or_default();
-    commands.spawn((
-        Sprite::from_color(Color::srgba(0.98, 0.99, 1.0, 0.94), Vec2::new(420.0, 220.0)),
-        Transform::from_xyz(0.0, 40.0, HUD_Z_LAYER),
-        Name::new("ResultBackdrop"),
-        ResultEntity,
-    ));
-    commands.spawn((
-        Text::new(format!(
-            "Match Result\n\nTeam {} wins\n\nR: Restart Match\nEsc: Main Menu",
-            winner
-        )),
-        TextFont {
-            font_size: 40.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.10, 0.16, 0.24)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Percent(28.0),
-            left: Val::Percent(22.0),
-            ..default()
-        },
-        Name::new("ResultText"),
-        ResultEntity,
-    ));
+    let winner_players = format_winner_players(&match_result);
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            ZIndex(60),
+            Name::new("ResultRoot"),
+            ResultEntity,
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    width: Val::Px(RESULT_PANEL_W),
+                    height: Val::Px(RESULT_PANEL_H),
+                    position_type: PositionType::Relative,
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.98, 0.99, 1.0, 0.96)),
+                BorderColor::all(Color::srgba(0.34, 0.42, 0.55, 0.38)),
+                Name::new("ResultPanel"),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("Match Result"),
+                    TextFont {
+                        font_size: 34.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                    TextLayout::new_with_justify(Justify::Center),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(28.0),
+                        left: Val::Px(0.0),
+                        width: Val::Px(RESULT_PANEL_W),
+                        ..default()
+                    },
+                    Name::new("ResultTitle"),
+                ));
+                panel.spawn((
+                    Text::new(format!("Team {winner} wins\nPlayers: {winner_players}")),
+                    TextFont {
+                        font_size: 24.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.14, 0.20, 0.30)),
+                    TextLayout::new_with_justify(Justify::Center),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(88.0),
+                        left: Val::Px(28.0),
+                        width: Val::Px(RESULT_PANEL_W - 56.0),
+                        ..default()
+                    },
+                    Name::new("ResultWinnerText"),
+                ));
+                spawn_result_button(
+                    panel,
+                    result_button_local_rect(ResultAction::RestartMatch),
+                    "Restart Match",
+                    Color::srgba(0.42, 0.65, 0.88, 0.38),
+                );
+                spawn_result_button(
+                    panel,
+                    result_button_local_rect(ResultAction::MainMenu),
+                    "Main Menu",
+                    Color::srgba(0.72, 0.54, 0.44, 0.30),
+                );
+            });
+        });
 }
 
 fn handle_result_input(
@@ -1017,9 +1085,132 @@ fn handle_result_input(
     }
 
     if keyboard.just_pressed(KeyCode::KeyR) {
-        next_app_state.set(AppState::LoadingGame);
+        apply_result_action(ResultAction::RestartMatch, &mut next_app_state);
     } else if keyboard.just_pressed(KeyCode::Escape) {
-        next_app_state.set(AppState::MainMenu);
+        apply_result_action(ResultAction::MainMenu, &mut next_app_state);
+    }
+}
+
+fn handle_result_click(
+    pointer: Res<PointerInputState>,
+    windows: Query<&Window>,
+    overlay_state: Res<SoundSettingsOverlayState>,
+    mut next_app_state: ResMut<NextState<AppState>>,
+) {
+    if overlay_state.open || overlay_state.input_captured {
+        return;
+    }
+    let Some(cursor) = pointer.just_pressed_position() else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    if let Some(action) = result_action_at(cursor, window.width(), window.height()) {
+        apply_result_action(action, &mut next_app_state);
+    }
+}
+
+fn spawn_result_button(
+    panel: &mut ChildSpawnerCommands<'_>,
+    rect: ScreenRect,
+    label: &str,
+    color: Color,
+) {
+    panel
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(rect.x),
+                top: Val::Px(rect.y),
+                width: Val::Px(rect.w),
+                height: Val::Px(rect.h),
+                border: UiRect::all(Val::Px(1.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::horizontal(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(color),
+            BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.28)),
+            Name::new(format!("ResultButton{label}")),
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size: 18.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextLayout::new_with_justify(Justify::Center),
+                Name::new(format!("ResultButtonLabel{label}")),
+            ));
+        });
+}
+
+fn format_winner_players(match_result: &MatchResult) -> String {
+    if match_result.winner_player_ids.is_empty() {
+        return "-".to_string();
+    }
+    match_result
+        .winner_player_ids
+        .iter()
+        .map(|player_id| format!("P{player_id}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn result_button_local_rect(action: ResultAction) -> ScreenRect {
+    let total_width = RESULT_BUTTON_W * 2.0 + RESULT_BUTTON_GAP;
+    let first_x = (RESULT_PANEL_W - total_width) * 0.5;
+    let x = match action {
+        ResultAction::RestartMatch => first_x,
+        ResultAction::MainMenu => first_x + RESULT_BUTTON_W + RESULT_BUTTON_GAP,
+    };
+    ScreenRect {
+        x,
+        y: RESULT_BUTTON_TOP,
+        w: RESULT_BUTTON_W,
+        h: RESULT_BUTTON_H,
+    }
+}
+
+fn result_panel_rect(window_width: f32, window_height: f32) -> ScreenRect {
+    ScreenRect {
+        x: (window_width - RESULT_PANEL_W) * 0.5,
+        y: (window_height - RESULT_PANEL_H) * 0.5,
+        w: RESULT_PANEL_W,
+        h: RESULT_PANEL_H,
+    }
+}
+
+fn result_button_screen_rect(
+    action: ResultAction,
+    window_width: f32,
+    window_height: f32,
+) -> ScreenRect {
+    let panel = result_panel_rect(window_width, window_height);
+    let button = result_button_local_rect(action);
+    ScreenRect {
+        x: panel.x + button.x,
+        y: panel.y + button.y,
+        ..button
+    }
+}
+
+fn result_action_at(cursor: Vec2, window_width: f32, window_height: f32) -> Option<ResultAction> {
+    [ResultAction::RestartMatch, ResultAction::MainMenu]
+        .into_iter()
+        .find(|action| {
+            result_button_screen_rect(*action, window_width, window_height).contains(cursor)
+        })
+}
+
+fn apply_result_action(action: ResultAction, next_app_state: &mut NextState<AppState>) {
+    match action {
+        ResultAction::RestartMatch => next_app_state.set(AppState::LoadingGame),
+        ResultAction::MainMenu => next_app_state.set(AppState::MainMenu),
     }
 }
 
@@ -1104,5 +1295,58 @@ mod tests {
             ),
             Some(PlayerHudPanelAction::Roll)
         ));
+    }
+
+    #[test]
+    fn result_winner_players_are_formatted_with_player_ids() {
+        let result = MatchResult {
+            winner_team_id: Some(1),
+            winner_player_ids: vec![1, 3],
+            finished: true,
+        };
+
+        assert_eq!(format_winner_players(&result), "P1, P3");
+        assert_eq!(format_winner_players(&MatchResult::default()), "-");
+    }
+
+    #[test]
+    fn result_buttons_are_same_size_and_centered_in_panel() {
+        let restart = result_button_local_rect(ResultAction::RestartMatch);
+        let main_menu = result_button_local_rect(ResultAction::MainMenu);
+
+        assert_eq!(restart.w, main_menu.w);
+        assert_eq!(restart.h, main_menu.h);
+        assert_eq!(main_menu.x, restart.x + restart.w + RESULT_BUTTON_GAP);
+        assert!(
+            ((restart.x + main_menu.x + main_menu.w) * 0.5 - RESULT_PANEL_W * 0.5).abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn result_click_targets_map_to_buttons() {
+        let restart = result_button_screen_rect(ResultAction::RestartMatch, 1280.0, 720.0);
+        let main_menu = result_button_screen_rect(ResultAction::MainMenu, 1280.0, 720.0);
+
+        assert_eq!(
+            result_action_at(
+                Vec2::new(restart.x + restart.w * 0.5, restart.y + restart.h * 0.5),
+                1280.0,
+                720.0
+            ),
+            Some(ResultAction::RestartMatch)
+        );
+        assert_eq!(
+            result_action_at(
+                Vec2::new(
+                    main_menu.x + main_menu.w * 0.5,
+                    main_menu.y + main_menu.h * 0.5
+                ),
+                1280.0,
+                720.0
+            ),
+            Some(ResultAction::MainMenu)
+        );
+        assert_eq!(result_action_at(Vec2::new(20.0, 20.0), 1280.0, 720.0), None);
     }
 }

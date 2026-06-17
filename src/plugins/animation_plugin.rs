@@ -11,6 +11,10 @@ use crate::states::AppState;
 const PLANE_ICON_BASE_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
 const NORMAL_MOVE_SEGMENT_DURATION: f32 = 0.13;
 const FAST_MOVE_SEGMENT_DURATION: f32 = 0.045;
+const NORMAL_HANGAR_RETURN_SEGMENT_DURATION: f32 = 0.18;
+const FAST_HANGAR_RETURN_SEGMENT_DURATION: f32 = 0.065;
+const HANGAR_RETURN_ARC_OFFSET: f32 = 54.0;
+const HANGAR_RETURN_Z_LIFT: f32 = 8.0;
 
 /// 动画插件入口：把规则层的瞬时位置变化转成短视觉插值。
 pub struct AnimationPlugin;
@@ -90,7 +94,6 @@ fn capture_piece_motion(
     player_roster: Res<PlayerRoster>,
     mut query: ChangedPieceAnimationQuery,
 ) {
-    let segment_duration = movement_segment_duration(match_config.fast_mode);
     for (entity, piece_state, mut transform, mut animation_state) in &mut query {
         let from = animation_state.logical_translation;
         let to = transform.translation;
@@ -126,7 +129,11 @@ fn capture_piece_motion(
             waypoints,
             segment_index: 0,
             segment_elapsed: 0.0,
-            segment_duration,
+            segment_duration: animation_segment_duration(
+                previous_piece,
+                current_piece,
+                match_config.fast_mode,
+            ),
         });
     }
 }
@@ -183,6 +190,26 @@ fn movement_segment_duration(fast_mode: bool) -> f32 {
     }
 }
 
+fn hangar_return_segment_duration(fast_mode: bool) -> f32 {
+    if fast_mode {
+        FAST_HANGAR_RETURN_SEGMENT_DURATION
+    } else {
+        NORMAL_HANGAR_RETURN_SEGMENT_DURATION
+    }
+}
+
+fn animation_segment_duration(
+    previous_piece: PieceAnimationSnapshot,
+    current_piece: PieceAnimationSnapshot,
+    fast_mode: bool,
+) -> f32 {
+    if is_returning_to_hangar(previous_piece, current_piece) {
+        hangar_return_segment_duration(fast_mode)
+    } else {
+        movement_segment_duration(fast_mode)
+    }
+}
+
 fn is_stale_transform_change(
     previous_piece: PieceAnimationSnapshot,
     current_piece: PieceAnimationSnapshot,
@@ -217,6 +244,11 @@ fn build_motion_waypoints(
         return waypoints;
     }
 
+    if is_returning_to_hangar(previous_piece, current_piece) {
+        append_hangar_return_waypoints(&mut waypoints, from, to);
+        return waypoints;
+    }
+
     append_board_path_waypoints(
         &mut waypoints,
         previous_piece,
@@ -227,6 +259,36 @@ fn build_motion_waypoints(
     );
     push_distinct_waypoint(&mut waypoints, to);
     waypoints
+}
+
+fn is_returning_to_hangar(
+    previous_piece: PieceAnimationSnapshot,
+    current_piece: PieceAnimationSnapshot,
+) -> bool {
+    previous_piece.owner_player_id == current_piece.owner_player_id
+        && previous_piece.status != PieceStatus::InHangar
+        && current_piece.status == PieceStatus::InHangar
+}
+
+fn append_hangar_return_waypoints(waypoints: &mut Vec<Vec3>, from: Vec3, to: Vec3) {
+    let delta = to - from;
+    let delta_2d = delta.truncate();
+    if delta_2d.length_squared() >= 0.25 {
+        let direction = delta_2d.normalize();
+        let mut perpendicular = Vec2::new(-direction.y, direction.x);
+        if perpendicular.dot(from.truncate()) < 0.0 {
+            perpendicular = -perpendicular;
+        }
+        let offset = HANGAR_RETURN_ARC_OFFSET.min(delta_2d.length() * 0.35);
+        let midpoint = from.lerp(to, 0.45)
+            + Vec3::new(
+                perpendicular.x * offset,
+                perpendicular.y * offset,
+                HANGAR_RETURN_Z_LIFT,
+            );
+        push_distinct_waypoint(waypoints, midpoint);
+    }
+    push_distinct_waypoint(waypoints, to);
 }
 
 fn append_board_path_waypoints(
@@ -379,6 +441,68 @@ mod tests {
         assert_eq!(movement_segment_duration(true), 0.045);
         assert!(movement_segment_duration(false) > 0.10);
         assert!(movement_segment_duration(true) < movement_segment_duration(false));
+        assert!(hangar_return_segment_duration(false) > movement_segment_duration(false));
+        assert!(hangar_return_segment_duration(true) > movement_segment_duration(true));
+    }
+
+    #[test]
+    fn return_to_hangar_waypoints_arc_from_board_to_hangar() {
+        let (board_layout, player_roster) = test_roster();
+        let from =
+            world_position_for_piece(2, 8, PieceStatus::Active, &board_layout, &player_roster)
+                .unwrap()
+                .extend(1.0);
+        let to = Vec3::new(320.0, 280.0, 1.0);
+
+        let waypoints = build_motion_waypoints(
+            PieceAnimationSnapshot {
+                owner_player_id: 2,
+                status: PieceStatus::Active,
+                progress: 8,
+                motion_serial: 0,
+            },
+            PieceAnimationSnapshot {
+                owner_player_id: 2,
+                status: PieceStatus::InHangar,
+                progress: 0,
+                motion_serial: 0,
+            },
+            from,
+            to,
+            &board_layout,
+            &player_roster,
+        );
+
+        assert_eq!(waypoints.len(), 3);
+        assert_eq!(waypoints[0], from);
+        assert_eq!(waypoints[2], to);
+        assert!(waypoints[1].z > from.z);
+        let direct_midpoint = from.lerp(to, 0.45);
+        assert!(waypoints[1].truncate().distance(direct_midpoint.truncate()) > 1.0);
+    }
+
+    #[test]
+    fn return_to_hangar_uses_knockback_duration() {
+        let previous_piece = PieceAnimationSnapshot {
+            owner_player_id: 2,
+            status: PieceStatus::Active,
+            progress: 8,
+            motion_serial: 0,
+        };
+        let current_piece = PieceAnimationSnapshot {
+            status: PieceStatus::InHangar,
+            progress: 0,
+            ..previous_piece
+        };
+
+        assert_eq!(
+            animation_segment_duration(previous_piece, current_piece, false),
+            hangar_return_segment_duration(false)
+        );
+        assert_eq!(
+            animation_segment_duration(previous_piece, current_piece, true),
+            hangar_return_segment_duration(true)
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::data::game_mode::GameMode;
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
+use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
 use crate::platform::PointerInputState;
 use crate::plugins::audio_plugin::AudioSettings;
@@ -14,6 +15,7 @@ pub struct MenuPlugin;
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SoundSettingsOverlayState>()
+            .init_resource::<ModeSelectRenderState>()
             .add_systems(Startup, spawn_global_sound_overlay)
             .add_systems(PreUpdate, update_sound_overlay_input_capture)
             .add_systems(
@@ -32,10 +34,10 @@ impl Plugin for MenuPlugin {
                     update_main_menu_layout.run_if(in_state(AppState::MainMenu)),
                     handle_main_menu_input.run_if(in_state(AppState::MainMenu)),
                     handle_main_menu_click.run_if(in_state(AppState::MainMenu)),
-                    update_mode_select_text.run_if(in_state(AppState::ModeSelect)),
                     update_mode_select_option_visuals.run_if(in_state(AppState::ModeSelect)),
                     handle_mode_select_input.run_if(in_state(AppState::ModeSelect)),
                     handle_mode_select_click.run_if(in_state(AppState::ModeSelect)),
+                    refresh_mode_select_on_mode_change.run_if(in_state(AppState::ModeSelect)),
                 ),
             )
             .add_systems(OnExit(AppState::MainMenu), cleanup_menu)
@@ -48,6 +50,12 @@ impl Plugin for MenuPlugin {
 pub struct SoundSettingsOverlayState {
     pub open: bool,
     pub input_captured: bool,
+}
+
+#[derive(Resource, Default)]
+/// 配置页当前已渲染的模式；模式切换后用于重建动态玩家行。
+struct ModeSelectRenderState {
+    mode: Option<GameMode>,
 }
 
 #[derive(Component)]
@@ -94,10 +102,6 @@ struct SoundSettingsValueText {
     kind: SoundSettingsValueKind,
 }
 
-#[derive(Component)]
-/// 配置页顶部摘要文本节点。
-struct ModeSelectText;
-
 #[derive(Clone, Copy, Component)]
 /// 通用点击矩形（屏幕坐标）。
 struct ClickRect {
@@ -126,6 +130,7 @@ enum ModeSelectAction {
     },
     SetPieces(u8),
     SetLaunchRule(LaunchRule),
+    SetAiDifficulty(AiDifficulty),
     SetPlayerControl {
         player_index: usize,
         control: PlayerControl,
@@ -198,20 +203,25 @@ const OPTION_LEFT: f32 = 336.0;
 const OPTION_W: f32 = 112.0;
 const OPTION_H: f32 = 36.0;
 const OPTION_GAP: f32 = 12.0;
-const MODE_ROW_TOP: f32 = 128.0;
-const COLOR_ROW_START_TOP: f32 = 184.0;
-const COLOR_ROW_GAP: f32 = 40.0;
-const PIECES_ROW_TOP: f32 = 356.0;
-const LAUNCH_RULE_ROW_TOP: f32 = 404.0;
-const CONTROL_ROW_START_TOP: f32 = 456.0;
-const CONTROL_ROW_GAP: f32 = 44.0;
-const BOTTOM_ROW_TOP: f32 = 646.0;
-const COLOR_SWATCH_W: f32 = 54.0;
+const MODE_ROW_TOP: f32 = 72.0;
+const PLAYER_ROW_START_TOP: f32 = 128.0;
+const PLAYER_ROW_GAP: f32 = 48.0;
+const PLAYER_COLOR_LEFT: f32 = 250.0;
+const PLAYER_CONTROL_LEFT: f32 = 486.0;
+const PLAYER_CONTROL_W: f32 = 92.0;
+const PLAYER_CONTROL_GAP: f32 = 10.0;
+const PLAYER_SETTINGS_GAP: f32 = 26.0;
+const SETTING_ROW_GAP: f32 = 48.0;
+const COLOR_SWATCH_W: f32 = 46.0;
 const COLOR_SWATCH_H: f32 = 32.0;
 const MODE_LAYOUT_BASE_LEFT: f32 = MENU_LEFT;
-const MODE_LAYOUT_BASE_TOP: f32 = 22.0;
+const MODE_LAYOUT_BASE_TOP: f32 = MODE_ROW_TOP;
 const MODE_LAYOUT_WIDTH: f32 = 760.0;
-const MODE_LAYOUT_HEIGHT: f32 = BOTTOM_ROW_TOP + OPTION_H + 6.0 - MODE_LAYOUT_BASE_TOP;
+const SETTING_ROW_BAND_LEFT: f32 = 72.0;
+const SETTING_ROW_BAND_W: f32 = 666.0;
+const SETTING_ROW_BAND_H: f32 = 40.0;
+const BOTTOM_ACTION_W: f32 = 150.0;
+const BOTTOM_ACTION_H: f32 = OPTION_H + 6.0;
 
 fn spawn_global_sound_overlay(mut commands: Commands) {
     commands
@@ -744,11 +754,40 @@ impl ModeSelectLayout {
     }
 }
 
-fn mode_select_layout(window_width: f32, window_height: f32) -> ModeSelectLayout {
+fn mode_select_layout(
+    window_width: f32,
+    window_height: f32,
+    active_player_count: usize,
+) -> ModeSelectLayout {
+    let layout_height = mode_select_layout_height(active_player_count);
     ModeSelectLayout {
         left: centered_axis(window_width, MODE_LAYOUT_WIDTH, 16.0),
-        top: centered_axis(window_height, MODE_LAYOUT_HEIGHT, 16.0),
+        top: centered_axis(window_height, layout_height, 16.0),
     }
+}
+
+fn player_row_top(player_index: usize) -> f32 {
+    PLAYER_ROW_START_TOP + player_index as f32 * PLAYER_ROW_GAP
+}
+
+fn pieces_row_top(active_player_count: usize) -> f32 {
+    PLAYER_ROW_START_TOP + active_player_count as f32 * PLAYER_ROW_GAP + PLAYER_SETTINGS_GAP
+}
+
+fn launch_rule_row_top(active_player_count: usize) -> f32 {
+    pieces_row_top(active_player_count) + SETTING_ROW_GAP
+}
+
+fn ai_difficulty_row_top(active_player_count: usize) -> f32 {
+    launch_rule_row_top(active_player_count) + SETTING_ROW_GAP
+}
+
+fn bottom_row_top(active_player_count: usize) -> f32 {
+    ai_difficulty_row_top(active_player_count) + SETTING_ROW_GAP + 6.0
+}
+
+fn mode_select_layout_height(active_player_count: usize) -> f32 {
+    bottom_row_top(active_player_count) + BOTTOM_ACTION_H + 6.0 - MODE_LAYOUT_BASE_TOP
 }
 
 fn update_main_menu_layout(
@@ -927,73 +966,55 @@ fn spawn_sound_row(
 
 fn spawn_mode_select(
     mut commands: Commands,
-    match_setup: Res<MatchSetup>,
     windows: Query<&Window>,
+    match_setup: Res<MatchSetup>,
+    mut render_state: ResMut<ModeSelectRenderState>,
 ) {
-    // 对局配置页：按“模式/颜色/棋子数/人机控制/开始返回”分区渲染。
+    spawn_mode_select_content(&mut commands, &windows, &match_setup);
+    render_state.mode = Some(match_setup.mode);
+}
+
+fn spawn_mode_select_content(
+    commands: &mut Commands,
+    windows: &Query<&Window>,
+    match_setup: &MatchSetup,
+) {
+    // 对局配置页：按“模式/玩家配置/规则/开始返回”分区渲染。
     let (window_width, window_height) = windows
         .single()
         .map(|window| (window.width(), window.height()))
         .unwrap_or((1280.0, 720.0));
-    let layout = mode_select_layout(window_width, window_height);
-    commands.spawn((
-        Text::new(mode_select_content(&match_setup)),
-        TextFont {
-            font_size: 20.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.10, 0.16, 0.24)),
-        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(layout.y(22.0)),
-            left: Val::Px(layout.x(MENU_LEFT)),
-            width: Val::Px(760.0),
-            ..default()
-        },
-        Name::new("ModeSelectText"),
-        ModeSelectText,
-        MenuEntity,
-    ));
+    let active_player_count = match_setup.active_player_count();
+    let layout = mode_select_layout(window_width, window_height, active_player_count);
 
-    spawn_section_label(&mut commands, layout, "Mode", MODE_ROW_TOP + 7.0);
-    spawn_option(
-        &mut commands,
-        ModeSelectAction::SetMode(GameMode::OneVsOne),
-        layout.rect(ClickRect {
-            x: OPTION_LEFT,
-            y: MODE_ROW_TOP,
-            w: OPTION_W,
-            h: OPTION_H,
-        }),
-        "1v1",
-        Color::srgba(0.53, 0.77, 0.96, 0.26),
-    );
-    spawn_option(
-        &mut commands,
-        ModeSelectAction::SetMode(GameMode::TwoVsTwo),
-        layout.rect(ClickRect {
-            x: OPTION_LEFT + OPTION_W + OPTION_GAP,
-            y: MODE_ROW_TOP,
-            w: OPTION_W,
-            h: OPTION_H,
-        }),
-        "2v2",
-        Color::srgba(0.53, 0.77, 0.96, 0.26),
-    );
+    spawn_section_label(commands, layout, "Mode", MODE_ROW_TOP + 7.0);
+    for (mode_index, mode) in GameMode::ALL.iter().enumerate() {
+        spawn_option(
+            commands,
+            ModeSelectAction::SetMode(*mode),
+            layout.rect(ClickRect {
+                x: OPTION_LEFT + mode_index as f32 * (OPTION_W + OPTION_GAP),
+                y: MODE_ROW_TOP,
+                w: OPTION_W,
+                h: OPTION_H,
+            }),
+            mode.label(),
+            Color::srgba(0.53, 0.77, 0.96, 0.26),
+        );
+    }
 
-    for player_index in 0..4usize {
-        let row_top = COLOR_ROW_START_TOP + player_index as f32 * COLOR_ROW_GAP;
+    for player_index in 0..active_player_count {
+        let row_top = player_row_top(player_index);
         spawn_section_label(
-            &mut commands,
+            commands,
             layout,
-            &format!("P{} Color", player_index + 1),
-            row_top + 5.0,
+            &format!("P{}", player_index + 1),
+            row_top + 6.0,
         );
         for (color_index, choice) in PlayerColorChoice::ALL.iter().enumerate() {
-            let x = OPTION_LEFT + color_index as f32 * (COLOR_SWATCH_W + OPTION_GAP);
+            let x = PLAYER_COLOR_LEFT + color_index as f32 * (COLOR_SWATCH_W + OPTION_GAP);
             spawn_option(
-                &mut commands,
+                commands,
                 ModeSelectAction::SetPlayerColor {
                     player_index,
                     color: *choice,
@@ -1008,22 +1029,48 @@ fn spawn_mode_select(
                 choice.to_color(),
             );
         }
+        spawn_option(
+            commands,
+            ModeSelectAction::SetPlayerControl {
+                player_index,
+                control: PlayerControl::Human,
+            },
+            layout.rect(ClickRect {
+                x: PLAYER_CONTROL_LEFT,
+                y: row_top,
+                w: PLAYER_CONTROL_W,
+                h: OPTION_H,
+            }),
+            "Human",
+            Color::srgba(0.53, 0.77, 0.96, 0.26),
+        );
+        spawn_option(
+            commands,
+            ModeSelectAction::SetPlayerControl {
+                player_index,
+                control: PlayerControl::Ai,
+            },
+            layout.rect(ClickRect {
+                x: PLAYER_CONTROL_LEFT + PLAYER_CONTROL_W + PLAYER_CONTROL_GAP,
+                y: row_top,
+                w: PLAYER_CONTROL_W,
+                h: OPTION_H,
+            }),
+            "AI",
+            Color::srgba(0.53, 0.77, 0.96, 0.26),
+        );
     }
 
-    spawn_section_label(
-        &mut commands,
-        layout,
-        "Pieces / Player",
-        PIECES_ROW_TOP + 7.0,
-    );
+    let pieces_top = pieces_row_top(active_player_count);
+    spawn_section_label(commands, layout, "Pieces / Player", pieces_top + 7.0);
     for pieces in 1..=4u8 {
         let x = OPTION_LEFT + (pieces as f32 - 1.0) * (OPTION_W * 0.7 + OPTION_GAP);
         spawn_option(
-            &mut commands,
+            commands,
             ModeSelectAction::SetPieces(pieces),
             layout.rect(ClickRect {
                 x,
-                y: PIECES_ROW_TOP,
+                y: pieces_top,
                 w: OPTION_W * 0.7,
                 h: OPTION_H,
             }),
@@ -1032,19 +1079,15 @@ fn spawn_mode_select(
         );
     }
 
-    spawn_section_label(
-        &mut commands,
-        layout,
-        "Launch Rule",
-        LAUNCH_RULE_ROW_TOP + 7.0,
-    );
+    let launch_rule_top = launch_rule_row_top(active_player_count);
+    spawn_section_label(commands, layout, "Launch Rule", launch_rule_top + 7.0);
     for (rule_index, launch_rule) in LaunchRule::ALL.iter().enumerate() {
         spawn_option(
-            &mut commands,
+            commands,
             ModeSelectAction::SetLaunchRule(*launch_rule),
             layout.rect(ClickRect {
                 x: OPTION_LEFT + rule_index as f32 * (OPTION_W + OPTION_GAP),
-                y: LAUNCH_RULE_ROW_TOP,
+                y: launch_rule_top,
                 w: OPTION_W,
                 h: OPTION_H,
             }),
@@ -1053,74 +1096,64 @@ fn spawn_mode_select(
         );
     }
 
-    for player_index in 0..4usize {
-        let row_top = CONTROL_ROW_START_TOP + player_index as f32 * CONTROL_ROW_GAP;
-        spawn_section_label(
-            &mut commands,
-            layout,
-            &format!("P{} Control", player_index + 1),
-            row_top + 7.0,
-        );
+    let ai_difficulty_top = ai_difficulty_row_top(active_player_count);
+    spawn_section_label(commands, layout, "AI Difficulty", ai_difficulty_top + 7.0);
+    for (difficulty_index, difficulty) in
+        [AiDifficulty::Easy, AiDifficulty::Normal, AiDifficulty::Hard]
+            .iter()
+            .enumerate()
+    {
         spawn_option(
-            &mut commands,
-            ModeSelectAction::SetPlayerControl {
-                player_index,
-                control: PlayerControl::Human,
-            },
+            commands,
+            ModeSelectAction::SetAiDifficulty(*difficulty),
             layout.rect(ClickRect {
-                x: OPTION_LEFT,
-                y: row_top,
+                x: OPTION_LEFT + difficulty_index as f32 * (OPTION_W + OPTION_GAP),
+                y: ai_difficulty_top,
                 w: OPTION_W,
                 h: OPTION_H,
             }),
-            "Human",
-            Color::srgba(0.53, 0.77, 0.96, 0.26),
-        );
-        spawn_option(
-            &mut commands,
-            ModeSelectAction::SetPlayerControl {
-                player_index,
-                control: PlayerControl::Ai,
-            },
-            layout.rect(ClickRect {
-                x: OPTION_LEFT + OPTION_W + OPTION_GAP,
-                y: row_top,
-                w: OPTION_W,
-                h: OPTION_H,
-            }),
-            "AI",
-            Color::srgba(0.53, 0.77, 0.96, 0.26),
+            ai_difficulty_label(*difficulty),
+            Color::srgba(0.61, 0.68, 0.88, 0.30),
         );
     }
 
     spawn_option(
-        &mut commands,
+        commands,
         ModeSelectAction::StartMatch,
-        layout.rect(ClickRect {
-            x: OPTION_LEFT,
-            y: BOTTOM_ROW_TOP,
-            w: OPTION_W * 1.58,
-            h: OPTION_H + 6.0,
-        }),
-        "Start Match",
+        layout.rect(mode_select_start_rect(active_player_count)),
+        "Start",
         Color::srgba(0.40, 0.72, 0.55, 0.40),
     );
     spawn_option(
-        &mut commands,
+        commands,
         ModeSelectAction::Back,
-        layout.rect(ClickRect {
-            x: OPTION_LEFT + OPTION_W * 1.58 + OPTION_GAP,
-            y: BOTTOM_ROW_TOP,
-            w: OPTION_W * 1.2,
-            h: OPTION_H + 6.0,
-        }),
+        layout.rect(mode_select_back_rect(active_player_count)),
         "Back",
         Color::srgba(0.72, 0.54, 0.44, 0.28),
     );
 }
 
+fn mode_select_start_rect(active_player_count: usize) -> ClickRect {
+    ClickRect {
+        x: OPTION_LEFT,
+        y: bottom_row_top(active_player_count),
+        w: BOTTOM_ACTION_W,
+        h: BOTTOM_ACTION_H,
+    }
+}
+
+fn mode_select_back_rect(active_player_count: usize) -> ClickRect {
+    ClickRect {
+        x: OPTION_LEFT + BOTTOM_ACTION_W + OPTION_GAP,
+        y: bottom_row_top(active_player_count),
+        w: BOTTOM_ACTION_W,
+        h: BOTTOM_ACTION_H,
+    }
+}
+
 fn spawn_section_label(commands: &mut Commands, layout: ModeSelectLayout, label: &str, top: f32) {
     // 左侧分区标题。
+    spawn_setting_row_band(commands, layout, top - 7.0);
     commands.spawn((
         Text::new(label),
         TextFont {
@@ -1135,6 +1168,24 @@ fn spawn_section_label(commands: &mut Commands, layout: ModeSelectLayout, label:
             ..default()
         },
         Name::new(format!("ModeLabel{label}")),
+        MenuEntity,
+    ));
+}
+
+fn spawn_setting_row_band(commands: &mut Commands, layout: ModeSelectLayout, top: f32) {
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(layout.y(top - 2.0)),
+            left: Val::Px(layout.x(SETTING_ROW_BAND_LEFT)),
+            width: Val::Px(SETTING_ROW_BAND_W),
+            height: Val::Px(SETTING_ROW_BAND_H),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.22)),
+        BorderColor::all(Color::srgba(0.18, 0.24, 0.34, 0.10)),
+        Name::new("ModeSettingRowBand"),
         MenuEntity,
     ));
 }
@@ -1233,55 +1284,11 @@ fn format_volume_percent(value: f32) -> String {
     format!("{:>3}%", (value.clamp(0.0, 1.0) * 100.0).round() as u8)
 }
 
-fn mode_select_content(match_setup: &MatchSetup) -> String {
-    // 顶部摘要文本，实时反映当前配置状态。
-    let mode = if match_setup.mode == GameMode::OneVsOne {
-        "1v1"
-    } else {
-        "2v2"
-    };
-    let controls = match_setup.normalized_player_controls();
-    let c = |control: PlayerControl| {
-        if control == PlayerControl::Human {
-            "Human"
-        } else {
-            "AI"
-        }
-    };
-
-    let colors = match_setup.normalized_player_colors();
-
-    let active = match_setup.active_player_count();
-    let player_summary = (0..4usize)
-        .map(|index| {
-            let state = if index < active { "" } else { " off" };
-            format!(
-                "P{} {}/{}{}",
-                index + 1,
-                colors[index].label(),
-                c(controls[index]),
-                state
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("   ");
-
-    format!(
-        "Match Setup\n\
-Mode {mode} | Pieces {} | Launch {} | unique colors | at least 1 human\n\
-{player_summary}",
-        match_setup.pieces_per_player,
-        match_setup.launch_rule.label(),
-    )
-}
-
-fn update_mode_select_text(
-    match_setup: Res<MatchSetup>,
-    mut query: Query<&mut Text, With<ModeSelectText>>,
-) {
-    // 配置变更后刷新顶部摘要。
-    for mut text in &mut query {
-        *text = Text::new(mode_select_content(&match_setup));
+fn ai_difficulty_label(difficulty: AiDifficulty) -> &'static str {
+    match difficulty {
+        AiDifficulty::Easy => "Easy",
+        AiDifficulty::Normal => "Normal",
+        AiDifficulty::Hard => "Hard",
     }
 }
 
@@ -1299,30 +1306,44 @@ fn update_mode_select_option_visuals(
 fn option_fill_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> Color {
     // 颜色优先级：禁用 > 选中 > 普通。
     if action_disabled(option.action, match_setup) {
-        return option.base_color.with_alpha(0.15);
+        return option.base_color.mix(&Color::WHITE, 0.65).with_alpha(0.14);
+    }
+    if matches!(
+        option.action,
+        ModeSelectAction::StartMatch | ModeSelectAction::Back
+    ) {
+        return option.base_color.with_alpha(0.78);
     }
     if action_selected(option.action, match_setup) {
-        return option.base_color.mix(&Color::WHITE, 0.20).with_alpha(0.95);
+        return option.base_color.mix(&Color::WHITE, 0.04).with_alpha(0.98);
     }
-    option.base_color.with_alpha(0.58)
+    option.base_color.mix(&Color::WHITE, 0.55).with_alpha(0.34)
 }
 
 fn option_border_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> Color {
     if action_disabled(option.action, match_setup) {
-        return Color::srgba(0.30, 0.35, 0.42, 0.16);
+        return Color::srgba(0.30, 0.35, 0.42, 0.10);
     }
     if action_selected(option.action, match_setup) {
         return Color::srgba(0.06, 0.10, 0.16, 0.95);
     }
-    Color::srgba(0.18, 0.24, 0.34, 0.34)
+    if matches!(
+        option.action,
+        ModeSelectAction::StartMatch | ModeSelectAction::Back
+    ) {
+        return Color::srgba(0.14, 0.20, 0.30, 0.44);
+    }
+    Color::srgba(0.18, 0.24, 0.34, 0.20)
 }
 
 fn action_disabled(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
-    // 1v1 模式下禁用 P3/P4 的人机控制项。
+    // 模式未启用的玩家行不显示，也不接受残留点击区域输入。
     match action {
-        ModeSelectAction::SetPlayerControl { player_index, .. } => {
+        ModeSelectAction::SetPlayerColor { player_index, .. }
+        | ModeSelectAction::SetPlayerControl { player_index, .. } => {
             player_index >= match_setup.active_player_count()
         }
+        ModeSelectAction::SetAiDifficulty(_) => !has_active_ai(match_setup),
         _ => false,
     }
 }
@@ -1337,12 +1358,20 @@ fn action_selected(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
         } => match_setup.player_color_choice(player_index) == Some(color),
         ModeSelectAction::SetPieces(pieces) => match_setup.pieces_per_player == pieces,
         ModeSelectAction::SetLaunchRule(launch_rule) => match_setup.launch_rule == launch_rule,
+        ModeSelectAction::SetAiDifficulty(difficulty) => match_setup.ai_difficulty == difficulty,
         ModeSelectAction::SetPlayerControl {
             player_index,
             control,
         } => match_setup.player_control(player_index) == Some(control),
         _ => false,
     }
+}
+
+fn has_active_ai(match_setup: &MatchSetup) -> bool {
+    let controls = match_setup.normalized_player_controls();
+    controls[..match_setup.active_player_count()]
+        .iter()
+        .any(|control| matches!(control, PlayerControl::Ai))
 }
 
 fn handle_main_menu_input(
@@ -1477,6 +1506,13 @@ fn handle_mode_select_input(
             &mut next_state,
         );
     }
+    if keyboard.just_pressed(KeyCode::Digit3) {
+        apply_mode_select_action(
+            ModeSelectAction::SetMode(GameMode::FreeForAll),
+            &mut match_setup,
+            &mut next_state,
+        );
+    }
     if keyboard.just_pressed(KeyCode::BracketLeft) || keyboard.just_pressed(KeyCode::Minus) {
         let next = match_setup.pieces_per_player.saturating_sub(1).clamp(1, 4);
         apply_mode_select_action(
@@ -1568,6 +1604,9 @@ fn apply_mode_select_action(
         } => match_setup.set_player_color(player_index, color),
         ModeSelectAction::SetPieces(pieces) => match_setup.pieces_per_player = pieces.clamp(1, 4),
         ModeSelectAction::SetLaunchRule(launch_rule) => match_setup.launch_rule = launch_rule,
+        ModeSelectAction::SetAiDifficulty(ai_difficulty) => {
+            match_setup.ai_difficulty = ai_difficulty
+        }
         ModeSelectAction::SetPlayerControl {
             player_index,
             control,
@@ -1579,6 +1618,24 @@ fn apply_mode_select_action(
         }
         ModeSelectAction::Back => next_state.set(AppState::MainMenu),
     }
+}
+
+fn refresh_mode_select_on_mode_change(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    match_setup: Res<MatchSetup>,
+    mut render_state: ResMut<ModeSelectRenderState>,
+    query: Query<Entity, (With<MenuEntity>, Without<ChildOf>)>,
+) {
+    if render_state.mode == Some(match_setup.mode) {
+        return;
+    }
+
+    for entity in &query {
+        commands.entity(entity).despawn();
+    }
+    spawn_mode_select_content(&mut commands, &windows, &match_setup);
+    render_state.mode = Some(match_setup.mode);
 }
 
 fn cleanup_menu(
@@ -1620,41 +1677,57 @@ mod tests {
 
     #[test]
     fn mode_select_layout_rows_do_not_overlap_or_overflow() {
-        let summary_bottom = 22.0 + 88.0;
-        assert!(summary_bottom < MODE_ROW_TOP);
+        for active_player_count in [2, 4] {
+            let mut rows = vec![(MODE_ROW_TOP, MODE_ROW_TOP + OPTION_H)];
+            rows.extend((0..active_player_count).map(|index| {
+                let top = player_row_top(index);
+                (top, top + OPTION_H.max(COLOR_SWATCH_H))
+            }));
+            rows.push((
+                pieces_row_top(active_player_count),
+                pieces_row_top(active_player_count) + OPTION_H,
+            ));
+            rows.push((
+                launch_rule_row_top(active_player_count),
+                launch_rule_row_top(active_player_count) + OPTION_H,
+            ));
+            rows.push((
+                ai_difficulty_row_top(active_player_count),
+                ai_difficulty_row_top(active_player_count) + OPTION_H,
+            ));
+            rows.push((
+                bottom_row_top(active_player_count),
+                bottom_row_top(active_player_count) + BOTTOM_ACTION_H,
+            ));
 
-        let mut rows = vec![(MODE_ROW_TOP, MODE_ROW_TOP + OPTION_H)];
-        rows.extend((0..4).map(|index| {
-            let top = COLOR_ROW_START_TOP + index as f32 * COLOR_ROW_GAP;
-            (top, top + COLOR_SWATCH_H)
-        }));
-        rows.push((PIECES_ROW_TOP, PIECES_ROW_TOP + OPTION_H));
-        rows.push((LAUNCH_RULE_ROW_TOP, LAUNCH_RULE_ROW_TOP + OPTION_H));
-        rows.extend((0..4).map(|index| {
-            let top = CONTROL_ROW_START_TOP + index as f32 * CONTROL_ROW_GAP;
-            (top, top + OPTION_H)
-        }));
-        rows.push((BOTTOM_ROW_TOP, BOTTOM_ROW_TOP + OPTION_H + 6.0));
+            for pair in rows.windows(2) {
+                let previous = pair[0];
+                let next = pair[1];
+                assert!(
+                    previous.1 + 8.0 <= next.0,
+                    "rows overlap or are too tight: {previous:?} -> {next:?}"
+                );
+            }
 
-        for pair in rows.windows(2) {
-            let previous = pair[0];
-            let next = pair[1];
-            assert!(
-                previous.1 + 8.0 <= next.0,
-                "rows overlap or are too tight: {previous:?} -> {next:?}"
+            let bottom = rows.last().map(|(_, bottom)| *bottom).unwrap_or_default();
+            assert!(bottom <= 720.0);
+            assert_eq!(
+                bottom + 6.0 - MODE_LAYOUT_BASE_TOP,
+                mode_select_layout_height(active_player_count)
             );
         }
-
-        let bottom = rows.last().map(|(_, bottom)| *bottom).unwrap_or_default();
-        assert!(bottom <= 720.0);
     }
 
     #[test]
     fn mode_select_layout_centers_content_on_wide_screens() {
-        let layout = mode_select_layout(1280.0, 720.0);
+        let active_player_count = 4;
+        let layout = mode_select_layout(1280.0, 720.0, active_player_count);
 
         assert!((layout.left - (1280.0 - MODE_LAYOUT_WIDTH) * 0.5).abs() < f32::EPSILON);
-        assert!((layout.top - (720.0 - MODE_LAYOUT_HEIGHT) * 0.5).abs() < f32::EPSILON);
+        assert!(
+            (layout.top - (720.0 - mode_select_layout_height(active_player_count)) * 0.5).abs()
+                < f32::EPSILON
+        );
         assert_eq!(layout.x(MODE_LAYOUT_BASE_LEFT), layout.left);
         assert_eq!(layout.y(MODE_LAYOUT_BASE_TOP), layout.top);
     }
@@ -1828,6 +1901,34 @@ mod tests {
     }
 
     #[test]
+    fn inactive_player_color_and_control_actions_are_disabled() {
+        let mut match_setup = setup();
+        match_setup.mode = GameMode::OneVsOne;
+
+        assert!(action_disabled(
+            ModeSelectAction::SetPlayerColor {
+                player_index: 2,
+                color: PlayerColorChoice::Green,
+            },
+            &match_setup
+        ));
+        assert!(action_disabled(
+            ModeSelectAction::SetPlayerControl {
+                player_index: 2,
+                control: PlayerControl::Human,
+            },
+            &match_setup
+        ));
+        assert!(!action_disabled(
+            ModeSelectAction::SetPlayerColor {
+                player_index: 1,
+                color: PlayerColorChoice::Red,
+            },
+            &match_setup
+        ));
+    }
+
+    #[test]
     fn launch_rule_options_follow_match_setup_selection() {
         let mut match_setup = setup();
         let even_option = ModeSelectAction::SetLaunchRule(LaunchRule::Even);
@@ -1845,5 +1946,51 @@ mod tests {
         assert_eq!(match_setup.launch_rule, LaunchRule::Even);
         assert!(action_selected(even_option, &match_setup));
         assert!(!action_selected(six_only_option, &match_setup));
+    }
+
+    #[test]
+    fn ai_difficulty_options_follow_match_setup_selection() {
+        let mut match_setup = setup();
+        let easy_option = ModeSelectAction::SetAiDifficulty(AiDifficulty::Easy);
+        let normal_option = ModeSelectAction::SetAiDifficulty(AiDifficulty::Normal);
+
+        assert!(has_active_ai(&match_setup));
+        assert!(action_selected(normal_option, &match_setup));
+        assert!(!action_selected(easy_option, &match_setup));
+
+        apply_mode_select_action(
+            easy_option,
+            &mut match_setup,
+            &mut NextState::<AppState>::default(),
+        );
+
+        assert_eq!(match_setup.ai_difficulty, AiDifficulty::Easy);
+        assert!(action_selected(easy_option, &match_setup));
+        assert!(!action_selected(normal_option, &match_setup));
+    }
+
+    #[test]
+    fn ai_difficulty_is_disabled_without_active_ai_players() {
+        let mut match_setup = setup();
+        match_setup.player_controls = [
+            PlayerControl::Human,
+            PlayerControl::Human,
+            PlayerControl::Human,
+            PlayerControl::Human,
+        ];
+        let hard_option = ModeSelectAction::SetAiDifficulty(AiDifficulty::Hard);
+
+        assert!(!has_active_ai(&match_setup));
+        assert!(action_disabled(hard_option, &match_setup));
+    }
+
+    #[test]
+    fn start_and_back_buttons_are_same_size_with_short_start_label() {
+        let start = mode_select_start_rect(4);
+        let back = mode_select_back_rect(4);
+
+        assert_eq!(start.w, back.w);
+        assert_eq!(start.h, back.h);
+        assert_eq!(back.x, start.x + start.w + OPTION_GAP);
     }
 }

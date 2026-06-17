@@ -3311,6 +3311,89 @@ mod tests {
     }
 
     #[test]
+    fn free_for_all_treats_two_vs_two_teammates_as_enemies_on_collision() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::FreeForAll));
+        let player_roster = PlayerRoster::from_players(players);
+        let match_config = match_config(GameMode::FreeForAll);
+        let board_layout = BoardLayout::default();
+        let target_tile = 42;
+        let defender_hangar = Vec2::new(-320.0, -280.0);
+        let p1_progress = progress_for_main_tile(&player_roster, 1, target_tile);
+        let p3_progress = progress_for_main_tile(&player_roster, 3, target_tile);
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::new(-320.0, 280.0)),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: p1_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(3),
+            HangarSlot(defender_hangar),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 3,
+                status: PieceStatus::Active,
+                progress: p3_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        let attacker_landed = resolve_collision(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: p1_progress,
+            },
+            None,
+            &board_layout,
+            &player_roster,
+            &match_config,
+            &mut query,
+            &mut notes,
+        );
+
+        assert!(attacker_landed);
+        let defender = query
+            .iter_mut()
+            .find_map(|(piece_id, _, piece_state, transform)| {
+                (piece_id.0 == 3).then_some((
+                    piece_state.status,
+                    transform.translation.x,
+                    transform.translation.y,
+                ))
+            })
+            .expect("defender exists");
+        assert_eq!(
+            defender,
+            (PieceStatus::InHangar, defender_hangar.x, defender_hangar.y)
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note == "sent piece #3 back to hangar")
+        );
+    }
+
+    #[test]
     fn special_tile_collision_consumes_shared_stack_shield() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));

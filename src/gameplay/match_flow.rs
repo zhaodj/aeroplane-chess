@@ -38,7 +38,7 @@ impl MatchSetup {
     pub fn active_player_count(&self) -> usize {
         match self.mode {
             GameMode::OneVsOne => 2,
-            GameMode::TwoVsTwo => 4,
+            GameMode::TwoVsTwo | GameMode::FreeForAll => 4,
         }
     }
 
@@ -337,174 +337,153 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
     let player_colors = setup.normalized_player_colors();
     let pieces_per_player = setup.pieces_per_player.clamp(1, 4) as usize;
     let player_controls = setup.normalized_player_controls();
+    let players = active_player_ids_for_mode(setup.mode)
+        .iter()
+        .map(|player_id| {
+            let player_index = (*player_id - 1) as usize;
+            build_player_profile(
+                *player_id,
+                team_id_for_player(setup.mode, *player_id),
+                player_controls[player_index],
+                player_colors[player_index],
+                pieces_per_player,
+            )
+        })
+        .collect();
+    let teams = team_roster_for_mode(setup.mode);
 
-    match setup.mode {
-        GameMode::OneVsOne => (
+    (players, teams)
+}
+
+fn active_player_ids_for_mode(mode: GameMode) -> &'static [u8] {
+    match mode {
+        GameMode::OneVsOne => &[1, 2],
+        GameMode::TwoVsTwo | GameMode::FreeForAll => &[1, 2, 3, 4],
+    }
+}
+
+fn team_roster_for_mode(mode: GameMode) -> Vec<TeamState> {
+    match mode {
+        GameMode::OneVsOne => vec![
+            TeamState {
+                team_id: 1,
+                player_ids: vec![1],
+            },
+            TeamState {
+                team_id: 2,
+                player_ids: vec![2],
+            },
+        ],
+        GameMode::TwoVsTwo => vec![
+            TeamState {
+                team_id: 1,
+                player_ids: vec![1, 3],
+            },
+            TeamState {
+                team_id: 2,
+                player_ids: vec![2, 4],
+            },
+        ],
+        GameMode::FreeForAll => (1..=4)
+            .map(|player_id| TeamState {
+                team_id: player_id,
+                player_ids: vec![player_id],
+            })
+            .collect(),
+    }
+}
+
+fn team_id_for_player(mode: GameMode, player_id: u8) -> u8 {
+    match mode {
+        GameMode::OneVsOne | GameMode::FreeForAll => player_id,
+        GameMode::TwoVsTwo => {
+            if player_id % 2 == 1 {
+                1
+            } else {
+                2
+            }
+        }
+    }
+}
+
+fn build_player_profile(
+    player_id: u8,
+    team_id: u8,
+    control: PlayerControl,
+    color: PlayerColorChoice,
+    pieces_per_player: usize,
+) -> PlayerProfile {
+    let (launch_position, launch_tile_index, home_lane_positions, goal_position) = match player_id {
+        1 => (
+            Vec2::new(-316.104, 156.104),
+            39,
             vec![
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 1,
-                        team_id: 1,
-                        control: player_controls[0],
-                    },
-                    color: player_colors[0].to_color(),
-                    hangar_slots: build_hangar_slots(
-                        required_hangar_center_for_player(1),
-                        pieces_per_player,
-                    ),
-                    launch_position: Vec2::new(-316.104, 156.104),
-                    launch_tile_index: 39,
-                    home_lane_positions: vec![
-                        Vec2::new(-300.104, -0.104),
-                        Vec2::new(-240.104, -0.104),
-                        Vec2::new(-200.104, -0.104),
-                        Vec2::new(-160.104, -0.104),
-                        Vec2::new(-120.104, -0.104),
-                        Vec2::new(-80.104, -0.104),
-                    ],
-                    goal_position: Vec2::new(-35.958, 0.0),
-                },
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 2,
-                        team_id: 2,
-                        control: player_controls[1],
-                    },
-                    color: player_colors[1].to_color(),
-                    hangar_slots: build_hangar_slots(
-                        required_hangar_center_for_player(2),
-                        pieces_per_player,
-                    ),
-                    launch_position: Vec2::new(155.896, 316.104),
-                    launch_tile_index: 3,
-                    home_lane_positions: vec![
-                        Vec2::new(-0.104, 300.104),
-                        Vec2::new(-0.104, 240.104),
-                        Vec2::new(-0.104, 200.104),
-                        Vec2::new(-0.104, 160.104),
-                        Vec2::new(-0.104, 120.104),
-                        Vec2::new(-0.104, 80.104),
-                    ],
-                    goal_position: Vec2::new(0.0, 35.958),
-                },
+                Vec2::new(-300.104, -0.104),
+                Vec2::new(-240.104, -0.104),
+                Vec2::new(-200.104, -0.104),
+                Vec2::new(-160.104, -0.104),
+                Vec2::new(-120.104, -0.104),
+                Vec2::new(-80.104, -0.104),
             ],
-            vec![
-                TeamState {
-                    team_id: 1,
-                    player_ids: vec![1],
-                },
-                TeamState {
-                    team_id: 2,
-                    player_ids: vec![2],
-                },
-            ],
+            Vec2::new(-35.958, 0.0),
         ),
-        GameMode::TwoVsTwo => (
+        2 => (
+            Vec2::new(155.896, 316.104),
+            3,
             vec![
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 1,
-                        team_id: 1,
-                        control: player_controls[0],
-                    },
-                    color: player_colors[0].to_color(),
-                    hangar_slots: build_hangar_slots(
-                        required_hangar_center_for_player(1),
-                        pieces_per_player,
-                    ),
-                    launch_position: Vec2::new(-316.104, 156.104),
-                    launch_tile_index: 39,
-                    home_lane_positions: vec![
-                        Vec2::new(-300.104, -0.104),
-                        Vec2::new(-240.104, -0.104),
-                        Vec2::new(-200.104, -0.104),
-                        Vec2::new(-160.104, -0.104),
-                        Vec2::new(-120.104, -0.104),
-                        Vec2::new(-80.104, -0.104),
-                    ],
-                    goal_position: Vec2::new(-35.958, 0.0),
-                },
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 2,
-                        team_id: 2,
-                        control: player_controls[1],
-                    },
-                    color: player_colors[1].to_color(),
-                    hangar_slots: build_hangar_slots(
-                        required_hangar_center_for_player(2),
-                        pieces_per_player,
-                    ),
-                    launch_position: Vec2::new(155.896, 316.104),
-                    launch_tile_index: 3,
-                    home_lane_positions: vec![
-                        Vec2::new(-0.104, 300.104),
-                        Vec2::new(-0.104, 240.104),
-                        Vec2::new(-0.104, 200.104),
-                        Vec2::new(-0.104, 160.104),
-                        Vec2::new(-0.104, 120.104),
-                        Vec2::new(-0.104, 80.104),
-                    ],
-                    goal_position: Vec2::new(0.0, 35.958),
-                },
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 3,
-                        team_id: 1,
-                        control: player_controls[2],
-                    },
-                    color: player_colors[2].to_color(),
-                    hangar_slots: build_hangar_slots(
-                        required_hangar_center_for_player(3),
-                        pieces_per_player,
-                    ),
-                    launch_position: Vec2::new(-156.104, -315.896),
-                    launch_tile_index: 27,
-                    home_lane_positions: vec![
-                        Vec2::new(0.104, -300.104),
-                        Vec2::new(0.104, -240.104),
-                        Vec2::new(0.104, -200.104),
-                        Vec2::new(0.104, -160.104),
-                        Vec2::new(0.104, -120.104),
-                        Vec2::new(0.104, -80.104),
-                    ],
-                    goal_position: Vec2::new(0.0, -35.958),
-                },
-                PlayerProfile {
-                    state: PlayerState {
-                        player_id: 4,
-                        team_id: 2,
-                        control: player_controls[3],
-                    },
-                    color: player_colors[3].to_color(),
-                    hangar_slots: build_hangar_slots(
-                        required_hangar_center_for_player(4),
-                        pieces_per_player,
-                    ),
-                    launch_position: Vec2::new(315.896, -155.896),
-                    launch_tile_index: 15,
-                    home_lane_positions: vec![
-                        Vec2::new(300.317, 0.104),
-                        Vec2::new(240.317, 0.104),
-                        Vec2::new(200.317, 0.104),
-                        Vec2::new(160.317, 0.104),
-                        Vec2::new(120.317, 0.104),
-                        Vec2::new(80.317, 0.104),
-                    ],
-                    goal_position: Vec2::new(35.959, 0.0),
-                },
+                Vec2::new(-0.104, 300.104),
+                Vec2::new(-0.104, 240.104),
+                Vec2::new(-0.104, 200.104),
+                Vec2::new(-0.104, 160.104),
+                Vec2::new(-0.104, 120.104),
+                Vec2::new(-0.104, 80.104),
             ],
-            vec![
-                TeamState {
-                    team_id: 1,
-                    player_ids: vec![1, 3],
-                },
-                TeamState {
-                    team_id: 2,
-                    player_ids: vec![2, 4],
-                },
-            ],
+            Vec2::new(0.0, 35.958),
         ),
+        3 => (
+            Vec2::new(-156.104, -315.896),
+            27,
+            vec![
+                Vec2::new(0.104, -300.104),
+                Vec2::new(0.104, -240.104),
+                Vec2::new(0.104, -200.104),
+                Vec2::new(0.104, -160.104),
+                Vec2::new(0.104, -120.104),
+                Vec2::new(0.104, -80.104),
+            ],
+            Vec2::new(0.0, -35.958),
+        ),
+        4 => (
+            Vec2::new(315.896, -155.896),
+            15,
+            vec![
+                Vec2::new(300.317, 0.104),
+                Vec2::new(240.317, 0.104),
+                Vec2::new(200.317, 0.104),
+                Vec2::new(160.317, 0.104),
+                Vec2::new(120.317, 0.104),
+                Vec2::new(80.317, 0.104),
+            ],
+            Vec2::new(35.959, 0.0),
+        ),
+        _ => unreachable!("player profile is only defined for P1-P4"),
+    };
+
+    PlayerProfile {
+        state: PlayerState {
+            player_id,
+            team_id,
+            control,
+        },
+        color: color.to_color(),
+        hangar_slots: build_hangar_slots(
+            required_hangar_center_for_player(player_id),
+            pieces_per_player,
+        ),
+        launch_position,
+        launch_tile_index,
+        home_lane_positions,
+        goal_position,
     }
 }
 
@@ -620,6 +599,25 @@ mod tests {
     }
 
     #[test]
+    fn free_for_all_roster_has_four_players_and_no_shared_teams() {
+        let (players, teams) = build_match_rosters(&setup(GameMode::FreeForAll));
+
+        assert_eq!(players.len(), 4);
+        assert_eq!(teams.len(), 4);
+        assert_eq!(teams[0].player_ids, vec![1]);
+        assert_eq!(teams[1].player_ids, vec![2]);
+        assert_eq!(teams[2].player_ids, vec![3]);
+        assert_eq!(teams[3].player_ids, vec![4]);
+        assert_eq!(
+            players
+                .iter()
+                .map(|player| player.state.team_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
     fn roster_hangar_slots_share_visual_hangar_centers() {
         let mut two_vs_two_setup = setup(GameMode::TwoVsTwo);
         two_vs_two_setup.pieces_per_player = 4;
@@ -692,6 +690,21 @@ mod tests {
         assert!(player_one_finished.finished);
         assert_eq!(player_one_finished.winner_team_id, Some(1));
         assert_eq!(player_one_finished.winner_player_ids, vec![1]);
+    }
+
+    #[test]
+    fn free_for_all_victory_is_awarded_to_the_finished_player_only() {
+        let (_, teams) = build_match_rosters(&setup(GameMode::FreeForAll));
+        let team_roster = TeamRoster { teams };
+
+        let player_three_finished = evaluate_match_result(
+            &team_roster,
+            &[(1, false), (2, false), (3, true), (4, false)],
+        );
+
+        assert!(player_three_finished.finished);
+        assert_eq!(player_three_finished.winner_team_id, Some(3));
+        assert_eq!(player_three_finished.winner_player_ids, vec![3]);
     }
 
     #[test]
