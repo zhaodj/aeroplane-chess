@@ -23,6 +23,7 @@ use crate::gameplay::turn_flow::{
     set_roll,
 };
 use crate::platform::{DeviceProfile, PointerInputState};
+use crate::plugins::boot_plugin::AutoplayMatch;
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
@@ -128,10 +129,24 @@ fn execute_action_from_params(
     );
 }
 
-fn setup_turn_automation(mut commands: Commands) {
+fn setup_turn_automation(
+    mut commands: Commands,
+    match_config: Option<Res<MatchConfig>>,
+    autoplay: Option<Res<AutoplayMatch>>,
+) {
     // AI 行为节拍与人类输入缓存在进入对局时统一初始化。
+    let interval = if autoplay.is_some() {
+        0.02
+    } else if match_config
+        .as_deref()
+        .is_some_and(|match_config| match_config.fast_mode)
+    {
+        0.12
+    } else {
+        0.9
+    };
     commands.insert_resource(TurnAutomation {
-        timer: Timer::from_seconds(0.9, TimerMode::Repeating),
+        timer: Timer::from_seconds(interval, TimerMode::Repeating),
     });
     commands.insert_resource(TurnInputState::default());
     commands.insert_resource(TurnUiRequest::default());
@@ -149,15 +164,17 @@ fn drive_ai_turn_loop(
     time: Res<Time>,
     mut automation: ResMut<TurnAutomation>,
     game_phase: Res<State<GamePhase>>,
+    autoplay: Option<Res<AutoplayMatch>>,
     mut params: TurnActionParams,
 ) {
     if !matches!(game_phase.get(), GamePhase::AwaitDice) || params.match_result.finished {
         return;
     }
 
-    if current_player_control(params.turn_state.current_player, &params.player_roster)
-        != Some(PlayerControl::Ai)
-    {
+    let should_autoplay = autoplay.is_some()
+        || current_player_control(params.turn_state.current_player, &params.player_roster)
+            == Some(PlayerControl::Ai);
+    if !should_autoplay {
         return;
     }
 
@@ -922,7 +939,7 @@ mod tests {
     use crate::domain::player::PlayerControl;
     use crate::gameplay::ai::AiDifficulty;
     use crate::gameplay::match_flow::{
-        MatchConfig, MatchSetup, PlayerColorChoice, PlayerRoster, build_match_rosters,
+        MatchConfig, MatchSetup, PlayerRoster, PlayerSeat, build_match_rosters,
     };
     use crate::gameplay::skill_flow::{
         build_skill_roster, player_skill_state, sync_turn_skill_usage,
@@ -935,11 +952,11 @@ mod tests {
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
-            player_colors: [
-                PlayerColorChoice::Red,
-                PlayerColorChoice::Blue,
-                PlayerColorChoice::Green,
-                PlayerColorChoice::Yellow,
+            player_seats: [
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
             ],
             pieces_per_player: 2,
             player_controls: [
@@ -957,11 +974,11 @@ mod tests {
             ai_difficulty,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
-            player_colors: [
-                PlayerColorChoice::Red,
-                PlayerColorChoice::Blue,
-                PlayerColorChoice::Green,
-                PlayerColorChoice::Yellow,
+            player_seats: [
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
             ],
             pieces_per_player: 2,
             player_controls: [

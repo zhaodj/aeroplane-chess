@@ -470,7 +470,7 @@ pub fn disable_next_skill_turn(skill_roster: &mut SkillRoster, player_id: u8) ->
 mod tests {
     use super::*;
     use crate::domain::player::PlayerState;
-    use crate::gameplay::match_flow::{PlayerProfile, PlayerRoster};
+    use crate::gameplay::match_flow::{PlayerProfile, PlayerRoster, PlayerSeat};
     use bevy::ecs::system::SystemState;
 
     fn sample_roster() -> PlayerRoster {
@@ -481,6 +481,7 @@ mod tests {
                     team_id: 1,
                     control: PlayerControl::Human,
                 },
+                seat: PlayerSeat::Blue,
                 color: Color::WHITE,
                 hangar_slots: vec![],
                 launch_position: Vec2::ZERO,
@@ -494,6 +495,7 @@ mod tests {
                     team_id: 2,
                     control: PlayerControl::Ai,
                 },
+                seat: PlayerSeat::Red,
                 color: Color::BLACK,
                 hangar_slots: vec![],
                 launch_position: Vec2::ZERO,

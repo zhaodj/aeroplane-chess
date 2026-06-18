@@ -3,7 +3,9 @@ use bevy::prelude::*;
 use crate::data::game_mode::GameMode;
 use crate::domain::piece::PieceState;
 use crate::domain::player::PlayerControl;
-use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster};
+use crate::gameplay::match_flow::{
+    MatchConfig, MatchResult, PlayerProfile, PlayerRoster, PlayerSeat,
+};
 use crate::gameplay::skill_flow::{
     PlayerSkillState, SkillRoster, can_use_skill_this_turn, is_active_teammate_piece,
     is_current_player_active_piece, is_legal_shield_target, is_legal_snipe_target,
@@ -385,12 +387,10 @@ fn update_player_hud_layout(
     let window_height = window.height();
 
     for (entry, mut node) in &mut entry_query {
-        let rect = player_hud_entry_rect(
-            window_width,
-            window_height,
-            *device_profile,
-            entry.player_id,
-        );
+        let Some(player) = player_profile(&player_roster, entry.player_id) else {
+            continue;
+        };
+        let rect = player_hud_entry_rect(window_width, window_height, *device_profile, player.seat);
         apply_rect_to_node(&mut node, rect);
     }
 
@@ -402,8 +402,12 @@ fn update_player_hud_layout(
     });
     for (mut node, mut visibility) in &mut panel_query {
         if let Some(player_id) = active_player {
+            let Some(player) = player_profile(&player_roster, player_id) else {
+                *visibility = Visibility::Hidden;
+                continue;
+            };
             let rect =
-                player_hud_panel_rect(window_width, window_height, *device_profile, player_id);
+                player_hud_panel_rect(window_width, window_height, *device_profile, player.seat);
             apply_rect_to_node(&mut node, rect);
             *visibility = Visibility::Visible;
         } else {
@@ -576,8 +580,12 @@ fn handle_player_hud_click(
 
     for player in &player_roster.players {
         let player_id = player.state.player_id;
-        let rect =
-            player_hud_entry_rect(window.width(), window.height(), *device_profile, player_id);
+        let rect = player_hud_entry_rect(
+            window.width(),
+            window.height(),
+            *device_profile,
+            player.seat,
+        );
         if rect.contains(cursor) {
             hud_state.active_player = if hud_state.active_player == Some(player_id) {
                 None
@@ -591,17 +599,6 @@ fn handle_player_hud_click(
     let Some(active_player_id) = hud_state.active_player else {
         return;
     };
-    let panel_rect = player_hud_panel_rect(
-        window.width(),
-        window.height(),
-        *device_profile,
-        active_player_id,
-    );
-    if !panel_rect.contains(cursor) {
-        hud_state.active_player = None;
-        return;
-    }
-
     let Some(player) = player_roster
         .players
         .iter()
@@ -609,6 +606,17 @@ fn handle_player_hud_click(
     else {
         return;
     };
+    let panel_rect = player_hud_panel_rect(
+        window.width(),
+        window.height(),
+        *device_profile,
+        player.seat,
+    );
+    if !panel_rect.contains(cursor) {
+        hud_state.active_player = None;
+        return;
+    }
+
     let is_actionable_turn = active_player_id == turn_state.current_player
         && player.state.control == PlayerControl::Human;
     if !is_actionable_turn {
@@ -643,21 +651,26 @@ pub fn player_hud_point_is_interactive(
     hud_state: &PlayerHudState,
 ) -> bool {
     for player in &player_roster.players {
-        let rect = player_hud_entry_rect(
-            window.width(),
-            window.height(),
-            device_profile,
-            player.state.player_id,
-        );
+        let rect =
+            player_hud_entry_rect(window.width(), window.height(), device_profile, player.seat);
         if rect.contains(point) {
             return true;
         }
     }
 
     hud_state.active_player.is_some_and(|player_id| {
-        player_hud_panel_rect(window.width(), window.height(), device_profile, player_id)
-            .contains(point)
+        player_profile(player_roster, player_id).is_some_and(|player| {
+            player_hud_panel_rect(window.width(), window.height(), device_profile, player.seat)
+                .contains(point)
+        })
     })
+}
+
+fn player_profile(player_roster: &PlayerRoster, player_id: u8) -> Option<&PlayerProfile> {
+    player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == player_id)
 }
 
 fn gameplay_board_screen_rect(
@@ -678,29 +691,29 @@ fn player_hud_entry_rect(
     window_width: f32,
     window_height: f32,
     device_profile: DeviceProfile,
-    player_id: u8,
+    seat: PlayerSeat,
 ) -> ScreenRect {
     let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
-    let mut rect = match player_id {
-        1 => ScreenRect {
+    let mut rect = match seat {
+        PlayerSeat::Blue => ScreenRect {
             x: board.x + HUD_EDGE_MARGIN,
             y: board.y + HUD_EDGE_MARGIN,
             w: HUD_ENTRY_W,
             h: HUD_ENTRY_H,
         },
-        2 => ScreenRect {
+        PlayerSeat::Red => ScreenRect {
             x: board.x + board.w - HUD_ENTRY_W - HUD_EDGE_MARGIN,
             y: board.y + HUD_EDGE_MARGIN,
             w: HUD_ENTRY_W,
             h: HUD_ENTRY_H,
         },
-        3 => ScreenRect {
+        PlayerSeat::Green => ScreenRect {
             x: board.x + HUD_EDGE_MARGIN,
             y: board.y + board.h - HUD_ENTRY_H - HUD_EDGE_MARGIN,
             w: HUD_ENTRY_W,
             h: HUD_ENTRY_H,
         },
-        _ => ScreenRect {
+        PlayerSeat::Yellow => ScreenRect {
             x: board.x + board.w - HUD_ENTRY_W - HUD_EDGE_MARGIN,
             y: board.y + board.h - HUD_ENTRY_H - HUD_EDGE_MARGIN,
             w: HUD_ENTRY_W,
@@ -710,7 +723,7 @@ fn player_hud_entry_rect(
     rect = clamp_rect_to_window(rect, window_width, window_height);
 
     let audio = top_right_audio_rect(window_width);
-    if player_id == 2 && rect.overlaps(audio) {
+    if seat == PlayerSeat::Red && rect.overlaps(audio) {
         rect.y = (audio.y + audio.h + HUD_EDGE_MARGIN)
             .min((window_height - rect.h - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN));
     }
@@ -721,20 +734,22 @@ fn player_hud_panel_rect(
     window_width: f32,
     window_height: f32,
     device_profile: DeviceProfile,
-    player_id: u8,
+    seat: PlayerSeat,
 ) -> ScreenRect {
     let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
     let left_outside = board.x - HUD_PANEL_W - HUD_PANEL_GAP;
     let right_outside = board.x + board.w + HUD_PANEL_GAP;
-    let x = match player_id {
-        1 | 3 if left_outside >= HUD_EDGE_MARGIN => left_outside,
-        1 | 3 => board.x + HUD_PANEL_GAP,
+    let x = match seat {
+        PlayerSeat::Blue | PlayerSeat::Green if left_outside >= HUD_EDGE_MARGIN => left_outside,
+        PlayerSeat::Blue | PlayerSeat::Green => board.x + HUD_PANEL_GAP,
         _ if right_outside + HUD_PANEL_W <= window_width - HUD_EDGE_MARGIN => right_outside,
         _ => board.x + board.w - HUD_PANEL_W - HUD_PANEL_GAP,
     };
-    let y = match player_id {
-        1 | 2 => board.y + HUD_ENTRY_H + HUD_PANEL_GAP,
-        _ => board.y + board.h - HUD_PANEL_H - HUD_ENTRY_H - HUD_PANEL_GAP,
+    let y = match seat {
+        PlayerSeat::Blue | PlayerSeat::Red => board.y + HUD_ENTRY_H + HUD_PANEL_GAP,
+        PlayerSeat::Green | PlayerSeat::Yellow => {
+            board.y + board.h - HUD_PANEL_H - HUD_ENTRY_H - HUD_PANEL_GAP
+        }
     };
     clamp_rect_to_window(
         ScreenRect {
@@ -1235,10 +1250,10 @@ mod tests {
     fn player_hud_entries_follow_centered_board_corners() {
         let profile = test_profile(1280.0, 720.0);
         let board = gameplay_board_screen_rect(1280.0, 720.0, profile);
-        let p1 = player_hud_entry_rect(1280.0, 720.0, profile, 1);
-        let p2 = player_hud_entry_rect(1280.0, 720.0, profile, 2);
-        let p3 = player_hud_entry_rect(1280.0, 720.0, profile, 3);
-        let p4 = player_hud_entry_rect(1280.0, 720.0, profile, 4);
+        let p1 = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Blue);
+        let p2 = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Red);
+        let p3 = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Green);
+        let p4 = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Yellow);
 
         assert!((p1.x - (board.x + HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
         assert!((p1.y - (board.y + HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
@@ -1248,9 +1263,19 @@ mod tests {
     }
 
     #[test]
+    fn player_hud_entry_position_follows_player_seat() {
+        let profile = test_profile(1280.0, 720.0);
+        let board = gameplay_board_screen_rect(1280.0, 720.0, profile);
+        let p1_red = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Red);
+
+        assert!((p1_red.x + p1_red.w - (board.x + board.w - HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+        assert!((p1_red.y - (board.y + HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn top_right_player_entry_does_not_cover_audio_entry() {
         let profile = test_profile(360.0, 640.0);
-        let p2 = player_hud_entry_rect(360.0, 640.0, profile, 2);
+        let p2 = player_hud_entry_rect(360.0, 640.0, profile, PlayerSeat::Red);
         let audio = top_right_audio_rect(360.0);
 
         assert!(!p2.overlaps(audio));
@@ -1260,8 +1285,8 @@ mod tests {
     fn player_hud_panel_stays_inside_common_windows() {
         for (width, height) in [(1280.0, 720.0), (2560.0, 1600.0), (640.0, 360.0)] {
             let profile = test_profile(width, height);
-            for player_id in 1..=4 {
-                let panel = player_hud_panel_rect(width, height, profile, player_id);
+            for seat in PlayerSeat::ALL {
+                let panel = player_hud_panel_rect(width, height, profile, seat);
                 assert!(panel.x >= HUD_EDGE_MARGIN);
                 assert!(panel.y >= HUD_EDGE_MARGIN);
                 assert!(panel.x + panel.w <= width - HUD_EDGE_MARGIN || width < panel.w);

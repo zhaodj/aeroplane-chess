@@ -4,7 +4,7 @@ use crate::data::game_mode::GameMode;
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
-use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
+use crate::gameplay::match_flow::{MatchSetup, PlayerSeat};
 use crate::platform::PointerInputState;
 use crate::plugins::audio_plugin::AudioSettings;
 use crate::states::AppState;
@@ -124,9 +124,9 @@ impl ClickRect {
 #[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
 enum ModeSelectAction {
     SetMode(GameMode),
-    SetPlayerColor {
+    SetPlayerSeat {
         player_index: usize,
-        color: PlayerColorChoice,
+        seat: PlayerSeat,
     },
     SetPieces(u8),
     SetLaunchRule(LaunchRule),
@@ -1011,13 +1011,13 @@ fn spawn_mode_select_content(
             &format!("P{}", player_index + 1),
             row_top + 6.0,
         );
-        for (color_index, choice) in PlayerColorChoice::ALL.iter().enumerate() {
-            let x = PLAYER_COLOR_LEFT + color_index as f32 * (COLOR_SWATCH_W + OPTION_GAP);
+        for (seat_index, seat) in PlayerSeat::ALL.iter().enumerate() {
+            let x = PLAYER_COLOR_LEFT + seat_index as f32 * (COLOR_SWATCH_W + OPTION_GAP);
             spawn_option(
                 commands,
-                ModeSelectAction::SetPlayerColor {
+                ModeSelectAction::SetPlayerSeat {
                     player_index,
-                    color: *choice,
+                    seat: *seat,
                 },
                 layout.rect(ClickRect {
                     x,
@@ -1026,7 +1026,7 @@ fn spawn_mode_select_content(
                     h: COLOR_SWATCH_H,
                 }),
                 "",
-                choice.to_color(),
+                seat.to_color(),
             );
         }
         spawn_option(
@@ -1339,7 +1339,7 @@ fn option_border_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> C
 fn action_disabled(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
     // 模式未启用的玩家行不显示，也不接受残留点击区域输入。
     match action {
-        ModeSelectAction::SetPlayerColor { player_index, .. }
+        ModeSelectAction::SetPlayerSeat { player_index, .. }
         | ModeSelectAction::SetPlayerControl { player_index, .. } => {
             player_index >= match_setup.active_player_count()
         }
@@ -1352,10 +1352,9 @@ fn action_selected(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
     // 判断某个选项是否与当前配置一致（用于高亮）。
     match action {
         ModeSelectAction::SetMode(mode) => match_setup.mode == mode,
-        ModeSelectAction::SetPlayerColor {
-            player_index,
-            color,
-        } => match_setup.player_color_choice(player_index) == Some(color),
+        ModeSelectAction::SetPlayerSeat { player_index, seat } => {
+            match_setup.player_seat(player_index) == Some(seat)
+        }
         ModeSelectAction::SetPieces(pieces) => match_setup.pieces_per_player == pieces,
         ModeSelectAction::SetLaunchRule(launch_rule) => match_setup.launch_rule == launch_rule,
         ModeSelectAction::SetAiDifficulty(difficulty) => match_setup.ai_difficulty == difficulty,
@@ -1596,12 +1595,11 @@ fn apply_mode_select_action(
         ModeSelectAction::SetMode(mode) => {
             match_setup.mode = mode;
             match_setup.sanitize_player_controls();
-            match_setup.sanitize_player_colors();
+            match_setup.sanitize_player_seats();
         }
-        ModeSelectAction::SetPlayerColor {
-            player_index,
-            color,
-        } => match_setup.set_player_color(player_index, color),
+        ModeSelectAction::SetPlayerSeat { player_index, seat } => {
+            match_setup.set_player_seat(player_index, seat)
+        }
         ModeSelectAction::SetPieces(pieces) => match_setup.pieces_per_player = pieces.clamp(1, 4),
         ModeSelectAction::SetLaunchRule(launch_rule) => match_setup.launch_rule = launch_rule,
         ModeSelectAction::SetAiDifficulty(ai_difficulty) => {
@@ -1613,7 +1611,7 @@ fn apply_mode_select_action(
         } => match_setup.set_player_control(player_index, control),
         ModeSelectAction::StartMatch => {
             match_setup.sanitize_player_controls();
-            match_setup.sanitize_player_colors();
+            match_setup.sanitize_player_seats();
             next_state.set(AppState::LoadingGame);
         }
         ModeSelectAction::Back => next_state.set(AppState::MainMenu),
@@ -1659,11 +1657,11 @@ mod tests {
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
-            player_colors: [
-                PlayerColorChoice::Blue,
-                PlayerColorChoice::Red,
-                PlayerColorChoice::Green,
-                PlayerColorChoice::Yellow,
+            player_seats: [
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
             ],
             pieces_per_player: 2,
             player_controls: [
@@ -1901,14 +1899,14 @@ mod tests {
     }
 
     #[test]
-    fn inactive_player_color_and_control_actions_are_disabled() {
+    fn inactive_player_seat_and_control_actions_are_disabled() {
         let mut match_setup = setup();
         match_setup.mode = GameMode::OneVsOne;
 
         assert!(action_disabled(
-            ModeSelectAction::SetPlayerColor {
+            ModeSelectAction::SetPlayerSeat {
                 player_index: 2,
-                color: PlayerColorChoice::Green,
+                seat: PlayerSeat::Green,
             },
             &match_setup
         ));
@@ -1920,12 +1918,47 @@ mod tests {
             &match_setup
         ));
         assert!(!action_disabled(
-            ModeSelectAction::SetPlayerColor {
+            ModeSelectAction::SetPlayerSeat {
                 player_index: 1,
-                color: PlayerColorChoice::Red,
+                seat: PlayerSeat::Red,
             },
             &match_setup
         ));
+    }
+
+    #[test]
+    fn seat_options_follow_selection_and_swap_occupied_seats() {
+        let mut match_setup = setup();
+        let mut next_state = NextState::<AppState>::default();
+        let p1_blue = ModeSelectAction::SetPlayerSeat {
+            player_index: 0,
+            seat: PlayerSeat::Blue,
+        };
+        let p1_red = ModeSelectAction::SetPlayerSeat {
+            player_index: 0,
+            seat: PlayerSeat::Red,
+        };
+        let p2_blue = ModeSelectAction::SetPlayerSeat {
+            player_index: 1,
+            seat: PlayerSeat::Blue,
+        };
+
+        assert!(action_selected(p1_blue, &match_setup));
+        assert!(!action_selected(p1_red, &match_setup));
+
+        apply_mode_select_action(p1_red, &mut match_setup, &mut next_state);
+
+        assert_eq!(
+            match_setup.player_seats,
+            [
+                PlayerSeat::Red,
+                PlayerSeat::Blue,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
+            ]
+        );
+        assert!(action_selected(p1_red, &match_setup));
+        assert!(action_selected(p2_blue, &match_setup));
     }
 
     #[test]

@@ -1111,9 +1111,7 @@ mod tests {
     use crate::domain::player::PlayerControl;
     use crate::domain::rules::LaunchRule;
     use crate::gameplay::ai::AiDifficulty;
-    use crate::gameplay::match_flow::{
-        MatchSetup, PlayerColorChoice, PlayerRoster, build_match_rosters,
-    };
+    use crate::gameplay::match_flow::{MatchSetup, PlayerRoster, PlayerSeat, build_match_rosters};
 
     fn test_roster() -> (BoardLayout, PlayerRoster) {
         let setup = MatchSetup {
@@ -1121,11 +1119,11 @@ mod tests {
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
-            player_colors: [
-                PlayerColorChoice::Blue,
-                PlayerColorChoice::Red,
-                PlayerColorChoice::Green,
-                PlayerColorChoice::Yellow,
+            player_seats: [
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
             ],
             pieces_per_player: 2,
             player_controls: [

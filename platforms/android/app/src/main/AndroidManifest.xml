@@ -10,8 +10,10 @@
     <application
         android:allowBackup="false"
         android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
         android:label="Aeroplane Chess"
         android:resizeableActivity="true"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/AppTheme"
         tools:targetApi="33">
         <activity

@@ -15,10 +15,10 @@ fi
 rustup target add wasm32-unknown-unknown >/dev/null
 
 echo "[1/3] building wasm binary..."
-RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo build --release --target wasm32-unknown-unknown
+RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo build --release --target wasm32-unknown-unknown --lib
 
 WASM_FILE=""
-for candidate in "${TARGET_DIR}/aeroplane-chess.wasm" "${TARGET_DIR}/aeroplane_chess.wasm"; do
+for candidate in "${TARGET_DIR}/aeroplane_chess.wasm" "${TARGET_DIR}/aeroplane-chess.wasm"; do
   if [ -f "${candidate}" ]; then
     WASM_FILE="${candidate}"
     break
@@ -43,6 +43,7 @@ wasm-bindgen \
 
 echo "[3/3] copying web shell..."
 cp "${WEB_DIR}/index.html" "${DIST_DIR}/index.html"
+find "${WEB_DIR}" -maxdepth 1 -type f \( -name "*.png" -o -name "*.ico" -o -name "*.webmanifest" \) -exec cp {} "${DIST_DIR}/" \;
 rm -rf "${DIST_DIR}/assets"
 cp -R "${ROOT_DIR}/assets" "${DIST_DIR}/assets"
 

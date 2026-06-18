@@ -1035,7 +1035,7 @@ fn apply_jump_effect(
         return;
     };
 
-    if !is_same_color_route_tile(owner_player_id, tile_index, board_layout) {
+    if !is_same_color_route_tile(owner_player_id, tile_index, board_layout, player_roster) {
         return;
     }
 
@@ -1104,7 +1104,7 @@ fn jump_resolution_for_same_color_landing(
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
 ) -> Option<JumpResolution> {
-    if !is_same_color_route_tile(player_id, tile_index, board_layout) {
+    if !is_same_color_route_tile(player_id, tile_index, board_layout, player_roster) {
         return None;
     }
 
@@ -1131,7 +1131,7 @@ fn shortcut_progress_after_landing(
     }
 
     let tile_index = route_index_for_progress(player_roster, player_id, current_progress)?;
-    if !is_same_color_route_tile(player_id, tile_index, board_layout) {
+    if !is_same_color_route_tile(player_id, tile_index, board_layout, player_roster) {
         return None;
     }
 
@@ -1143,18 +1143,25 @@ fn shortcut_progress_after_landing(
 }
 
 /// 主环道当前格是否为该玩家的同色格。
-fn is_same_color_route_tile(player_id: u8, tile_index: u8, board_layout: &BoardLayout) -> bool {
-    let Some(player_color_slot) = player_color_slot(player_id) else {
+fn is_same_color_route_tile(
+    player_id: u8,
+    tile_index: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> bool {
+    let Some(player_color_slot) = player_seat_slot(player_id, player_roster) else {
         return false;
     };
 
     board_layout.player_color_slot_for_route_index(tile_index) == Some(player_color_slot)
 }
 
-fn player_color_slot(player_id: u8) -> Option<usize> {
-    (1..=4)
-        .contains(&player_id)
-        .then_some(player_id.saturating_sub(1) as usize)
+fn player_seat_slot(player_id: u8, player_roster: &PlayerRoster) -> Option<usize> {
+    player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == player_id)
+        .map(|player| player.seat.slot_index())
 }
 
 fn progress_for_main_route_index(
@@ -1204,7 +1211,7 @@ fn next_same_color_jump_progress(
         let Some(next_index) = route_index_for_progress(player_roster, player_id, progress) else {
             continue;
         };
-        if is_same_color_route_tile(player_id, next_index, board_layout) {
+        if is_same_color_route_tile(player_id, next_index, board_layout, player_roster) {
             return Some(progress);
         }
     }
@@ -1950,7 +1957,7 @@ mod tests {
     use super::*;
     use crate::domain::player::{PlayerControl, PlayerState};
     use crate::gameplay::ai::AiDifficulty;
-    use crate::gameplay::match_flow::{MatchSetup, PlayerColorChoice};
+    use crate::gameplay::match_flow::{MatchSetup, PlayerSeat, build_match_rosters};
     use crate::gameplay::skill_flow::{
         build_skill_roster, can_use_skill_this_turn, sync_turn_skill_usage,
     };
@@ -1962,11 +1969,11 @@ mod tests {
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
-            player_colors: [
-                PlayerColorChoice::Red,
-                PlayerColorChoice::Blue,
-                PlayerColorChoice::Green,
-                PlayerColorChoice::Yellow,
+            player_seats: [
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
             ],
             pieces_per_player: 2,
             player_controls: [
@@ -1984,11 +1991,11 @@ mod tests {
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
-            player_colors: [
-                PlayerColorChoice::Red,
-                PlayerColorChoice::Blue,
-                PlayerColorChoice::Green,
-                PlayerColorChoice::Yellow,
+            player_seats: [
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
             ],
             pieces_per_player: 2,
             player_controls: [
@@ -1998,6 +2005,192 @@ mod tests {
                 PlayerControl::Ai,
             ],
         }
+    }
+
+    fn match_config_from_setup(setup: &MatchSetup) -> MatchConfig {
+        MatchConfig {
+            mode: setup.mode,
+            ai_difficulty: setup.ai_difficulty,
+            fast_mode: setup.fast_mode,
+            launch_rule: setup.launch_rule,
+            player_seats: setup.normalized_player_seats(),
+            pieces_per_player: setup.pieces_per_player,
+            player_controls: setup.normalized_player_controls(),
+        }
+    }
+
+    fn spawn_test_pieces(world: &mut World, player_roster: &PlayerRoster) {
+        let mut piece_id = 1;
+        for player in &player_roster.players {
+            for &hangar_slot in &player.hangar_slots {
+                world.spawn((
+                    PieceId(piece_id),
+                    HangarSlot(hangar_slot),
+                    PieceState {
+                        owner_player_id: player.state.player_id,
+                        team_id: player.state.team_id,
+                        status: PieceStatus::InHangar,
+                        progress: 0,
+                        shield: 0,
+                        stack_shield: 0,
+                        motion_serial: 0,
+                    },
+                    Transform::from_xyz(hangar_slot.x, hangar_slot.y, 0.0),
+                ));
+                piece_id += 1;
+            }
+        }
+    }
+
+    fn simulated_action_score(
+        action: PlannedAction,
+        piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    ) -> i32 {
+        match action {
+            PlannedAction::Launch { .. } => 0,
+            PlannedAction::Move {
+                piece_id,
+                target_progress,
+            } => {
+                let current_progress = piece_query
+                    .iter()
+                    .find(|(id, _, _, _)| id.0 == piece_id)
+                    .map(|(_, _, piece_state, _)| piece_state.progress)
+                    .unwrap_or_default();
+                let finish_bonus = if target_progress == FINISH_DISTANCE {
+                    10_000
+                } else {
+                    0
+                };
+                let forward_bonus = i32::from(target_progress.saturating_sub(current_progress));
+                finish_bonus + 1_000 + i32::from(target_progress) * 10 + forward_bonus
+            }
+        }
+    }
+
+    fn choose_simulated_turn_action(
+        turn_state: &TurnState,
+        match_config: &MatchConfig,
+        board_layout: &BoardLayout,
+        player_roster: &PlayerRoster,
+        piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    ) -> Option<(u8, PlannedAction)> {
+        let mut best: Option<(i32, u8, PlannedAction)> = None;
+
+        for roll_value in 1..=6 {
+            let actions = collect_actions(
+                turn_state.current_player,
+                DiceRoll(roll_value),
+                0,
+                match_config.launch_rule,
+                board_layout,
+                player_roster,
+                piece_query,
+            );
+
+            for action in actions {
+                let score = simulated_action_score(action, piece_query);
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_score, _, _)| score > *best_score)
+                {
+                    best = Some((score, roll_value, action));
+                }
+            }
+        }
+
+        best.map(|(_, roll_value, action)| (roll_value, action))
+    }
+
+    fn snapshot_pieces(
+        piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    ) -> Vec<(u8, u8, PieceStatus, u8)> {
+        let mut pieces = piece_query
+            .iter()
+            .map(|(piece_id, _, piece_state, _)| {
+                (
+                    piece_id.0,
+                    piece_state.owner_player_id,
+                    piece_state.status,
+                    piece_state.progress,
+                )
+            })
+            .collect::<Vec<_>>();
+        pieces.sort_by_key(|(piece_id, _, _, _)| *piece_id);
+        pieces
+    }
+
+    fn simulate_match_to_result(setup: MatchSetup, max_turns: usize) -> MatchResult {
+        let match_config = match_config_from_setup(&setup);
+        let board_layout = BoardLayout::default();
+        let (players, teams) = build_match_rosters(&setup);
+        let player_roster = PlayerRoster::from_players(players);
+        let team_roster = TeamRoster { teams };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let mut match_result = MatchResult::default();
+        let mut turn_state = TurnState::opening_turn();
+        let mut input_state = TurnInputState::default();
+        let mut next_phase = NextState::<GamePhase>::default();
+        let mut world = World::new();
+        spawn_test_pieces(&mut world, &player_roster);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut turns_taken = 0;
+
+        while !match_result.finished && turns_taken < max_turns {
+            turns_taken += 1;
+            let mut query = system_state.get_mut(&mut world);
+
+            if let Some((roll_value, action)) = choose_simulated_turn_action(
+                &turn_state,
+                &match_config,
+                &board_layout,
+                &player_roster,
+                &query,
+            ) {
+                set_roll(&mut turn_state, roll_value);
+                execute_action(
+                    action,
+                    roll_value,
+                    roll_value,
+                    ActionResources {
+                        player_roster: &player_roster,
+                        team_roster: &team_roster,
+                        match_config: &match_config,
+                        board_layout: &board_layout,
+                    },
+                    ActionState {
+                        skill_roster: &mut skill_roster,
+                        match_result: &mut match_result,
+                        turn_state: &mut turn_state,
+                        input_state: &mut input_state,
+                        next_phase: &mut next_phase,
+                    },
+                    &mut query,
+                );
+            } else {
+                clear_pending_input(&mut input_state);
+                advance_turn(&mut turn_state, player_roster.players.len() as u8);
+                next_phase.set(GamePhase::AwaitDice);
+            }
+        }
+
+        if !match_result.finished {
+            let query = system_state.get_mut(&mut world);
+            panic!(
+                "simulated match did not finish in {max_turns} turns; mode={:?}, launch_rule={:?}, pieces={}, seats={:?}, current_player={}, last_action={:?}, pieces={:?}",
+                setup.mode,
+                setup.launch_rule,
+                setup.pieces_per_player,
+                setup.player_seats,
+                turn_state.current_player,
+                turn_state.last_action,
+                snapshot_pieces(&query)
+            );
+        }
+
+        match_result
     }
 
     fn progress_for_main_tile(player_roster: &PlayerRoster, player_id: u8, route_index: u8) -> u8 {
@@ -2010,6 +2203,151 @@ mod tests {
             route_index - player.launch_tile_index
         } else {
             MAIN_ROUTE_STEPS - (player.launch_tile_index - route_index)
+        }
+    }
+
+    fn seat_layouts_for_simulation() -> Vec<[PlayerSeat; 4]> {
+        vec![
+            [
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
+            ],
+            [
+                PlayerSeat::Red,
+                PlayerSeat::Blue,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
+            ],
+            [
+                PlayerSeat::Yellow,
+                PlayerSeat::Green,
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+            ],
+            [
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
+                PlayerSeat::Red,
+                PlayerSeat::Blue,
+            ],
+        ]
+    }
+
+    fn control_layouts_for_simulation() -> Vec<[PlayerControl; 4]> {
+        vec![
+            [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
+            [
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+            ],
+        ]
+    }
+
+    #[test]
+    fn simulated_matches_finish_for_varied_play_configs() {
+        let mut scenario_count = 0;
+
+        for mode in GameMode::ALL {
+            for launch_rule in LaunchRule::ALL {
+                for pieces_per_player in 1..=4 {
+                    for player_seats in seat_layouts_for_simulation() {
+                        for player_controls in control_layouts_for_simulation() {
+                            let mut setup = setup(mode);
+                            setup.launch_rule = launch_rule;
+                            setup.pieces_per_player = pieces_per_player;
+                            setup.player_seats = player_seats;
+                            setup.player_controls = player_controls;
+                            scenario_count += 1;
+
+                            let result = simulate_match_to_result(setup.clone(), 5_000);
+                            assert!(result.finished);
+                            assert!(result.winner_team_id.is_some());
+                            assert!(
+                                !result.winner_player_ids.is_empty(),
+                                "winner players should be reported for mode={:?}, launch_rule={:?}, pieces={}, seats={:?}, controls={:?}",
+                                setup.mode,
+                                setup.launch_rule,
+                                setup.pieces_per_player,
+                                setup.player_seats,
+                                setup.player_controls,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            scenario_count,
+            GameMode::ALL.len()
+                * LaunchRule::ALL.len()
+                * 4
+                * seat_layouts_for_simulation().len()
+                * control_layouts_for_simulation().len()
+        );
+    }
+
+    #[test]
+    fn simulated_matches_cover_representative_edge_configs() {
+        let mut edge_configs = Vec::new();
+        let mut one_vs_one_both_human = setup(GameMode::OneVsOne);
+        one_vs_one_both_human.launch_rule = LaunchRule::Even;
+        one_vs_one_both_human.pieces_per_player = 4;
+        one_vs_one_both_human.player_seats = [
+            PlayerSeat::Yellow,
+            PlayerSeat::Green,
+            PlayerSeat::Blue,
+            PlayerSeat::Red,
+        ];
+        one_vs_one_both_human.player_controls = [
+            PlayerControl::Human,
+            PlayerControl::Human,
+            PlayerControl::Ai,
+            PlayerControl::Ai,
+        ];
+        edge_configs.push(one_vs_one_both_human);
+
+        let mut two_vs_two_fast_mode = setup(GameMode::TwoVsTwo);
+        two_vs_two_fast_mode.launch_rule = LaunchRule::Even;
+        two_vs_two_fast_mode.pieces_per_player = 4;
+        two_vs_two_fast_mode.fast_mode = true;
+        two_vs_two_fast_mode.player_controls = [
+            PlayerControl::Human,
+            PlayerControl::Ai,
+            PlayerControl::Ai,
+            PlayerControl::Human,
+        ];
+        edge_configs.push(two_vs_two_fast_mode);
+
+        let mut free_for_all_single_piece = setup(GameMode::FreeForAll);
+        free_for_all_single_piece.launch_rule = LaunchRule::SixOnly;
+        free_for_all_single_piece.pieces_per_player = 1;
+        free_for_all_single_piece.player_seats = [
+            PlayerSeat::Green,
+            PlayerSeat::Blue,
+            PlayerSeat::Yellow,
+            PlayerSeat::Red,
+        ];
+        edge_configs.push(free_for_all_single_piece);
+
+        for setup in edge_configs {
+            let result = simulate_match_to_result(setup.clone(), 5_000);
+            assert!(result.finished);
+            assert!(result.winner_team_id.is_some());
+            assert!(
+                !result.winner_player_ids.is_empty(),
+                "winner players should be reported for {:?}",
+                setup.mode
+            );
         }
     }
 
@@ -2471,7 +2809,12 @@ mod tests {
         let expected_progress = progress_for_main_tile(&player_roster, 1, 44);
         let chained_progress = progress_for_main_tile(&player_roster, 1, 0);
 
-        assert!(is_same_color_route_tile(1, 44, &board_layout));
+        assert!(is_same_color_route_tile(
+            1,
+            44,
+            &board_layout,
+            &player_roster
+        ));
 
         let mut world = World::new();
         world.spawn((
@@ -2515,6 +2858,28 @@ mod tests {
         assert_eq!(progress, expected_progress);
         assert_ne!(progress, chained_progress);
         assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn same_color_route_tile_uses_selected_player_seat() {
+        let mut one_vs_one_setup = setup(GameMode::OneVsOne);
+        one_vs_one_setup.set_player_seat(0, PlayerSeat::Red);
+        let (players, _) = crate::gameplay::match_flow::build_match_rosters(&one_vs_one_setup);
+        let player_roster = PlayerRoster::from_players(players);
+        let board_layout = BoardLayout::default();
+
+        assert!(is_same_color_route_tile(
+            1,
+            45,
+            &board_layout,
+            &player_roster
+        ));
+        assert!(!is_same_color_route_tile(
+            1,
+            40,
+            &board_layout,
+            &player_roster
+        ));
     }
 
     #[test]
@@ -3015,6 +3380,7 @@ mod tests {
                     team_id: 1,
                     control: PlayerControl::Human,
                 },
+                seat: PlayerSeat::Blue,
                 color: Color::srgb(1.0, 0.0, 0.0),
                 hangar_slots: vec![],
                 launch_position: Vec2::ZERO,
@@ -3028,6 +3394,7 @@ mod tests {
                     team_id: 2,
                     control: PlayerControl::Ai,
                 },
+                seat: PlayerSeat::Red,
                 color: Color::srgb(0.0, 0.0, 1.0),
                 hangar_slots: vec![],
                 launch_position: Vec2::ZERO,

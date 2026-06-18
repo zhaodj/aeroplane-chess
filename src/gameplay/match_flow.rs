@@ -16,7 +16,7 @@ pub struct MatchConfig {
     pub ai_difficulty: AiDifficulty,
     pub fast_mode: bool,
     pub launch_rule: LaunchRule,
-    pub player_colors: [PlayerColorChoice; 4],
+    pub player_seats: [PlayerSeat; 4],
     pub pieces_per_player: u8,
     pub player_controls: [PlayerControl; 4],
 }
@@ -28,7 +28,7 @@ pub struct MatchSetup {
     pub ai_difficulty: AiDifficulty,
     pub fast_mode: bool,
     pub launch_rule: LaunchRule,
-    pub player_colors: [PlayerColorChoice; 4],
+    pub player_seats: [PlayerSeat; 4],
     pub pieces_per_player: u8,
     pub player_controls: [PlayerControl; 4],
 }
@@ -65,53 +65,53 @@ impl MatchSetup {
         self.player_controls = self.normalized_player_controls();
     }
 
-    /// 返回去重后的玩家颜色；若配置异常则按默认四色补齐。
-    pub fn normalized_player_colors(&self) -> [PlayerColorChoice; 4] {
-        let mut colors = self.player_colors;
-        let mut used = Vec::with_capacity(colors.len());
+    /// 返回去重后的玩家座位；若配置异常则按固定棋盘座位补齐。
+    pub fn normalized_player_seats(&self) -> [PlayerSeat; 4] {
+        let mut seats = self.player_seats;
+        let mut used = Vec::with_capacity(seats.len());
 
-        for (index, color) in colors.iter_mut().enumerate() {
-            if used.contains(color) {
-                *color = PlayerColorChoice::ALL
+        for (index, seat) in seats.iter_mut().enumerate() {
+            if used.contains(seat) {
+                *seat = PlayerSeat::ALL
                     .iter()
                     .copied()
                     .find(|choice| !used.contains(choice))
-                    .unwrap_or(PlayerColorChoice::ALL[index]);
+                    .unwrap_or(PlayerSeat::ALL[index]);
             }
-            used.push(*color);
+            used.push(*seat);
         }
 
-        colors
+        seats
     }
 
-    /// 原地修正玩家颜色，保证四名玩家颜色不重复。
-    pub fn sanitize_player_colors(&mut self) {
-        self.player_colors = self.normalized_player_colors();
+    /// 原地修正玩家座位，保证四名玩家座位不重复。
+    pub fn sanitize_player_seats(&mut self) {
+        self.player_seats = self.normalized_player_seats();
     }
 
-    /// 读取指定序号玩家颜色。
-    pub fn player_color_choice(&self, player_index: usize) -> Option<PlayerColorChoice> {
-        self.player_colors.get(player_index).copied()
+    /// 读取指定序号玩家座位。
+    pub fn player_seat(&self, player_index: usize) -> Option<PlayerSeat> {
+        self.player_seats.get(player_index).copied()
     }
 
-    /// 设置指定玩家颜色；若颜色已被其它玩家使用，则两名玩家交换颜色。
-    pub fn set_player_color(&mut self, player_index: usize, color: PlayerColorChoice) {
-        if player_index >= self.player_colors.len() {
+    /// 设置指定玩家座位；若座位已被其它玩家使用，则两名玩家交换座位。
+    pub fn set_player_seat(&mut self, player_index: usize, seat: PlayerSeat) {
+        if player_index >= self.player_seats.len() {
             return;
         }
 
         if let Some(owner_index) =
-            self.player_colors
+            self.player_seats
                 .iter()
                 .enumerate()
                 .find_map(|(index, selected)| {
-                    (index != player_index && *selected == color).then_some(index)
+                    (index != player_index && *selected == seat).then_some(index)
                 })
         {
-            self.player_colors[owner_index] = self.player_colors[player_index];
+            self.player_seats[owner_index] = self.player_seats[player_index];
         }
 
-        self.player_colors[player_index] = color;
+        self.player_seats[player_index] = seat;
     }
 
     /// 切换指定玩家的人机类型；若会导致“全 AI”则拒绝本次切换。
@@ -160,17 +160,18 @@ impl MatchSetup {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PlayerColorChoice {
-    Red,
+pub enum PlayerSeat {
     Blue,
+    Red,
     Green,
     Yellow,
 }
 
-impl PlayerColorChoice {
-    pub const ALL: [Self; 4] = [Self::Red, Self::Blue, Self::Green, Self::Yellow];
+impl PlayerSeat {
+    /// 固定棋盘座位顺序：Blue=旧 P1，Red=旧 P2，Green=旧 P3，Yellow=旧 P4。
+    pub const ALL: [Self; 4] = [Self::Blue, Self::Red, Self::Green, Self::Yellow];
 
-    /// 循环到下一个可选颜色。
+    /// 循环到下一个可选座位。
     pub fn next(self) -> Self {
         let index = Self::ALL
             .iter()
@@ -179,21 +180,31 @@ impl PlayerColorChoice {
         Self::ALL[(index + 1) % Self::ALL.len()]
     }
 
-    /// 返回颜色名称，供 UI 展示。
+    /// 返回座位在 UI 中展示的颜色名称。
     pub fn label(self) -> &'static str {
         match self {
-            Self::Red => "Red",
             Self::Blue => "Blue",
+            Self::Red => "Red",
             Self::Green => "Green",
             Self::Yellow => "Yellow",
+        }
+    }
+
+    /// 返回座位槽位下标，供棋盘路径与同色跳跃判断使用。
+    pub fn slot_index(self) -> usize {
+        match self {
+            Self::Blue => 0,
+            Self::Red => 1,
+            Self::Green => 2,
+            Self::Yellow => 3,
         }
     }
 
     /// 返回颜色值，供棋子与配置面板渲染使用。
     pub fn to_color(self) -> Color {
         match self {
-            Self::Red => Color::srgb(1.0, 0.0, 0.0),
             Self::Blue => Color::srgb(0.0, 128.0 / 255.0, 1.0),
+            Self::Red => Color::srgb(1.0, 0.0, 0.0),
             Self::Green => Color::srgb(0.0, 128.0 / 255.0, 0.0),
             Self::Yellow => Color::srgb(243.0 / 255.0, 216.0 / 255.0, 73.0 / 255.0),
         }
@@ -260,11 +271,11 @@ pub struct PlayerRoster {
 }
 
 impl PlayerRoster {
-    /// 构建测试或临时玩家列表：保留默认四色棋盘调色板。
+    /// 构建测试或临时玩家列表：保留固定四色棋盘调色板。
     pub fn from_players(players: Vec<PlayerProfile>) -> Self {
         Self {
             players,
-            player_colors: PlayerColorChoice::ALL.map(PlayerColorChoice::to_color),
+            player_colors: PlayerSeat::ALL.map(PlayerSeat::to_color),
         }
     }
 }
@@ -273,6 +284,7 @@ impl PlayerRoster {
 /// 单个玩家的完整对局档案（颜色、机库、起点、冲线道等）。
 pub struct PlayerProfile {
     pub state: PlayerState,
+    pub seat: PlayerSeat,
     pub color: Color,
     pub hangar_slots: Vec<Vec2>,
     pub launch_position: Vec2,
@@ -302,26 +314,29 @@ pub const HANGAR_SLOT_OFFSETS: [Vec2; 4] = [
     Vec2::new(35.0, -35.0),
 ];
 
-pub fn hangar_center_for_player(player_id: u8) -> Option<Vec2> {
-    match player_id {
-        1 => Some(Vec2::new(-265.104, 265.104)),
-        2 => Some(Vec2::new(265.317, 265.104)),
-        3 => Some(Vec2::new(-265.104, -265.104)),
-        4 => Some(Vec2::new(265.104, -265.104)),
-        _ => None,
+pub fn hangar_center_for_seat(seat: PlayerSeat) -> Vec2 {
+    match seat {
+        PlayerSeat::Blue => Vec2::new(-265.104, 265.104),
+        PlayerSeat::Red => Vec2::new(265.317, 265.104),
+        PlayerSeat::Green => Vec2::new(-265.104, -265.104),
+        PlayerSeat::Yellow => Vec2::new(265.104, -265.104),
     }
 }
 
-fn required_hangar_center_for_player(player_id: u8) -> Vec2 {
-    hangar_center_for_player(player_id).expect("default player hangar center exists")
+pub fn player_for_seat<'a>(
+    player_roster: &'a PlayerRoster,
+    seat: PlayerSeat,
+) -> Option<&'a PlayerProfile> {
+    player_roster
+        .players
+        .iter()
+        .find(|player| player.seat == seat)
 }
 
 /// 构建开局所需资源：棋盘、玩家列表、队伍列表。
 pub fn build_match_resources(setup: &MatchSetup) -> (BoardLayout, PlayerRoster, TeamRoster) {
     let (players, teams) = build_match_rosters(setup);
-    let player_colors = setup
-        .normalized_player_colors()
-        .map(PlayerColorChoice::to_color);
+    let player_colors = PlayerSeat::ALL.map(PlayerSeat::to_color);
     (
         BoardLayout::default(),
         PlayerRoster {
@@ -332,9 +347,9 @@ pub fn build_match_resources(setup: &MatchSetup) -> (BoardLayout, PlayerRoster, 
     )
 }
 
-/// 根据开局配置生成玩家与队伍编排（包含颜色、起点、机库位置）。
+/// 根据开局配置生成玩家与队伍编排（包含座位、起点、机库位置）。
 pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamState>) {
-    let player_colors = setup.normalized_player_colors();
+    let player_seats = setup.normalized_player_seats();
     let pieces_per_player = setup.pieces_per_player.clamp(1, 4) as usize;
     let player_controls = setup.normalized_player_controls();
     let players = active_player_ids_for_mode(setup.mode)
@@ -345,7 +360,7 @@ pub fn build_match_rosters(setup: &MatchSetup) -> (Vec<PlayerProfile>, Vec<TeamS
                 *player_id,
                 team_id_for_player(setup.mode, *player_id),
                 player_controls[player_index],
-                player_colors[player_index],
+                player_seats[player_index],
                 pieces_per_player,
             )
         })
@@ -410,11 +425,11 @@ fn build_player_profile(
     player_id: u8,
     team_id: u8,
     control: PlayerControl,
-    color: PlayerColorChoice,
+    seat: PlayerSeat,
     pieces_per_player: usize,
 ) -> PlayerProfile {
-    let (launch_position, launch_tile_index, home_lane_positions, goal_position) = match player_id {
-        1 => (
+    let (launch_position, launch_tile_index, home_lane_positions, goal_position) = match seat {
+        PlayerSeat::Blue => (
             Vec2::new(-316.104, 156.104),
             39,
             vec![
@@ -427,7 +442,7 @@ fn build_player_profile(
             ],
             Vec2::new(-35.958, 0.0),
         ),
-        2 => (
+        PlayerSeat::Red => (
             Vec2::new(155.896, 316.104),
             3,
             vec![
@@ -440,7 +455,7 @@ fn build_player_profile(
             ],
             Vec2::new(0.0, 35.958),
         ),
-        3 => (
+        PlayerSeat::Green => (
             Vec2::new(-156.104, -315.896),
             27,
             vec![
@@ -453,7 +468,7 @@ fn build_player_profile(
             ],
             Vec2::new(0.0, -35.958),
         ),
-        4 => (
+        PlayerSeat::Yellow => (
             Vec2::new(315.896, -155.896),
             15,
             vec![
@@ -466,7 +481,6 @@ fn build_player_profile(
             ],
             Vec2::new(35.959, 0.0),
         ),
-        _ => unreachable!("player profile is only defined for P1-P4"),
     };
 
     PlayerProfile {
@@ -475,11 +489,9 @@ fn build_player_profile(
             team_id,
             control,
         },
-        color: color.to_color(),
-        hangar_slots: build_hangar_slots(
-            required_hangar_center_for_player(player_id),
-            pieces_per_player,
-        ),
+        seat,
+        color: seat.to_color(),
+        hangar_slots: build_hangar_slots(hangar_center_for_seat(seat), pieces_per_player),
         launch_position,
         launch_tile_index,
         home_lane_positions,
@@ -536,11 +548,11 @@ mod tests {
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
-            player_colors: [
-                PlayerColorChoice::Red,
-                PlayerColorChoice::Blue,
-                PlayerColorChoice::Green,
-                PlayerColorChoice::Yellow,
+            player_seats: [
+                PlayerSeat::Blue,
+                PlayerSeat::Red,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
             ],
             pieces_per_player: 2,
             player_controls: [
@@ -564,24 +576,22 @@ mod tests {
 
     #[test]
     fn one_vs_one_resources_keep_full_board_palette() {
-        let (_, player_roster, _) = build_match_resources(&setup(GameMode::OneVsOne));
+        let mut one_vs_one_setup = setup(GameMode::OneVsOne);
+        one_vs_one_setup.player_seats = [
+            PlayerSeat::Red,
+            PlayerSeat::Blue,
+            PlayerSeat::Green,
+            PlayerSeat::Yellow,
+        ];
+        let (_, player_roster, _) = build_match_resources(&one_vs_one_setup);
 
         assert_eq!(player_roster.players.len(), 2);
-        assert_eq!(
-            player_roster.player_colors[0],
-            PlayerColorChoice::Red.to_color()
-        );
-        assert_eq!(
-            player_roster.player_colors[1],
-            PlayerColorChoice::Blue.to_color()
-        );
-        assert_eq!(
-            player_roster.player_colors[2],
-            PlayerColorChoice::Green.to_color()
-        );
+        assert_eq!(player_roster.player_colors[0], PlayerSeat::Blue.to_color());
+        assert_eq!(player_roster.player_colors[1], PlayerSeat::Red.to_color());
+        assert_eq!(player_roster.player_colors[2], PlayerSeat::Green.to_color());
         assert_eq!(
             player_roster.player_colors[3],
-            PlayerColorChoice::Yellow.to_color()
+            PlayerSeat::Yellow.to_color()
         );
     }
 
@@ -595,7 +605,68 @@ mod tests {
         assert_eq!(teams.len(), 2);
         assert_eq!(teams[0].player_ids, vec![1, 3]);
         assert_eq!(teams[1].player_ids, vec![2, 4]);
+        assert_eq!(
+            players
+                .iter()
+                .map(|player| player.state.team_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 1, 2]
+        );
         assert!(players.iter().all(|player| player.hangar_slots.len() == 3));
+    }
+
+    #[test]
+    fn one_vs_one_players_can_choose_any_two_different_seats() {
+        let mut one_vs_one_setup = setup(GameMode::OneVsOne);
+        one_vs_one_setup.player_seats = [
+            PlayerSeat::Yellow,
+            PlayerSeat::Green,
+            PlayerSeat::Blue,
+            PlayerSeat::Red,
+        ];
+        let (players, teams) = build_match_rosters(&one_vs_one_setup);
+
+        assert_eq!(players.len(), 2);
+        assert_eq!(
+            players
+                .iter()
+                .map(|player| (
+                    player.state.player_id,
+                    player.seat,
+                    player.launch_tile_index
+                ))
+                .collect::<Vec<_>>(),
+            vec![(1, PlayerSeat::Yellow, 15), (2, PlayerSeat::Green, 27)]
+        );
+        assert_eq!(teams[0].player_ids, vec![1]);
+        assert_eq!(teams[1].player_ids, vec![2]);
+    }
+
+    #[test]
+    fn two_vs_two_team_identity_is_independent_from_seats() {
+        let mut two_vs_two_setup = setup(GameMode::TwoVsTwo);
+        two_vs_two_setup.player_seats = [
+            PlayerSeat::Red,
+            PlayerSeat::Yellow,
+            PlayerSeat::Blue,
+            PlayerSeat::Green,
+        ];
+        let (players, teams) = build_match_rosters(&two_vs_two_setup);
+
+        assert_eq!(teams[0].player_ids, vec![1, 3]);
+        assert_eq!(teams[1].player_ids, vec![2, 4]);
+        assert_eq!(
+            players
+                .iter()
+                .map(|player| (player.state.player_id, player.state.team_id, player.seat))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, 1, PlayerSeat::Red),
+                (2, 2, PlayerSeat::Yellow),
+                (3, 1, PlayerSeat::Blue),
+                (4, 2, PlayerSeat::Green),
+            ]
+        );
     }
 
     #[test]
@@ -624,8 +695,7 @@ mod tests {
         let (players, _) = build_match_rosters(&two_vs_two_setup);
 
         for player in players {
-            let center = hangar_center_for_player(player.state.player_id)
-                .expect("player has a visual hangar center");
+            let center = hangar_center_for_seat(player.seat);
             assert_eq!(player.hangar_slots.len(), HANGAR_SLOT_OFFSETS.len());
             for (slot, offset) in player.hangar_slots.iter().zip(HANGAR_SLOT_OFFSETS) {
                 assert_eq!(*slot, center + offset);
@@ -634,35 +704,67 @@ mod tests {
     }
 
     #[test]
-    fn roster_uses_configured_unique_player_colors() {
+    fn roster_uses_configured_unique_player_seats() {
         let mut two_vs_two_setup = setup(GameMode::TwoVsTwo);
-        two_vs_two_setup.player_colors = [
-            PlayerColorChoice::Yellow,
-            PlayerColorChoice::Green,
-            PlayerColorChoice::Blue,
-            PlayerColorChoice::Red,
+        two_vs_two_setup.player_seats = [
+            PlayerSeat::Yellow,
+            PlayerSeat::Green,
+            PlayerSeat::Blue,
+            PlayerSeat::Red,
         ];
         let (players, _) = build_match_rosters(&two_vs_two_setup);
 
-        assert_eq!(players[0].color, PlayerColorChoice::Yellow.to_color());
-        assert_eq!(players[1].color, PlayerColorChoice::Green.to_color());
-        assert_eq!(players[2].color, PlayerColorChoice::Blue.to_color());
-        assert_eq!(players[3].color, PlayerColorChoice::Red.to_color());
+        assert_eq!(players[0].seat, PlayerSeat::Yellow);
+        assert_eq!(players[0].launch_tile_index, 15);
+        assert_eq!(players[0].color, PlayerSeat::Yellow.to_color());
+        assert_eq!(players[1].seat, PlayerSeat::Green);
+        assert_eq!(players[1].launch_tile_index, 27);
+        assert_eq!(players[1].color, PlayerSeat::Green.to_color());
+        assert_eq!(players[2].seat, PlayerSeat::Blue);
+        assert_eq!(players[2].launch_tile_index, 39);
+        assert_eq!(players[2].color, PlayerSeat::Blue.to_color());
+        assert_eq!(players[3].seat, PlayerSeat::Red);
+        assert_eq!(players[3].launch_tile_index, 3);
+        assert_eq!(players[3].color, PlayerSeat::Red.to_color());
     }
 
     #[test]
-    fn setting_an_used_player_color_swaps_colors() {
+    fn player_seat_decides_profile_position() {
+        let mut one_vs_one_setup = setup(GameMode::OneVsOne);
+        one_vs_one_setup.set_player_seat(0, PlayerSeat::Red);
+        let (players, _) = build_match_rosters(&one_vs_one_setup);
+        let player_one = players
+            .iter()
+            .find(|player| player.state.player_id == 1)
+            .expect("P1 participates");
+
+        assert_eq!(player_one.seat, PlayerSeat::Red);
+        assert_eq!(player_one.color, PlayerSeat::Red.to_color());
+        assert_eq!(player_one.launch_position, Vec2::new(155.896, 316.104));
+        assert_eq!(player_one.launch_tile_index, 3);
+        assert_eq!(
+            player_one.home_lane_positions.first().copied(),
+            Some(Vec2::new(-0.104, 300.104))
+        );
+        assert_eq!(
+            player_one.hangar_slots.first().copied(),
+            Some(hangar_center_for_seat(PlayerSeat::Red) + HANGAR_SLOT_OFFSETS[0])
+        );
+    }
+
+    #[test]
+    fn setting_an_used_player_seat_swaps_seats() {
         let mut two_vs_two_setup = setup(GameMode::TwoVsTwo);
 
-        two_vs_two_setup.set_player_color(0, PlayerColorChoice::Blue);
+        two_vs_two_setup.set_player_seat(0, PlayerSeat::Red);
 
         assert_eq!(
-            two_vs_two_setup.player_colors,
+            two_vs_two_setup.player_seats,
             [
-                PlayerColorChoice::Blue,
-                PlayerColorChoice::Red,
-                PlayerColorChoice::Green,
-                PlayerColorChoice::Yellow,
+                PlayerSeat::Red,
+                PlayerSeat::Blue,
+                PlayerSeat::Green,
+                PlayerSeat::Yellow,
             ]
         );
     }

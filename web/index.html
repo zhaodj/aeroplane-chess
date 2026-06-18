@@ -3,7 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0f172a" />
     <title>Aeroplane Chess (WASM)</title>
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+    <link rel="manifest" href="./site.webmanifest" />
     <style>
       html,
       body {
@@ -23,8 +28,6 @@
   <body>
     <canvas id="bevy"></canvas>
     <script type="module">
-      import init from "./aeroplane_chess.js";
-
       function ensureCanvas() {
         const existing = document.querySelector("canvas#bevy");
         if (existing) return existing;
@@ -44,7 +47,51 @@
         const canvas = ensureCanvas();
         syncCanvasSize(canvas);
         window.addEventListener("resize", () => syncCanvasSize(canvas));
-        await init();
+
+        const params = new URLSearchParams(window.location.search);
+        const smokeEnabled = params.has("ac_autoplay");
+        const markSmokeShell = (state) => {
+          if (smokeEnabled) {
+            document.body.setAttribute("data-ac-smoke-shell", state);
+            document.body.setAttribute(
+              "data-ac-smoke-query-shell",
+              window.location.search,
+            );
+          }
+        };
+        const assetCache = params.get("cache");
+        const cacheSuffix = assetCache
+          ? `?cache=${encodeURIComponent(assetCache)}`
+          : "";
+        markSmokeShell("before-import");
+        const wasmModule = await import(
+          `./aeroplane_chess.js${cacheSuffix}`
+        );
+        const { default: init, wasm_start: wasmStart } = wasmModule;
+        markSmokeShell("before-init");
+        const wasmUrl = new URL(
+          `./aeroplane_chess_bg.wasm${cacheSuffix}`,
+          window.location.href,
+        );
+        try {
+          await init({ module_or_path: wasmUrl });
+          markSmokeShell("initialized");
+          wasmStart();
+          markSmokeShell("started");
+        } catch (err) {
+          markSmokeShell("error");
+          if (smokeEnabled) {
+            document.body.setAttribute(
+              "data-ac-smoke-error",
+              `${err?.message || err}`.slice(0, 500),
+            );
+            document.body.setAttribute(
+              "data-ac-smoke-error-stack",
+              `${err?.stack || ""}`.slice(0, 1000),
+            );
+          }
+          throw err;
+        }
       }
 
       if (document.readyState === "loading") {
