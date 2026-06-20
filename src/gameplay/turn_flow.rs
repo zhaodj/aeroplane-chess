@@ -34,6 +34,9 @@ pub struct TurnState {
     pub turn_index: u32,
     pub current_roll: Option<u8>,
     pub last_roll: Option<u8>,
+    pub last_roll_player: Option<u8>,
+    pub hold_last_roll_display: bool,
+    pub roll_display_animation_started: bool,
     pub player_last_rolls: [Option<u8>; 4],
     pub last_piece_effect: Option<PieceEffectNotice>,
     pub last_action: Option<String>,
@@ -49,6 +52,9 @@ impl TurnState {
             turn_index: 1,
             current_roll: None,
             last_roll: None,
+            last_roll_player: None,
+            hold_last_roll_display: false,
+            roll_display_animation_started: false,
             player_last_rolls: [None; 4],
             last_piece_effect: None,
             last_action: None,
@@ -232,6 +238,9 @@ pub fn pressed_selection_key(keyboard: &ButtonInput<KeyCode>, max_actions: usize
 pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
     turn_state.current_roll = Some(roll_value);
     turn_state.last_roll = Some(roll_value);
+    turn_state.last_roll_player = Some(turn_state.current_player);
+    turn_state.hold_last_roll_display = false;
+    turn_state.roll_display_animation_started = false;
     turn_state.last_piece_effect = None;
     if let Some(player_roll) = turn_state
         .player_last_rolls
@@ -580,6 +589,8 @@ pub fn execute_action(
         return;
     }
 
+    state.turn_state.hold_last_roll_display = true;
+    state.turn_state.roll_display_animation_started = false;
     advance_turn(
         state.turn_state,
         resources.player_roster.players.len() as u8,
@@ -595,6 +606,8 @@ pub fn finish_turn_without_action(
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
     clear_pending_input(input_state);
+    turn_state.hold_last_roll_display = false;
+    turn_state.roll_display_animation_started = false;
     advance_turn(turn_state, player_roster.players.len() as u8);
     next_phase.set(GamePhase::AwaitDice);
 }
@@ -607,12 +620,8 @@ pub fn set_pending_actions(
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
     input_state.prompt = Some(format!(
-        "Rolled {}. Click a highlighted piece or press {}",
-        roll_value,
-        (1..=actions.len())
-            .map(|index| index.to_string())
-            .collect::<Vec<_>>()
-            .join("/")
+        "Rolled {}. Tap a highlighted piece to move.",
+        roll_value
     ));
     input_state.candidate_piece_ids = actions.iter().map(|action| action.piece_id()).collect();
     input_state.pending_actions = actions;
@@ -2507,6 +2516,9 @@ mod tests {
             turn_index: 3,
             current_roll: Some(6),
             last_roll: Some(6),
+            last_roll_player: Some(1),
+            hold_last_roll_display: false,
+            roll_display_animation_started: false,
             player_last_rolls: [Some(6), None, None, None],
             last_piece_effect: None,
             last_action: None,

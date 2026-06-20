@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::constants::{BOARD_WORLD_SIZE, gameplay_board_target_pixels};
 use crate::data::game_mode::GameMode;
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
@@ -24,7 +25,6 @@ impl Plugin for BootPlugin {
     }
 }
 
-const BOARD_WORLD_SIZE: f32 = 683.0;
 fn setup_camera(mut commands: Commands, mut next_state: ResMut<NextState<AppState>>) {
     commands.spawn(Camera2d);
 
@@ -216,8 +216,11 @@ fn centered_board_camera_scale(
     window_height: f32,
     device_profile: DeviceProfile,
 ) -> f32 {
-    let target_pixels =
-        (window_width.min(window_height) - device_profile.board_screen_padding()).max(240.0);
+    let target_pixels = gameplay_board_target_pixels(
+        window_width,
+        window_height,
+        device_profile.board_screen_padding(),
+    );
     (BOARD_WORLD_SIZE / target_pixels).max(1.0)
 }
 
@@ -226,10 +229,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn centered_board_camera_ignores_hud_reservation() {
+    fn centered_board_camera_reserves_space_for_outer_hud() {
         let profile = DeviceProfile::from_window_size(1280.0, 720.0);
         let scale = centered_board_camera_scale(1280.0, 720.0, profile);
-        let expected_target = 720.0 - profile.board_screen_padding();
+        let expected_target =
+            gameplay_board_target_pixels(1280.0, 720.0, profile.board_screen_padding());
 
         assert!((scale - (BOARD_WORLD_SIZE / expected_target).max(1.0)).abs() < f32::EPSILON);
     }
@@ -238,7 +242,8 @@ mod tests {
     fn centered_board_camera_uses_short_side_on_tablet() {
         let profile = DeviceProfile::from_window_size(2560.0, 1600.0);
         let scale = centered_board_camera_scale(2560.0, 1600.0, profile);
-        let expected_target = 1600.0 - profile.board_screen_padding();
+        let expected_target =
+            gameplay_board_target_pixels(2560.0, 1600.0, profile.board_screen_padding());
 
         assert!((scale - (BOARD_WORLD_SIZE / expected_target).max(1.0)).abs() < f32::EPSILON);
     }

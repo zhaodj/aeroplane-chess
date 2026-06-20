@@ -34,6 +34,7 @@ pub enum SkillUiAction {
 /// 技能 UI 动作请求队列（键盘与点击入口共用）。
 pub struct SkillUiRequest {
     pending: Option<SkillUiAction>,
+    cancel_target_requested: bool,
 }
 
 impl SkillUiRequest {
@@ -44,9 +45,21 @@ impl SkillUiRequest {
         }
     }
 
+    /// 请求取消当前技能目标选择。
+    pub fn queue_cancel_target(&mut self) {
+        self.cancel_target_requested = true;
+    }
+
     /// 取出并清空待处理技能请求。
     fn take(&mut self) -> Option<SkillUiAction> {
         self.pending.take()
+    }
+
+    /// 取出并清空技能目标取消请求。
+    fn take_cancel_target(&mut self) -> bool {
+        let requested = self.cancel_target_requested;
+        self.cancel_target_requested = false;
+        requested
     }
 }
 
@@ -100,6 +113,7 @@ struct SnipeTargetParams<'w, 's> {
     game_phase: Res<'w, State<GamePhase>>,
     target_state: ResMut<'w, SkillTargetState>,
     skill_roster: ResMut<'w, SkillRoster>,
+    skill_ui_request: ResMut<'w, SkillUiRequest>,
     next_phase: ResMut<'w, NextState<GamePhase>>,
     piece_query: SkillPieceQuery<'w, 's>,
 }
@@ -278,13 +292,8 @@ fn handle_human_skill_input(
 
             mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
             params.target_state.candidate_piece_ids = targets;
-            params.target_state.prompt = Some(format!(
-                "Select a Snipe target with click or {}",
-                (1..=params.target_state.candidate_piece_ids.len())
-                    .map(|index| index.to_string())
-                    .collect::<Vec<_>>()
-                    .join("/")
-            ));
+            params.target_state.prompt =
+                Some("Tap a highlighted Snipe target, or use Cancel".to_string());
             params.target_state.active = true;
             params.next_phase.set(GamePhase::ResolveSkillEffect);
         }
@@ -318,6 +327,16 @@ fn handle_human_skill_input(
             if matches!(params.game_phase.get(), GamePhase::AwaitPieceSelect)
                 && dash_bonus(&params.skill_roster, params.turn_state.current_player) == 0 =>
         {
+            if !current_player_has_active_piece(
+                params.turn_state.current_player,
+                &params.piece_query,
+            ) {
+                params.skill_roster.last_skill_action = Some(format!(
+                    "P{} needs an active piece to use Dash",
+                    params.turn_state.current_player
+                ));
+                return;
+            }
             if arm_dash(&mut params.skill_roster, params.turn_state.current_player) {
                 mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
                 params.skill_roster.last_skill_action = Some(format!(
@@ -404,7 +423,7 @@ fn handle_human_snipe_key_select(
         return;
     }
 
-    if keyboard.just_pressed(KeyCode::Escape) {
+    if keyboard.just_pressed(KeyCode::Escape) || params.skill_ui_request.take_cancel_target() {
         params.skill_roster.last_skill_action = Some("Snipe selection cancelled".to_string());
         clear_target_state(&mut params.target_state);
         params.next_phase.set(GamePhase::AwaitDice);
@@ -677,6 +696,18 @@ mod tests {
     use super::*;
     use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
     use bevy::ecs::system::SystemState;
+
+    #[test]
+    fn skill_ui_request_carries_touch_cancel_target() {
+        let mut request = SkillUiRequest::default();
+
+        assert!(!request.take_cancel_target());
+
+        request.queue_cancel_target();
+
+        assert!(request.take_cancel_target());
+        assert!(!request.take_cancel_target());
+    }
 
     #[test]
     fn execute_snipe_consumes_normal_shield_before_hangar() {

@@ -8,6 +8,7 @@ use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
 use crate::plugins::piece_plugin::PieceId;
 
 pub const MAX_PIECE_SHIELD: u8 = 2;
+pub const STARTING_SKILL_CHARGE_POINTS: u8 = 1;
 
 #[derive(Clone, Debug, Default, Resource)]
 /// 全体玩家技能资源与本回合技能使用状态。
@@ -40,7 +41,7 @@ pub struct RollResolution {
     pub used_double_dice: bool,
 }
 
-/// 根据玩家名单初始化技能资源（每名玩家各 1 次基础充能）。
+/// 根据玩家名单初始化技能资源（每名玩家开局总计 1 点基础充能）。
 pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
     SkillRoster {
         players: player_roster
@@ -48,12 +49,12 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
             .iter()
             .map(|player| PlayerSkillState {
                 player_id: player.state.player_id,
-                dash_charges: 1,
+                dash_charges: STARTING_SKILL_CHARGE_POINTS,
                 dash_armed: false,
-                snipe_charges: 1,
-                swap_charges: 1,
-                shield_charges: 1,
-                double_dice_charges: 1,
+                snipe_charges: 0,
+                swap_charges: 0,
+                shield_charges: 0,
+                double_dice_charges: 0,
                 double_dice_armed: false,
                 skip_next_skill_turn: false,
                 skill_blocked_this_turn: false,
@@ -506,18 +507,50 @@ mod tests {
         ])
     }
 
+    fn total_charges(skills: &PlayerSkillState) -> u8 {
+        skills.dash_charges
+            + skills.snipe_charges
+            + skills.swap_charges
+            + skills.shield_charges
+            + skills.double_dice_charges
+    }
+
+    fn set_charges(
+        skill_roster: &mut SkillRoster,
+        player_id: u8,
+        dash: u8,
+        snipe: u8,
+        swap: u8,
+        shield: u8,
+        double_dice: u8,
+    ) {
+        let player = skill_roster
+            .players
+            .iter_mut()
+            .find(|player| player.player_id == player_id)
+            .expect("player should exist");
+        player.dash_charges = dash;
+        player.snipe_charges = snipe;
+        player.swap_charges = swap;
+        player.shield_charges = shield;
+        player.double_dice_charges = double_dice;
+    }
+
     #[test]
-    fn build_skill_roster_initializes_default_charges() {
+    fn build_skill_roster_initializes_one_starting_charge_point() {
         let skill_roster = build_skill_roster(&sample_roster());
 
         assert_eq!(skill_roster.players.len(), 2);
-        assert_eq!(skill_roster.players[0].dash_charges, 1);
-        assert_eq!(skill_roster.players[0].snipe_charges, 1);
-        assert_eq!(skill_roster.players[0].swap_charges, 1);
-        assert_eq!(skill_roster.players[0].shield_charges, 1);
-        assert_eq!(skill_roster.players[0].double_dice_charges, 1);
-        assert!(!skill_roster.players[0].dash_armed);
-        assert!(!skill_roster.players[0].double_dice_armed);
+        for player in &skill_roster.players {
+            assert_eq!(total_charges(player), STARTING_SKILL_CHARGE_POINTS);
+            assert_eq!(player.dash_charges, STARTING_SKILL_CHARGE_POINTS);
+            assert_eq!(player.snipe_charges, 0);
+            assert_eq!(player.swap_charges, 0);
+            assert_eq!(player.shield_charges, 0);
+            assert_eq!(player.double_dice_charges, 0);
+            assert!(!player.dash_armed);
+            assert!(!player.double_dice_armed);
+        }
     }
 
     #[test]
@@ -566,6 +599,7 @@ mod tests {
     #[test]
     fn spend_snipe_charge_only_succeeds_when_charge_exists() {
         let mut skill_roster = build_skill_roster(&sample_roster());
+        set_charges(&mut skill_roster, 1, 0, 1, 0, 0, 0);
 
         assert!(spend_snipe_charge(&mut skill_roster, 1));
         assert!(!spend_snipe_charge(&mut skill_roster, 1));
@@ -574,6 +608,7 @@ mod tests {
     #[test]
     fn spend_swap_charge_only_succeeds_when_charge_exists() {
         let mut skill_roster = build_skill_roster(&sample_roster());
+        set_charges(&mut skill_roster, 1, 0, 0, 1, 0, 0);
 
         assert!(spend_swap_charge(&mut skill_roster, 1));
         assert!(!spend_swap_charge(&mut skill_roster, 1));
@@ -582,6 +617,7 @@ mod tests {
     #[test]
     fn spend_shield_charge_only_succeeds_when_charge_exists() {
         let mut skill_roster = build_skill_roster(&sample_roster());
+        set_charges(&mut skill_roster, 1, 0, 0, 0, 1, 0);
 
         assert!(spend_shield_charge(&mut skill_roster, 1));
         assert!(!spend_shield_charge(&mut skill_roster, 1));
@@ -590,6 +626,7 @@ mod tests {
     #[test]
     fn arm_double_dice_consumes_charge_and_sets_flag() {
         let mut skill_roster = build_skill_roster(&sample_roster());
+        set_charges(&mut skill_roster, 1, 0, 0, 0, 0, 1);
 
         assert!(arm_double_dice(&mut skill_roster, 1));
         assert!(
@@ -643,7 +680,8 @@ mod tests {
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world);
-        let skill_roster = build_skill_roster(&sample_roster());
+        let mut skill_roster = build_skill_roster(&sample_roster());
+        set_charges(&mut skill_roster, 2, 0, 0, 0, 0, 1);
 
         assert!(should_ai_arm_double_dice(2, &skill_roster, &query));
     }
@@ -667,7 +705,8 @@ mod tests {
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world);
-        let skill_roster = build_skill_roster(&sample_roster());
+        let mut skill_roster = build_skill_roster(&sample_roster());
+        set_charges(&mut skill_roster, 2, 0, 0, 0, 1, 0);
 
         assert!(should_ai_use_shield(2, &skill_roster, &query));
         assert_eq!(preferred_shield_target(2, &query), Some(1));
@@ -704,7 +743,8 @@ mod tests {
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world);
-        let skill_roster = build_skill_roster(&sample_roster());
+        let mut skill_roster = build_skill_roster(&sample_roster());
+        set_charges(&mut skill_roster, 2, 0, 0, 0, 1, 0);
 
         assert!(!should_ai_use_shield(2, &skill_roster, &query));
         assert_eq!(preferred_shield_target(2, &query), None);

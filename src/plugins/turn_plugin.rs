@@ -659,7 +659,7 @@ fn execute_swap_on_turn_query(
     )
 }
 
-/// 人类玩家“掷骰阶段”输入处理（Space 掷骰）。
+/// 人类玩家“掷骰阶段”输入处理（棋盘 Roll 按钮或 Space 掷骰）。
 fn handle_human_roll_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     game_phase: Res<State<GamePhase>>,
@@ -679,7 +679,7 @@ fn handle_human_roll_input(
         return;
     }
 
-    params.input_state.prompt = Some("Press Space to roll".to_string());
+    params.input_state.prompt = Some("Tap Roll to roll the dice".to_string());
 
     if !keyboard.just_pressed(KeyCode::Space) && !params.turn_ui_request.take_roll() {
         return;
@@ -729,7 +729,7 @@ fn handle_human_roll_input(
             .unwrap_or(false)
         && actions.iter().any(PlannedAction::is_move);
 
-    if actions.len() == 1 && !can_offer_dash {
+    if should_auto_execute_human_action(&actions, can_offer_dash) {
         execute_action_from_params(actions[0], roll_value, &mut params);
         return;
     }
@@ -742,14 +742,14 @@ fn handle_human_roll_input(
     );
     if can_offer_dash {
         params.input_state.prompt = Some(format!(
-            "Rolled {}. Press E for Dash (+3), then click a highlighted piece or press {}",
-            roll_value,
-            (1..=params.input_state.candidate_piece_ids().len())
-                .map(|index| index.to_string())
-                .collect::<Vec<_>>()
-                .join("/")
+            "Rolled {}. Tap Dash for +3, or tap a highlighted piece.",
+            roll_value
         ));
     }
+}
+
+fn should_auto_execute_human_action(_actions: &[PlannedAction], _can_offer_dash: bool) -> bool {
+    false
 }
 
 /// 人类玩家“选棋阶段”键盘输入处理（1~4 选择动作）。
@@ -923,12 +923,8 @@ fn refresh_pending_actions_for_dash(
         next_phase,
     );
     input_state.prompt = Some(format!(
-        "Dash active (+{}). Click a highlighted piece or press {}",
-        move_bonus,
-        (1..=input_state.candidate_piece_ids().len())
-            .map(|index| index.to_string())
-            .collect::<Vec<_>>()
-            .join("/")
+        "Dash active (+{}). Tap a highlighted piece.",
+        move_bonus
     ));
 }
 
@@ -1061,12 +1057,24 @@ mod tests {
     }
 
     #[test]
+    fn human_roll_never_auto_executes_single_action() {
+        let actions = [PlannedAction::Launch {
+            piece_id: 1,
+            target_progress: 0,
+        }];
+
+        assert!(!should_auto_execute_human_action(&actions, false));
+        assert!(!should_auto_execute_human_action(&actions, true));
+    }
+
+    #[test]
     fn easy_ai_does_not_use_skills_even_with_targets() {
         let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Easy);
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
+        set_ai_skill_charges(&mut skill_roster, 2, 1, 1, 0, 0, 0);
 
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
@@ -1091,6 +1099,7 @@ mod tests {
         let player_roster = PlayerRoster::from_players(players);
         let mut skill_roster = build_skill_roster(&player_roster);
         sync_turn_skill_usage(&mut skill_roster, 2);
+        set_ai_skill_charges(&mut skill_roster, 2, 1, 1, 0, 0, 0);
 
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 4, 0);

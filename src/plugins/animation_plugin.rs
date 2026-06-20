@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::gameplay::match_flow::{BoardLayout, MatchConfig, PlayerRoster};
 use crate::gameplay::turn_flow::{
-    FINISH_DISTANCE, movement_steps_between_progresses, world_position_for_piece,
+    FINISH_DISTANCE, TurnState, movement_steps_between_progresses, world_position_for_piece,
 };
 use crate::plugins::piece_plugin::PieceId;
 use crate::states::AppState;
@@ -41,7 +41,7 @@ struct PieceAnimationState {
 }
 
 #[derive(Component)]
-struct PieceMoveAnimation {
+pub(crate) struct PieceMoveAnimation {
     waypoints: Vec<Vec3>,
     segment_index: usize,
     segment_elapsed: f32,
@@ -141,9 +141,13 @@ fn capture_piece_motion(
 fn animate_piece_motion(
     time: Res<Time>,
     mut commands: Commands,
+    mut turn_state: ResMut<TurnState>,
     mut query: Query<(Entity, &mut Transform, &mut PieceMoveAnimation)>,
 ) {
+    let mut saw_animation = false;
+    let mut any_animation_continues = false;
     for (entity, mut transform, mut animation) in &mut query {
+        saw_animation = true;
         if animation.waypoints.len() < 2 {
             commands.entity(entity).remove::<PieceMoveAnimation>();
             continue;
@@ -168,6 +172,7 @@ fn animate_piece_motion(
             continue;
         }
 
+        any_animation_continues = true;
         let from = animation.waypoints[animation.segment_index];
         let to = animation.waypoints[animation.segment_index + 1];
         let fraction = (animation.segment_elapsed / animation.segment_duration).clamp(0.0, 1.0);
@@ -175,6 +180,25 @@ fn animate_piece_motion(
             transform.rotation = rotation;
         }
         transform.translation = from.lerp(to, ease_out_cubic(fraction));
+    }
+
+    sync_roll_display_hold_after_animation(&mut turn_state, saw_animation, any_animation_continues);
+}
+
+fn sync_roll_display_hold_after_animation(
+    turn_state: &mut TurnState,
+    saw_animation: bool,
+    any_animation_continues: bool,
+) {
+    if saw_animation {
+        turn_state.roll_display_animation_started = true;
+    }
+    if turn_state.hold_last_roll_display
+        && turn_state.roll_display_animation_started
+        && !any_animation_continues
+    {
+        turn_state.hold_last_roll_display = false;
+        turn_state.roll_display_animation_started = false;
     }
 }
 
@@ -730,5 +754,23 @@ mod tests {
             translation,
             translation
         ));
+    }
+
+    #[test]
+    fn roll_display_hold_clears_only_after_animation_was_seen_and_finished() {
+        let mut turn_state = TurnState::opening_turn();
+        turn_state.hold_last_roll_display = true;
+
+        sync_roll_display_hold_after_animation(&mut turn_state, false, false);
+        assert!(turn_state.hold_last_roll_display);
+        assert!(!turn_state.roll_display_animation_started);
+
+        sync_roll_display_hold_after_animation(&mut turn_state, true, true);
+        assert!(turn_state.hold_last_roll_display);
+        assert!(turn_state.roll_display_animation_started);
+
+        sync_roll_display_hold_after_animation(&mut turn_state, true, false);
+        assert!(!turn_state.hold_last_roll_display);
+        assert!(!turn_state.roll_display_animation_started);
     }
 }

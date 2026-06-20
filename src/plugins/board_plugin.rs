@@ -10,6 +10,7 @@ use crate::gameplay::match_flow::{
     player_for_seat,
 };
 use crate::gameplay::turn_flow::TurnState;
+use crate::plugins::animation_plugin::PieceMoveAnimation;
 use crate::states::AppState;
 
 /// 棋盘渲染插件：按 SVG 的几何元素重建棋盘外观。
@@ -491,19 +492,22 @@ fn cleanup_board(
 
 fn update_player_dice_displays(
     turn_state: Res<TurnState>,
+    animation_query: Query<(), With<PieceMoveAnimation>>,
     mut display_query: Query<(&PlayerDiceDisplay, &mut Visibility)>,
     mut pip_query: Query<(&PlayerDicePip, &mut Visibility), Without<PlayerDiceDisplay>>,
 ) {
+    let animation_active = !animation_query.is_empty();
     for (display, mut visibility) in &mut display_query {
-        *visibility = if turn_state.player_last_roll(display.player_id).is_some() {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+        *visibility =
+            if visible_player_roll(&turn_state, display.player_id, animation_active).is_some() {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
     }
 
     for (pip, mut visibility) in &mut pip_query {
-        let Some(roll) = turn_state.player_last_roll(pip.player_id) else {
+        let Some(roll) = visible_player_roll(&turn_state, pip.player_id, animation_active) else {
             *visibility = Visibility::Hidden;
             continue;
         };
@@ -513,6 +517,24 @@ fn update_player_dice_displays(
             Visibility::Hidden
         };
     }
+}
+
+fn visible_player_roll(
+    turn_state: &TurnState,
+    player_id: u8,
+    animation_active: bool,
+) -> Option<u8> {
+    if let Some(roll) = turn_state.current_roll {
+        return (turn_state.current_player == player_id).then_some(roll);
+    }
+
+    if (animation_active || turn_state.hold_last_roll_display)
+        && turn_state.last_roll_player == Some(player_id)
+    {
+        return turn_state.last_roll;
+    }
+
+    None
 }
 
 fn board_surface_color() -> Color {
@@ -2073,6 +2095,30 @@ mod tests {
         assert!(pip_visible_for_roll(6, DicePipSlot::MiddleLeft));
         assert!(pip_visible_for_roll(6, DicePipSlot::MiddleRight));
         assert!(!pip_visible_for_roll(0, DicePipSlot::Center));
+    }
+
+    #[test]
+    fn dice_display_only_uses_current_turn_roll() {
+        let mut turn_state = TurnState::opening_turn();
+        turn_state.current_player = 2;
+        turn_state.current_roll = None;
+        turn_state.last_roll = Some(6);
+        turn_state.last_roll_player = Some(1);
+        turn_state.player_last_rolls = [Some(6), Some(3), None, None];
+
+        assert_eq!(visible_player_roll(&turn_state, 1, false), None);
+        assert_eq!(visible_player_roll(&turn_state, 2, false), None);
+        assert_eq!(visible_player_roll(&turn_state, 1, true), Some(6));
+        assert_eq!(visible_player_roll(&turn_state, 2, true), None);
+
+        turn_state.hold_last_roll_display = true;
+        assert_eq!(visible_player_roll(&turn_state, 1, false), Some(6));
+        turn_state.hold_last_roll_display = false;
+
+        turn_state.current_roll = Some(4);
+
+        assert_eq!(visible_player_roll(&turn_state, 1, true), None);
+        assert_eq!(visible_player_roll(&turn_state, 2, true), Some(4));
     }
 
     #[test]

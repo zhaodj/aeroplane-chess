@@ -1,3 +1,4 @@
+use bevy::app::AppExit;
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
@@ -37,7 +38,7 @@ impl Plugin for MenuPlugin {
                     update_mode_select_option_visuals.run_if(in_state(AppState::ModeSelect)),
                     handle_mode_select_input.run_if(in_state(AppState::ModeSelect)),
                     handle_mode_select_click.run_if(in_state(AppState::ModeSelect)),
-                    refresh_mode_select_on_mode_change.run_if(in_state(AppState::ModeSelect)),
+                    refresh_mode_select_layout.run_if(in_state(AppState::ModeSelect)),
                 ),
             )
             .add_systems(OnExit(AppState::MainMenu), cleanup_menu)
@@ -53,9 +54,17 @@ pub struct SoundSettingsOverlayState {
 }
 
 #[derive(Resource, Default)]
-/// 配置页当前已渲染的模式；模式切换后用于重建动态玩家行。
+/// 配置页当前已渲染的布局 key；模式或窗口尺寸变化后用于重建 UI。
 struct ModeSelectRenderState {
-    mode: Option<GameMode>,
+    key: Option<ModeSelectRenderKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ModeSelectRenderKey {
+    mode: GameMode,
+    active_player_count: usize,
+    window_width: u32,
+    window_height: u32,
 }
 
 #[derive(Component)]
@@ -146,13 +155,26 @@ struct ModeSelectOption {
     base_color: Color,
 }
 
+#[derive(Component)]
+/// 配置项文字节点；颜色随选中态同步。
+struct ModeSelectOptionLabel;
+
 #[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
 enum SoundSettingsAction {
     MusicDown,
     MusicUp,
     EffectsDown,
     EffectsUp,
+    MainMenu,
+    QuitGame,
     Back,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlobalSettingsCommand {
+    None,
+    MainMenu,
+    QuitGame,
 }
 
 #[derive(Component)]
@@ -178,18 +200,20 @@ const MAIN_BUTTON_GAP: f32 = 22.0;
 
 const GLOBAL_SOUND_ENTRY_LEFT: f32 = 16.0;
 const GLOBAL_SOUND_ENTRY_TOP: f32 = 16.0;
-const GLOBAL_SOUND_ENTRY_W: f32 = 108.0;
+const GLOBAL_SOUND_ENTRY_W: f32 = 128.0;
 const GLOBAL_SOUND_ENTRY_H: f32 = 38.0;
 const GLOBAL_SOUND_PANEL_W: f32 = 462.0;
-const GLOBAL_SOUND_PANEL_H: f32 = 292.0;
+const GLOBAL_SOUND_PANEL_H: f32 = 360.0;
 const GLOBAL_SOUND_ROW_LEFT: f32 = 34.0;
 const GLOBAL_SOUND_CONTROL_LEFT: f32 = 244.0;
-const GLOBAL_SOUND_ROW_TOP: f32 = 84.0;
-const GLOBAL_SOUND_ROW_GAP: f32 = 72.0;
+const GLOBAL_SOUND_ROW_TOP: f32 = 98.0;
+const GLOBAL_SOUND_ROW_GAP: f32 = 58.0;
 const GLOBAL_SOUND_BUTTON: f32 = 42.0;
 const GLOBAL_SOUND_VALUE_W: f32 = 82.0;
-const GLOBAL_SOUND_CLOSE_W: f32 = 104.0;
-const GLOBAL_SOUND_CLOSE_H: f32 = 42.0;
+const GLOBAL_SETTINGS_ACTION_TOP: f32 = 270.0;
+const GLOBAL_SETTINGS_ACTION_W: f32 = 160.0;
+const GLOBAL_SETTINGS_ACTION_H: f32 = 44.0;
+const GLOBAL_SETTINGS_ACTION_GAP: f32 = 18.0;
 
 const SOUND_PANEL_TOP: f32 = 170.0;
 const SOUND_ROW_GAP: f32 = 92.0;
@@ -216,12 +240,16 @@ const COLOR_SWATCH_W: f32 = 46.0;
 const COLOR_SWATCH_H: f32 = 32.0;
 const MODE_LAYOUT_BASE_LEFT: f32 = MENU_LEFT;
 const MODE_LAYOUT_BASE_TOP: f32 = MODE_ROW_TOP;
-const MODE_LAYOUT_WIDTH: f32 = 760.0;
 const SETTING_ROW_BAND_LEFT: f32 = 72.0;
 const SETTING_ROW_BAND_W: f32 = 666.0;
 const SETTING_ROW_BAND_H: f32 = 40.0;
+const MODE_LAYOUT_VISIBLE_LEFT: f32 = SETTING_ROW_BAND_LEFT;
+const MODE_LAYOUT_VISIBLE_W: f32 = SETTING_ROW_BAND_W;
 const BOTTOM_ACTION_W: f32 = 150.0;
 const BOTTOM_ACTION_H: f32 = OPTION_H + 6.0;
+const MODE_SELECT_BLACK: Color = Color::BLACK;
+const MODE_SELECT_UNSELECTED_TEXT: Color = Color::srgb(0.18, 0.24, 0.34);
+const MODE_SELECT_DISABLED_TEXT: Color = Color::srgba(0.18, 0.24, 0.34, 0.42);
 
 fn spawn_global_sound_overlay(mut commands: Commands) {
     commands
@@ -248,9 +276,9 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
         ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new("Audio"),
+                Text::new("Settings"),
                 TextFont {
-                    font_size: 17.0,
+                    font_size: 16.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.10, 0.16, 0.24)),
@@ -295,7 +323,7 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                 ))
                 .with_children(|panel| {
                     panel.spawn((
-                        Text::new("Sound Settings"),
+                        Text::new("Settings"),
                         TextFont {
                             font_size: 28.0,
                             ..default()
@@ -309,30 +337,46 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                         },
                         Name::new("GlobalSoundTitle"),
                     ));
+                    panel.spawn((
+                        Text::new("Audio"),
+                        TextFont {
+                            font_size: 18.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.16, 0.22, 0.32)),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(GLOBAL_SOUND_ROW_LEFT),
+                            top: Val::Px(68.0),
+                            ..default()
+                        },
+                        Name::new("GlobalSoundAudioSection"),
+                    ));
 
                     spawn_global_sound_row(
                         panel,
-                        "Background Music",
+                        "Music",
                         SoundSettingsValueKind::Music,
                         GLOBAL_SOUND_ROW_TOP,
                     );
                     spawn_global_sound_row(
                         panel,
-                        "Action Effects",
+                        "Effects",
                         SoundSettingsValueKind::Effects,
                         GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP,
                     );
 
                     spawn_global_sound_panel_button(
                         panel,
-                        ClickRect {
-                            x: GLOBAL_SOUND_PANEL_W - GLOBAL_SOUND_ROW_LEFT - GLOBAL_SOUND_CLOSE_W,
-                            y: GLOBAL_SOUND_PANEL_H - 62.0,
-                            w: GLOBAL_SOUND_CLOSE_W,
-                            h: GLOBAL_SOUND_CLOSE_H,
-                        },
-                        "Close",
-                        20.0,
+                        global_settings_main_menu_rect(),
+                        "Main Menu",
+                        18.0,
+                    );
+                    spawn_global_sound_panel_button(
+                        panel,
+                        global_settings_quit_game_rect(),
+                        "Quit Game",
+                        18.0,
                     );
                 });
         });
@@ -527,6 +571,8 @@ fn handle_global_sound_overlay_click(
     windows: Query<&Window>,
     mut audio_settings: ResMut<AudioSettings>,
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
+    mut next_app_state: ResMut<NextState<AppState>>,
+    mut app_exit: MessageWriter<AppExit>,
 ) {
     let Some(cursor) = pointer.just_pressed_position() else {
         return;
@@ -537,7 +583,13 @@ fn handle_global_sound_overlay_click(
 
     if overlay_state.open {
         if let Some(action) = global_sound_action_at(cursor, window) {
-            apply_global_sound_action(action, &mut audio_settings, &mut overlay_state);
+            match apply_global_sound_action(action, &mut audio_settings, &mut overlay_state) {
+                GlobalSettingsCommand::None => {}
+                GlobalSettingsCommand::MainMenu => next_app_state.set(AppState::MainMenu),
+                GlobalSettingsCommand::QuitGame => {
+                    app_exit.write(AppExit::Success);
+                }
+            }
             return;
         }
 
@@ -556,14 +608,23 @@ fn apply_global_sound_action(
     action: SoundSettingsAction,
     audio_settings: &mut AudioSettings,
     overlay_state: &mut SoundSettingsOverlayState,
-) {
+) -> GlobalSettingsCommand {
     match action {
         SoundSettingsAction::MusicDown => audio_settings.adjust_music(-AudioSettings::STEP),
         SoundSettingsAction::MusicUp => audio_settings.adjust_music(AudioSettings::STEP),
         SoundSettingsAction::EffectsDown => audio_settings.adjust_effects(-AudioSettings::STEP),
         SoundSettingsAction::EffectsUp => audio_settings.adjust_effects(AudioSettings::STEP),
+        SoundSettingsAction::MainMenu => {
+            overlay_state.open = false;
+            return GlobalSettingsCommand::MainMenu;
+        }
+        SoundSettingsAction::QuitGame => {
+            overlay_state.open = false;
+            return GlobalSettingsCommand::QuitGame;
+        }
         SoundSettingsAction::Back => overlay_state.open = false,
     }
+    GlobalSettingsCommand::None
 }
 
 fn apply_global_sound_entry_position(node: &mut Node) {
@@ -573,13 +634,18 @@ fn apply_global_sound_entry_position(node: &mut Node) {
 }
 
 fn global_sound_entry_rect(window: &Window) -> ClickRect {
-    ClickRect {
-        x: (window.width() - GLOBAL_SOUND_ENTRY_W - GLOBAL_SOUND_ENTRY_LEFT)
+    let (x, y, w, h) = global_settings_entry_screen_rect(window.width());
+    ClickRect { x, y, w, h }
+}
+
+pub fn global_settings_entry_screen_rect(window_width: f32) -> (f32, f32, f32, f32) {
+    (
+        (window_width - GLOBAL_SOUND_ENTRY_W - GLOBAL_SOUND_ENTRY_LEFT)
             .max(GLOBAL_SOUND_ENTRY_LEFT),
-        y: GLOBAL_SOUND_ENTRY_TOP,
-        w: GLOBAL_SOUND_ENTRY_W,
-        h: GLOBAL_SOUND_ENTRY_H,
-    }
+        GLOBAL_SOUND_ENTRY_TOP,
+        GLOBAL_SOUND_ENTRY_W,
+        GLOBAL_SOUND_ENTRY_H,
+    )
 }
 
 fn global_sound_panel_rect(window: &Window) -> ClickRect {
@@ -588,6 +654,28 @@ fn global_sound_panel_rect(window: &Window) -> ClickRect {
         y: (window.height() - GLOBAL_SOUND_PANEL_H) * 0.5,
         w: GLOBAL_SOUND_PANEL_W,
         h: GLOBAL_SOUND_PANEL_H,
+    }
+}
+
+fn global_settings_action_start_x() -> f32 {
+    (GLOBAL_SOUND_PANEL_W - GLOBAL_SETTINGS_ACTION_W * 2.0 - GLOBAL_SETTINGS_ACTION_GAP) * 0.5
+}
+
+fn global_settings_main_menu_rect() -> ClickRect {
+    ClickRect {
+        x: global_settings_action_start_x(),
+        y: GLOBAL_SETTINGS_ACTION_TOP,
+        w: GLOBAL_SETTINGS_ACTION_W,
+        h: GLOBAL_SETTINGS_ACTION_H,
+    }
+}
+
+fn global_settings_quit_game_rect() -> ClickRect {
+    ClickRect {
+        x: global_settings_action_start_x() + GLOBAL_SETTINGS_ACTION_W + GLOBAL_SETTINGS_ACTION_GAP,
+        y: GLOBAL_SETTINGS_ACTION_TOP,
+        w: GLOBAL_SETTINGS_ACTION_W,
+        h: GLOBAL_SETTINGS_ACTION_H,
     }
 }
 
@@ -632,13 +720,12 @@ fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettings
             },
         ),
         (
-            SoundSettingsAction::Back,
-            ClickRect {
-                x: GLOBAL_SOUND_PANEL_W - GLOBAL_SOUND_ROW_LEFT - GLOBAL_SOUND_CLOSE_W,
-                y: GLOBAL_SOUND_PANEL_H - 62.0,
-                w: GLOBAL_SOUND_CLOSE_W,
-                h: GLOBAL_SOUND_CLOSE_H,
-            },
+            SoundSettingsAction::MainMenu,
+            global_settings_main_menu_rect(),
+        ),
+        (
+            SoundSettingsAction::QuitGame,
+            global_settings_quit_game_rect(),
         ),
     ];
 
@@ -734,6 +821,7 @@ fn centered_axis(container: f32, item: f32, min_margin: f32) -> f32 {
 struct ModeSelectLayout {
     left: f32,
     top: f32,
+    scale: f32,
 }
 
 impl ModeSelectLayout {
@@ -741,16 +829,29 @@ impl ModeSelectLayout {
         ClickRect {
             x: self.x(rect.x),
             y: self.y(rect.y),
-            ..rect
+            w: rect.w * self.scale,
+            h: rect.h * self.scale,
         }
     }
 
+    fn size(self, value: f32) -> f32 {
+        value * self.scale
+    }
+
+    fn font(self, value: f32) -> f32 {
+        (value * self.scale).max(10.0)
+    }
+
+    fn border(self, value: f32) -> f32 {
+        (value * self.scale).max(1.0)
+    }
+
     fn x(self, x: f32) -> f32 {
-        self.left + x - MODE_LAYOUT_BASE_LEFT
+        self.left + (x - MODE_LAYOUT_BASE_LEFT) * self.scale
     }
 
     fn y(self, y: f32) -> f32 {
-        self.top + y - MODE_LAYOUT_BASE_TOP
+        self.top + (y - MODE_LAYOUT_BASE_TOP) * self.scale
     }
 }
 
@@ -760,9 +861,58 @@ fn mode_select_layout(
     active_player_count: usize,
 ) -> ModeSelectLayout {
     let layout_height = mode_select_layout_height(active_player_count);
+    let scale = mode_select_layout_scale(window_width, window_height, active_player_count);
     ModeSelectLayout {
-        left: centered_axis(window_width, MODE_LAYOUT_WIDTH, 16.0),
-        top: centered_axis(window_height, layout_height, 16.0),
+        left: mode_select_layout_left(window_width, scale),
+        top: centered_axis(window_height, layout_height * scale, 16.0),
+        scale,
+    }
+}
+
+fn mode_select_layout_left(window_width: f32, scale: f32) -> f32 {
+    centered_axis(window_width, MODE_LAYOUT_VISIBLE_W * scale, 16.0)
+        + (MODE_LAYOUT_BASE_LEFT - MODE_LAYOUT_VISIBLE_LEFT) * scale
+}
+
+fn mode_select_layout_scale(
+    window_width: f32,
+    window_height: f32,
+    active_player_count: usize,
+) -> f32 {
+    let layout_height = mode_select_layout_height(active_player_count);
+    available_axis_scale(window_width, MODE_LAYOUT_VISIBLE_W, 16.0)
+        .min(available_axis_scale(window_height, layout_height, 16.0))
+        .min(1.0)
+}
+
+fn available_axis_scale(container: f32, item: f32, min_margin: f32) -> f32 {
+    if item <= f32::EPSILON {
+        return 1.0;
+    }
+    ((container - min_margin * 2.0).max(1.0) / item).min(1.0)
+}
+
+fn mode_select_render_key(
+    windows: &Query<&Window>,
+    match_setup: &MatchSetup,
+) -> ModeSelectRenderKey {
+    let (window_width, window_height) = windows
+        .single()
+        .map(|window| (window.width(), window.height()))
+        .unwrap_or((1280.0, 720.0));
+    mode_select_render_key_from_size(window_width, window_height, match_setup)
+}
+
+fn mode_select_render_key_from_size(
+    window_width: f32,
+    window_height: f32,
+    match_setup: &MatchSetup,
+) -> ModeSelectRenderKey {
+    ModeSelectRenderKey {
+        mode: match_setup.mode,
+        active_player_count: match_setup.active_player_count(),
+        window_width: window_width.round().max(0.0) as u32,
+        window_height: window_height.round().max(0.0) as u32,
     }
 }
 
@@ -971,7 +1121,7 @@ fn spawn_mode_select(
     mut render_state: ResMut<ModeSelectRenderState>,
 ) {
     spawn_mode_select_content(&mut commands, &windows, &match_setup);
-    render_state.mode = Some(match_setup.mode);
+    render_state.key = Some(mode_select_render_key(&windows, &match_setup));
 }
 
 fn spawn_mode_select_content(
@@ -1135,7 +1285,7 @@ fn spawn_mode_select_content(
 
 fn mode_select_start_rect(active_player_count: usize) -> ClickRect {
     ClickRect {
-        x: OPTION_LEFT,
+        x: mode_select_bottom_action_left(),
         y: bottom_row_top(active_player_count),
         w: BOTTOM_ACTION_W,
         h: BOTTOM_ACTION_H,
@@ -1144,11 +1294,15 @@ fn mode_select_start_rect(active_player_count: usize) -> ClickRect {
 
 fn mode_select_back_rect(active_player_count: usize) -> ClickRect {
     ClickRect {
-        x: OPTION_LEFT + BOTTOM_ACTION_W + OPTION_GAP,
+        x: mode_select_bottom_action_left() + BOTTOM_ACTION_W + OPTION_GAP,
         y: bottom_row_top(active_player_count),
         w: BOTTOM_ACTION_W,
         h: BOTTOM_ACTION_H,
     }
+}
+
+fn mode_select_bottom_action_left() -> f32 {
+    MODE_LAYOUT_VISIBLE_LEFT + (MODE_LAYOUT_VISIBLE_W - BOTTOM_ACTION_W * 2.0 - OPTION_GAP) * 0.5
 }
 
 fn spawn_section_label(commands: &mut Commands, layout: ModeSelectLayout, label: &str, top: f32) {
@@ -1157,10 +1311,10 @@ fn spawn_section_label(commands: &mut Commands, layout: ModeSelectLayout, label:
     commands.spawn((
         Text::new(label),
         TextFont {
-            font_size: 20.0,
+            font_size: layout.font(20.0),
             ..default()
         },
-        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        TextColor(MODE_SELECT_BLACK),
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(layout.y(top)),
@@ -1178,9 +1332,9 @@ fn spawn_setting_row_band(commands: &mut Commands, layout: ModeSelectLayout, top
             position_type: PositionType::Absolute,
             top: Val::Px(layout.y(top - 2.0)),
             left: Val::Px(layout.x(SETTING_ROW_BAND_LEFT)),
-            width: Val::Px(SETTING_ROW_BAND_W),
-            height: Val::Px(SETTING_ROW_BAND_H),
-            border: UiRect::all(Val::Px(1.0)),
+            width: Val::Px(layout.size(SETTING_ROW_BAND_W)),
+            height: Val::Px(layout.size(SETTING_ROW_BAND_H)),
+            border: UiRect::all(Val::Px(layout.border(1.0))),
             ..default()
         },
         BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.22)),
@@ -1233,10 +1387,10 @@ fn spawn_box_with_label(
             top: Val::Px(rect.y),
             width: Val::Px(rect.w),
             height: Val::Px(rect.h),
-            border: UiRect::all(Val::Px(2.0)),
+            border: UiRect::all(Val::Px(fitted_box_border(rect.h))),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            padding: UiRect::horizontal(Val::Px(6.0)),
+            padding: UiRect::horizontal(Val::Px(fitted_box_padding(rect.h))),
             ..default()
         },
         BackgroundColor(color),
@@ -1257,19 +1411,34 @@ fn spawn_box_with_label(
 
     if !label.is_empty() {
         entity.with_children(|parent| {
-            parent.spawn((
+            let mut label_entity = parent.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size,
+                    font_size: fitted_box_font_size(font_size, rect.h),
                     ..default()
                 },
-                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextColor(MODE_SELECT_UNSELECTED_TEXT),
                 TextLayout::new_with_justify(Justify::Center),
                 Name::new("MenuOptionLabel"),
             ));
+            if action.is_some() {
+                label_entity.insert(ModeSelectOptionLabel);
+            }
         });
     }
     entity_id
+}
+
+fn fitted_box_font_size(requested: f32, box_height: f32) -> f32 {
+    requested.min((box_height * 0.68).max(10.0))
+}
+
+fn fitted_box_border(box_height: f32) -> f32 {
+    (box_height * 0.055).clamp(1.0, 2.0)
+}
+
+fn fitted_box_padding(box_height: f32) -> f32 {
+    (box_height * 0.16).clamp(2.0, 6.0)
 }
 
 fn sound_settings_content(audio_settings: &AudioSettings) -> String {
@@ -1295,11 +1464,19 @@ fn ai_difficulty_label(difficulty: AiDifficulty) -> &'static str {
 fn update_mode_select_option_visuals(
     match_setup: Res<MatchSetup>,
     mut option_query: Query<(&ModeSelectOption, &mut BackgroundColor, &mut BorderColor)>,
+    mut label_query: Query<(&ChildOf, &mut TextColor), With<ModeSelectOptionLabel>>,
+    parent_option_query: Query<&ModeSelectOption>,
 ) {
     // 配置变更后刷新所有选项的高亮/禁用态。
     for (option, mut color, mut border) in &mut option_query {
         *color = BackgroundColor(option_fill_color(option, &match_setup));
         *border = BorderColor::all(option_border_color(option, &match_setup));
+    }
+    for (parent, mut text_color) in &mut label_query {
+        let Ok(option) = parent_option_query.get(parent.parent()) else {
+            continue;
+        };
+        *text_color = TextColor(option_text_color(option, &match_setup));
     }
 }
 
@@ -1325,7 +1502,7 @@ fn option_border_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> C
         return Color::srgba(0.30, 0.35, 0.42, 0.10);
     }
     if action_selected(option.action, match_setup) {
-        return Color::srgba(0.06, 0.10, 0.16, 0.95);
+        return MODE_SELECT_BLACK;
     }
     if matches!(
         option.action,
@@ -1333,7 +1510,17 @@ fn option_border_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> C
     ) {
         return Color::srgba(0.14, 0.20, 0.30, 0.44);
     }
-    Color::srgba(0.18, 0.24, 0.34, 0.20)
+    Color::srgba(0.18, 0.24, 0.34, 0.14)
+}
+
+fn option_text_color(option: &ModeSelectOption, match_setup: &MatchSetup) -> Color {
+    if action_disabled(option.action, match_setup) {
+        return MODE_SELECT_DISABLED_TEXT;
+    }
+    if action_selected(option.action, match_setup) {
+        return MODE_SELECT_BLACK;
+    }
+    MODE_SELECT_UNSELECTED_TEXT
 }
 
 fn action_disabled(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
@@ -1397,7 +1584,7 @@ fn handle_main_menu_click(
     overlay_state: Res<SoundSettingsOverlayState>,
     start_query: Query<&ClickRect, With<MainMenuStartArea>>,
 ) {
-    // 鼠标主操作：点击开始进入配置；声音设置由全局 Audio 入口打开。
+    // 鼠标主操作：点击开始进入配置；设置弹层由全局 Settings 入口打开。
     if overlay_state.input_captured {
         return;
     }
@@ -1472,7 +1659,10 @@ fn apply_sound_settings_action(
         SoundSettingsAction::MusicUp => audio_settings.adjust_music(AudioSettings::STEP),
         SoundSettingsAction::EffectsDown => audio_settings.adjust_effects(-AudioSettings::STEP),
         SoundSettingsAction::EffectsUp => audio_settings.adjust_effects(AudioSettings::STEP),
-        SoundSettingsAction::Back => next_state.set(AppState::MainMenu),
+        SoundSettingsAction::MainMenu | SoundSettingsAction::Back => {
+            next_state.set(AppState::MainMenu)
+        }
+        SoundSettingsAction::QuitGame => {}
     }
 }
 
@@ -1618,14 +1808,15 @@ fn apply_mode_select_action(
     }
 }
 
-fn refresh_mode_select_on_mode_change(
+fn refresh_mode_select_layout(
     mut commands: Commands,
     windows: Query<&Window>,
     match_setup: Res<MatchSetup>,
     mut render_state: ResMut<ModeSelectRenderState>,
     query: Query<Entity, (With<MenuEntity>, Without<ChildOf>)>,
 ) {
-    if render_state.mode == Some(match_setup.mode) {
+    let next_key = mode_select_render_key(&windows, &match_setup);
+    if render_state.key == Some(next_key) {
         return;
     }
 
@@ -1633,7 +1824,7 @@ fn refresh_mode_select_on_mode_change(
         commands.entity(entity).despawn();
     }
     spawn_mode_select_content(&mut commands, &windows, &match_setup);
-    render_state.mode = Some(match_setup.mode);
+    render_state.key = Some(next_key);
 }
 
 fn cleanup_menu(
@@ -1720,14 +1911,68 @@ mod tests {
     fn mode_select_layout_centers_content_on_wide_screens() {
         let active_player_count = 4;
         let layout = mode_select_layout(1280.0, 720.0, active_player_count);
+        let visible_left = layout.x(MODE_LAYOUT_VISIBLE_LEFT);
+        let visible_center = visible_left + MODE_LAYOUT_VISIBLE_W * 0.5;
 
-        assert!((layout.left - (1280.0 - MODE_LAYOUT_WIDTH) * 0.5).abs() < f32::EPSILON);
+        assert!((visible_center - 1280.0 * 0.5).abs() < f32::EPSILON);
         assert!(
             (layout.top - (720.0 - mode_select_layout_height(active_player_count)) * 0.5).abs()
                 < f32::EPSILON
         );
         assert_eq!(layout.x(MODE_LAYOUT_BASE_LEFT), layout.left);
         assert_eq!(layout.y(MODE_LAYOUT_BASE_TOP), layout.top);
+    }
+
+    #[test]
+    fn mode_select_visible_rows_are_centered_on_tablet_screen() {
+        let layout = mode_select_layout(2800.0, 1840.0, 4);
+        let row = layout.rect(ClickRect {
+            x: MODE_LAYOUT_VISIBLE_LEFT,
+            y: MODE_ROW_TOP,
+            w: MODE_LAYOUT_VISIBLE_W,
+            h: SETTING_ROW_BAND_H,
+        });
+
+        assert!((row.x + row.w * 0.5 - 1400.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn mode_select_layout_scales_and_centers_on_narrow_screens() {
+        let layout = mode_select_layout(600.0, 960.0, 4);
+        let row = layout.rect(ClickRect {
+            x: MODE_LAYOUT_VISIBLE_LEFT,
+            y: MODE_ROW_TOP,
+            w: MODE_LAYOUT_VISIBLE_W,
+            h: SETTING_ROW_BAND_H,
+        });
+        let start = layout.rect(mode_select_start_rect(4));
+        let back = layout.rect(mode_select_back_rect(4));
+
+        assert!(layout.scale < 1.0);
+        assert!(row.w <= 600.0 - 32.0 + 0.01);
+        assert!((row.x + row.w * 0.5 - 300.0).abs() < 0.01);
+        assert!((start.x + back.x + back.w - 600.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn mode_select_render_key_tracks_window_size_changes() {
+        let match_setup = setup();
+        let first = mode_select_render_key_from_size(1280.0, 720.0, &match_setup);
+        let tablet = mode_select_render_key_from_size(2800.0, 1840.0, &match_setup);
+
+        assert_ne!(first, tablet);
+        assert_eq!(tablet.window_width, 2800);
+        assert_eq!(tablet.window_height, 1840);
+    }
+
+    #[test]
+    fn mode_select_bottom_actions_are_centered_in_visible_content() {
+        let start = mode_select_start_rect(4);
+        let back = mode_select_back_rect(4);
+        let action_center = (start.x + back.x + back.w) * 0.5;
+        let visible_center = MODE_LAYOUT_VISIBLE_LEFT + MODE_LAYOUT_VISIBLE_W * 0.5;
+
+        assert!((action_center - visible_center).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1775,7 +2020,7 @@ mod tests {
     }
 
     #[test]
-    fn global_sound_actions_adjust_audio_and_close_overlay() {
+    fn global_settings_actions_adjust_audio_return_to_menu_and_quit() {
         let mut audio_settings = AudioSettings {
             music_volume: 0.5,
             effects_volume: 0.5,
@@ -1785,27 +2030,57 @@ mod tests {
             input_captured: false,
         };
 
-        apply_global_sound_action(
-            SoundSettingsAction::MusicDown,
-            &mut audio_settings,
-            &mut overlay_state,
+        assert_eq!(
+            apply_global_sound_action(
+                SoundSettingsAction::MusicDown,
+                &mut audio_settings,
+                &mut overlay_state,
+            ),
+            GlobalSettingsCommand::None
         );
-        apply_global_sound_action(
-            SoundSettingsAction::EffectsUp,
-            &mut audio_settings,
-            &mut overlay_state,
+        assert_eq!(
+            apply_global_sound_action(
+                SoundSettingsAction::EffectsUp,
+                &mut audio_settings,
+                &mut overlay_state,
+            ),
+            GlobalSettingsCommand::None
         );
 
         assert!((audio_settings.music_volume - 0.4).abs() < f32::EPSILON);
         assert!((audio_settings.effects_volume - 0.6).abs() < f32::EPSILON);
         assert!(overlay_state.open);
 
-        apply_global_sound_action(
-            SoundSettingsAction::Back,
-            &mut audio_settings,
-            &mut overlay_state,
+        assert_eq!(
+            apply_global_sound_action(
+                SoundSettingsAction::MainMenu,
+                &mut audio_settings,
+                &mut overlay_state,
+            ),
+            GlobalSettingsCommand::MainMenu
         );
+        assert!(!overlay_state.open);
 
+        overlay_state.open = true;
+        assert_eq!(
+            apply_global_sound_action(
+                SoundSettingsAction::QuitGame,
+                &mut audio_settings,
+                &mut overlay_state,
+            ),
+            GlobalSettingsCommand::QuitGame
+        );
+        assert!(!overlay_state.open);
+
+        overlay_state.open = true;
+        assert_eq!(
+            apply_global_sound_action(
+                SoundSettingsAction::Back,
+                &mut audio_settings,
+                &mut overlay_state,
+            ),
+            GlobalSettingsCommand::None
+        );
         assert!(!overlay_state.open);
     }
 
@@ -1842,13 +2117,22 @@ mod tests {
             Some(SoundSettingsAction::MusicUp)
         );
 
-        let close = Vec2::new(
-            panel.x + GLOBAL_SOUND_PANEL_W - GLOBAL_SOUND_ROW_LEFT - 8.0,
-            panel.y + GLOBAL_SOUND_PANEL_H - 42.0,
+        let main_menu = Vec2::new(
+            panel.x + global_settings_main_menu_rect().x + 8.0,
+            panel.y + global_settings_main_menu_rect().y + 8.0,
         );
         assert_eq!(
-            global_sound_action_at(close, &window),
-            Some(SoundSettingsAction::Back)
+            global_sound_action_at(main_menu, &window),
+            Some(SoundSettingsAction::MainMenu)
+        );
+
+        let quit_game = Vec2::new(
+            panel.x + global_settings_quit_game_rect().x + 8.0,
+            panel.y + global_settings_quit_game_rect().y + 8.0,
+        );
+        assert_eq!(
+            global_sound_action_at(quit_game, &window),
+            Some(SoundSettingsAction::QuitGame)
         );
     }
 
@@ -1879,6 +2163,10 @@ mod tests {
             option_border_color(&selected, &match_setup),
             option_border_color(&unselected, &match_setup)
         );
+        assert_eq!(option_border_color(&selected, &match_setup), Color::BLACK);
+        assert_eq!(option_text_color(&selected, &match_setup), Color::BLACK);
+        assert_ne!(option_border_color(&unselected, &match_setup), Color::BLACK);
+        assert_ne!(option_text_color(&unselected, &match_setup), Color::BLACK);
 
         match_setup.mode = GameMode::OneVsOne;
         let disabled = ModeSelectOption {

@@ -1,5 +1,6 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use bevy::window::WindowFocused;
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::{
     audio::{AudioSinkPlayback, Volume},
@@ -24,10 +25,12 @@ impl Plugin for AudioPlugin {
         app.init_resource::<AudioSettings>()
             .init_resource::<AudioFeedbackState>()
             .init_resource::<AudioInteractionState>()
+            .init_resource::<AudioFocusState>()
             .add_systems(
                 Update,
                 (
                     capture_audio_interaction,
+                    sync_background_music_focus,
                     ensure_background_music,
                     sync_background_music_volume,
                     play_audio_feedback.run_if(in_state(AppState::InGame)),
@@ -125,6 +128,21 @@ struct AudioInteractionState {
     unlocked: bool,
 }
 
+#[derive(Resource)]
+struct AudioFocusState {
+    foreground: bool,
+    paused_for_background: bool,
+}
+
+impl Default for AudioFocusState {
+    fn default() -> Self {
+        Self {
+            foreground: true,
+            paused_for_background: false,
+        }
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 #[derive(Resource, Default)]
 struct WebBackgroundMusicState {
@@ -176,10 +194,12 @@ fn ensure_background_music(
     audio_assets: Res<GameAudioAssets>,
     audio_settings: Res<AudioSettings>,
     audio_interaction: Res<AudioInteractionState>,
+    audio_focus: Res<AudioFocusState>,
     music_query: Query<Entity, With<BackgroundMusic>>,
 ) {
     if !should_spawn_background_music(
         audio_interaction.unlocked,
+        audio_focus.foreground,
         audio_settings.music_volume,
         !music_query.is_empty(),
     ) {
@@ -199,10 +219,12 @@ fn ensure_background_music(
     audio_assets: Res<GameAudioAssets>,
     audio_settings: Res<AudioSettings>,
     audio_interaction: Res<AudioInteractionState>,
+    audio_focus: Res<AudioFocusState>,
     mut music_state: ResMut<WebBackgroundMusicState>,
 ) {
     if !should_spawn_background_music(
         audio_interaction.unlocked,
+        audio_focus.foreground,
         audio_settings.music_volume,
         music_state.started,
     ) {
@@ -241,10 +263,87 @@ fn has_audio_unlock_input(
 
 fn should_spawn_background_music(
     audio_unlocked: bool,
+    app_foreground: bool,
     music_volume: f32,
     music_exists: bool,
 ) -> bool {
-    audio_unlocked && music_volume > f32::EPSILON && !music_exists
+    audio_unlocked && app_foreground && music_volume > f32::EPSILON && !music_exists
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackgroundMusicFocusCommand {
+    None,
+    Pause,
+    Resume,
+}
+
+fn background_music_focus_command(
+    focused: bool,
+    music_is_paused: bool,
+    audio_focus: &mut AudioFocusState,
+) -> BackgroundMusicFocusCommand {
+    audio_focus.foreground = focused;
+    if !focused {
+        audio_focus.paused_for_background = !music_is_paused;
+        return if music_is_paused {
+            BackgroundMusicFocusCommand::None
+        } else {
+            BackgroundMusicFocusCommand::Pause
+        };
+    }
+
+    if audio_focus.paused_for_background {
+        audio_focus.paused_for_background = false;
+        return if music_is_paused {
+            BackgroundMusicFocusCommand::Resume
+        } else {
+            BackgroundMusicFocusCommand::None
+        };
+    }
+    BackgroundMusicFocusCommand::None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_background_music_focus(
+    mut focus_messages: MessageReader<WindowFocused>,
+    mut audio_focus: ResMut<AudioFocusState>,
+    music_query: Query<&AudioSink, With<BackgroundMusic>>,
+) {
+    for focus in focus_messages.read() {
+        audio_focus.foreground = focus.focused;
+        for sink in &music_query {
+            match background_music_focus_command(focus.focused, sink.is_paused(), &mut audio_focus)
+            {
+                BackgroundMusicFocusCommand::None => {}
+                BackgroundMusicFocusCommand::Pause => sink.pause(),
+                BackgroundMusicFocusCommand::Resume => sink.play(),
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sync_background_music_focus(
+    mut focus_messages: MessageReader<WindowFocused>,
+    mut audio_focus: ResMut<AudioFocusState>,
+) {
+    for focus in focus_messages.read() {
+        audio_focus.foreground = focus.focused;
+        WEB_BACKGROUND_MUSIC.with(|music| {
+            let Some(audio) = music.borrow().as_ref().cloned() else {
+                return;
+            };
+            match background_music_focus_command(focus.focused, audio.paused(), &mut audio_focus) {
+                BackgroundMusicFocusCommand::None => {}
+                BackgroundMusicFocusCommand::Pause => {
+                    let _ = audio.pause();
+                }
+                BackgroundMusicFocusCommand::Resume => {
+                    let _ = audio.play();
+                }
+            }
+        });
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -515,9 +614,48 @@ mod tests {
 
     #[test]
     fn background_music_waits_for_audio_unlock() {
-        assert!(!should_spawn_background_music(false, 0.5, false));
-        assert!(!should_spawn_background_music(true, 0.0, false));
-        assert!(!should_spawn_background_music(true, 0.5, true));
-        assert!(should_spawn_background_music(true, 0.5, false));
+        assert!(!should_spawn_background_music(false, true, 0.5, false));
+        assert!(!should_spawn_background_music(true, false, 0.5, false));
+        assert!(!should_spawn_background_music(true, true, 0.0, false));
+        assert!(!should_spawn_background_music(true, true, 0.5, true));
+        assert!(should_spawn_background_music(true, true, 0.5, false));
+    }
+
+    #[test]
+    fn background_music_pauses_and_resumes_with_focus() {
+        let mut focus = AudioFocusState::default();
+
+        assert_eq!(
+            background_music_focus_command(false, false, &mut focus),
+            BackgroundMusicFocusCommand::Pause
+        );
+        assert!(!focus.foreground);
+        assert!(focus.paused_for_background);
+
+        assert_eq!(
+            background_music_focus_command(true, true, &mut focus),
+            BackgroundMusicFocusCommand::Resume
+        );
+        assert!(focus.foreground);
+        assert!(!focus.paused_for_background);
+    }
+
+    #[test]
+    fn background_music_does_not_resume_if_it_was_already_paused() {
+        let mut focus = AudioFocusState::default();
+
+        assert_eq!(
+            background_music_focus_command(false, true, &mut focus),
+            BackgroundMusicFocusCommand::None
+        );
+        assert!(!focus.foreground);
+        assert!(!focus.paused_for_background);
+
+        assert_eq!(
+            background_music_focus_command(true, true, &mut focus),
+            BackgroundMusicFocusCommand::None
+        );
+        assert!(focus.foreground);
+        assert!(!focus.paused_for_background);
     }
 }

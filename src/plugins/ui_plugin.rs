@@ -1,19 +1,22 @@
+use bevy::ecs::system::SystemParam;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
+use crate::constants::{BOARD_WORLD_SIZE, gameplay_board_target_pixels};
 use crate::data::game_mode::GameMode;
 use crate::domain::piece::PieceState;
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{
-    MatchConfig, MatchResult, PlayerProfile, PlayerRoster, PlayerSeat,
+    MatchConfig, MatchResult, PlayerProfile, PlayerRoster, PlayerSeat, hangar_center_for_seat,
 };
 use crate::gameplay::skill_flow::{
     PlayerSkillState, SkillRoster, can_use_skill_this_turn, is_active_teammate_piece,
     is_current_player_active_piece, is_legal_shield_target, is_legal_snipe_target,
     player_skill_state,
 };
-use crate::gameplay::turn_flow::{TurnInputState, TurnState};
+use crate::gameplay::turn_flow::TurnState;
 use crate::platform::{DeviceProfile, PointerInputState};
-use crate::plugins::menu_plugin::SoundSettingsOverlayState;
+use crate::plugins::menu_plugin::{SoundSettingsOverlayState, global_settings_entry_screen_rect};
 use crate::plugins::piece_plugin::PieceId;
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
 use crate::plugins::turn_plugin::TurnUiRequest;
@@ -24,13 +27,16 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerHudState>()
+            .init_resource::<EventLogState>()
             .add_systems(OnEnter(AppState::InGame), spawn_hud)
             .add_systems(
                 Update,
                 (
                     handle_player_hud_click,
+                    handle_event_log_scroll,
                     update_player_hud_layout,
                     update_hud_content,
+                    update_event_log_content,
                 )
                     .chain()
                     .run_if(in_state(AppState::InGame)),
@@ -65,36 +71,86 @@ struct PlayerHudEntry {
     player_id: u8,
 }
 
-#[derive(Component)]
-struct PlayerHudEntryText {
-    player_id: u8,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlayerHudBadgeKind {
+    Player,
+    Team,
+    Turn,
 }
 
 #[derive(Component)]
-struct PlayerHudPanel;
+struct PlayerHudBadge {
+    player_id: u8,
+    kind: PlayerHudBadgeKind,
+}
 
 #[derive(Component)]
-struct PlayerHudPanelText;
+struct PlayerHudBadgeText {
+    player_id: u8,
+    kind: PlayerHudBadgeKind,
+}
 
 #[derive(Component)]
-struct HudSkillButton {
+struct SharedSkillButton {
     action: SkillUiAction,
 }
 
 #[derive(Component)]
-struct HudRollButton;
+struct SharedSkillButtonIcon {
+    action: SkillUiAction,
+}
 
 #[derive(Component)]
-struct HudRollButtonText;
+struct SharedSkillButtonBadge {
+    action: SkillUiAction,
+}
+
+#[derive(Component)]
+struct SharedSkillButtonText {
+    action: SkillUiAction,
+}
+
+#[derive(Component)]
+struct BoardRollButton;
+
+#[derive(Component)]
+struct BoardRollButtonText;
+
+#[derive(Component)]
+struct EventLogToggle;
+
+#[derive(Component)]
+struct EventLogToggleText;
+
+#[derive(Component)]
+struct EventLogPanel;
+
+#[derive(Component)]
+struct EventLogScrollArea;
+
+#[derive(Component)]
+struct EventLogScrollbarThumb;
+
+#[derive(Component)]
+struct EventLogText;
 
 #[derive(Resource, Default)]
 pub struct PlayerHudState {
-    active_player: Option<u8>,
+    event_log_expanded: bool,
+}
+
+#[derive(Resource, Default)]
+struct EventLogState {
+    expanded: bool,
+    scroll_to_bottom_requested: bool,
+    entries: Vec<String>,
+    last_turn_action_key: Option<(u32, String)>,
+    last_skill_action_key: Option<(u32, String)>,
 }
 
 type HudPieceQuery<'w, 's> = Query<'w, 's, (&'static PieceId, &'static PieceState)>;
 type PlayerHudEntryLayoutQuery<'w, 's> =
-    Query<'w, 's, (&'static PlayerHudEntry, &'static mut Node), Without<PlayerHudPanel>>;
+    Query<'w, 's, (&'static PlayerHudEntry, &'static mut Node), Without<BoardRollButton>>;
 type PlayerHudEntryStyleQuery<'w, 's> = Query<
     'w,
     's,
@@ -103,66 +159,166 @@ type PlayerHudEntryStyleQuery<'w, 's> = Query<
         &'static mut BackgroundColor,
         &'static mut BorderColor,
     ),
-    (Without<HudSkillButton>, Without<HudRollButton>),
->;
-type PlayerHudEntryTextQuery<'w, 's> = Query<
-    'w,
-    's,
-    (&'static PlayerHudEntryText, &'static mut Text),
-    (Without<PlayerHudPanelText>, Without<HudRollButtonText>),
->;
-type PlayerHudPanelTextQuery<'w, 's> = Query<
-    'w,
-    's,
-    &'static mut Text,
     (
-        With<PlayerHudPanelText>,
-        Without<PlayerHudEntryText>,
-        Without<HudRollButtonText>,
+        Without<PlayerHudBadge>,
+        Without<SharedSkillButton>,
+        Without<SharedSkillButtonBadge>,
+        Without<BoardRollButton>,
     ),
 >;
-type HudSkillButtonQuery<'w, 's> = Query<
+type PlayerHudBadgeStyleQuery<'w, 's> = Query<
     'w,
     's,
-    (&'static HudSkillButton, &'static mut BackgroundColor),
-    (Without<PlayerHudEntry>, Without<HudRollButton>),
+    (
+        &'static PlayerHudBadge,
+        &'static mut BackgroundColor,
+        &'static mut BorderColor,
+    ),
+    (
+        Without<PlayerHudEntry>,
+        Without<SharedSkillButton>,
+        Without<SharedSkillButtonBadge>,
+        Without<BoardRollButton>,
+    ),
 >;
-type HudRollButtonQuery<'w, 's> = Query<
+type PlayerHudBadgeTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PlayerHudBadgeText,
+        &'static mut Text,
+        &'static mut TextColor,
+    ),
+    (Without<SharedSkillButtonText>, Without<BoardRollButtonText>),
+>;
+type SharedSkillButtonQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static SharedSkillButton,
+        &'static mut BackgroundColor,
+        &'static mut BorderColor,
+    ),
+    (
+        Without<PlayerHudEntry>,
+        Without<PlayerHudBadge>,
+        Without<SharedSkillButtonBadge>,
+        Without<BoardRollButton>,
+    ),
+>;
+type SharedSkillButtonIconQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static SharedSkillButtonIcon, &'static mut ImageNode),
+    (
+        Without<PlayerHudEntry>,
+        Without<PlayerHudBadge>,
+        Without<SharedSkillButton>,
+        Without<SharedSkillButtonBadge>,
+    ),
+>;
+type SharedSkillButtonBadgeQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static SharedSkillButtonBadge,
+        &'static mut BackgroundColor,
+        &'static mut BorderColor,
+    ),
+    (
+        Without<PlayerHudEntry>,
+        Without<PlayerHudBadge>,
+        Without<SharedSkillButton>,
+        Without<BoardRollButton>,
+    ),
+>;
+type SharedSkillButtonTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static SharedSkillButtonText,
+        &'static mut Text,
+        &'static mut TextColor,
+    ),
+    (Without<PlayerHudBadgeText>, Without<BoardRollButtonText>),
+>;
+type BoardRollButtonQuery<'w, 's> = Query<
     'w,
     's,
     &'static mut BackgroundColor,
     (
-        With<HudRollButton>,
+        With<BoardRollButton>,
         Without<PlayerHudEntry>,
-        Without<HudSkillButton>,
+        Without<PlayerHudBadge>,
+        Without<SharedSkillButton>,
+        Without<SharedSkillButtonBadge>,
     ),
 >;
-type HudRollButtonTextQuery<'w, 's> = Query<
+type BoardRollButtonTextQuery<'w, 's> = Query<
     'w,
     's,
     &'static mut Text,
     (
-        With<HudRollButtonText>,
-        Without<PlayerHudEntryText>,
-        Without<PlayerHudPanelText>,
+        With<BoardRollButtonText>,
+        Without<PlayerHudBadgeText>,
+        Without<SharedSkillButtonText>,
     ),
 >;
+type EventLogPanelVisibilityQuery<'w, 's> =
+    Query<'w, 's, &'static mut Visibility, With<EventLogPanel>>;
+type EventLogToggleTextQuery<'w, 's> =
+    Query<'w, 's, &'static mut Text, (With<EventLogToggleText>, Without<EventLogText>)>;
+type EventLogScrollAreaQuery<'w, 's> =
+    Query<'w, 's, (&'static mut ScrollPosition, &'static ComputedNode), With<EventLogScrollArea>>;
+type EventLogScrollbarThumbQuery<'w, 's> =
+    Query<'w, 's, &'static mut Node, With<EventLogScrollbarThumb>>;
+type EventLogTextQuery<'w, 's> =
+    Query<'w, 's, &'static mut Text, (With<EventLogText>, Without<EventLogToggleText>)>;
+
+#[derive(SystemParam)]
+struct HudContentQueries<'w, 's> {
+    entry_style_query: PlayerHudEntryStyleQuery<'w, 's>,
+    badge_style_query: PlayerHudBadgeStyleQuery<'w, 's>,
+    badge_text_query: PlayerHudBadgeTextQuery<'w, 's>,
+    skill_button_query: SharedSkillButtonQuery<'w, 's>,
+    skill_button_icon_query: SharedSkillButtonIconQuery<'w, 's>,
+    skill_button_badge_query: SharedSkillButtonBadgeQuery<'w, 's>,
+    skill_button_text_query: SharedSkillButtonTextQuery<'w, 's>,
+    board_roll_button_query: BoardRollButtonQuery<'w, 's>,
+    board_roll_button_text_query: BoardRollButtonTextQuery<'w, 's>,
+}
 
 const HUD_EDGE_MARGIN: f32 = 10.0;
-const HUD_ENTRY_W: f32 = 86.0;
-const HUD_ENTRY_H: f32 = 48.0;
-const HUD_PANEL_W: f32 = 312.0;
-const HUD_PANEL_H: f32 = 338.0;
-const HUD_PANEL_INSET: f32 = 14.0;
-const HUD_PANEL_GAP: f32 = 12.0;
-const HUD_SKILL_ROW_HEIGHT: f32 = 24.0;
-const HUD_SKILL_ROW_GAP: f32 = 4.0;
-const HUD_SKILL_ROW_START: f32 = 156.0;
-const HUD_ROLL_BUTTON_TOP: f32 = 296.0;
-const HUD_ROLL_BUTTON_H: f32 = 28.0;
-const TOP_RIGHT_AUDIO_W: f32 = 108.0;
-const TOP_RIGHT_AUDIO_H: f32 = 38.0;
-const TOP_RIGHT_AUDIO_MARGIN: f32 = 16.0;
+const HANGAR_BACKGROUND_WORLD_SIZE: f32 = 150.0;
+const HUD_ENTRY_W: f32 = 98.0;
+const HUD_ENTRY_H: f32 = 32.0;
+const HUD_BADGE_H: f32 = 28.0;
+const HUD_BADGE_GAP: f32 = 3.0;
+const HUD_BADGE_PLAYER_W: f32 = 32.0;
+const HUD_BADGE_TEAM_W: f32 = 32.0;
+const HUD_BADGE_TURN_W: f32 = 28.0;
+const SKILL_BUTTON_SIZE: f32 = 54.0;
+const SKILL_ICON_SIZE: f32 = 42.0;
+const SKILL_BADGE_W: f32 = 20.0;
+const SKILL_BADGE_H: f32 = 20.0;
+const SKILL_BUTTON_GAP: f32 = 8.0;
+const BOARD_ROLL_BUTTON_W: f32 = 64.0;
+const BOARD_ROLL_BUTTON_H: f32 = 64.0;
+const EVENT_LOG_TOGGLE_W: f32 = 92.0;
+const EVENT_LOG_TOGGLE_H: f32 = 36.0;
+const EVENT_LOG_PANEL_W: f32 = 360.0;
+const EVENT_LOG_PANEL_H: f32 = 226.0;
+const EVENT_LOG_PANEL_PADDING: f32 = 12.0;
+const EVENT_LOG_GAP: f32 = 8.0;
+const EVENT_LOG_SCROLLBAR_W: f32 = 8.0;
+const EVENT_LOG_SCROLLBAR_GAP: f32 = 8.0;
+const EVENT_LOG_SCROLLBAR_MIN_THUMB_H: f32 = 24.0;
+const EVENT_LOG_SCROLL_STEP: f32 = 24.0;
+const EVENT_LOG_MAX_ENTRIES: usize = 1000;
+const EVENT_LOG_CONTENT_W: f32 = EVENT_LOG_PANEL_W
+    - EVENT_LOG_PANEL_PADDING * 2.0
+    - EVENT_LOG_SCROLLBAR_GAP
+    - EVENT_LOG_SCROLLBAR_W;
 const RESULT_PANEL_W: f32 = 460.0;
 const RESULT_PANEL_H: f32 = 286.0;
 const RESULT_BUTTON_W: f32 = 168.0;
@@ -175,6 +331,11 @@ const HUD_SKILL_ACTIONS: [SkillUiAction; 5] = [
     SkillUiAction::Swap,
     SkillUiAction::Shield,
     SkillUiAction::DoubleDice,
+];
+const PLAYER_HUD_BADGES: [PlayerHudBadgeKind; 3] = [
+    PlayerHudBadgeKind::Player,
+    PlayerHudBadgeKind::Team,
+    PlayerHudBadgeKind::Turn,
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -198,6 +359,15 @@ impl ScreenRect {
             && self.x + self.w > other.x
             && self.y < other.y + other.h
             && self.y + self.h > other.y
+    }
+
+    fn expanded(self, amount: f32) -> Self {
+        Self {
+            x: self.x - amount,
+            y: self.y - amount,
+            w: self.w + amount * 2.0,
+            h: self.h + amount * 2.0,
+        }
     }
 }
 
@@ -228,17 +398,246 @@ impl SkillBoardAvailability {
     }
 }
 
-enum PlayerHudPanelAction {
-    Roll,
-    Skill(SkillUiAction),
-}
-
 fn spawn_hud(
     mut commands: Commands,
     mut hud_state: ResMut<PlayerHudState>,
+    mut event_log: ResMut<EventLogState>,
     player_roster: Res<PlayerRoster>,
+    asset_server: Res<AssetServer>,
 ) {
-    hud_state.active_player = None;
+    hud_state.event_log_expanded = false;
+    event_log.expanded = false;
+    event_log.scroll_to_bottom_requested = false;
+    event_log.entries.clear();
+    event_log.last_turn_action_key = None;
+    event_log.last_skill_action_key = None;
+    event_log.entries.push("Match started".to_string());
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(BOARD_ROLL_BUTTON_W),
+                height: Val::Px(BOARD_ROLL_BUTTON_H),
+                border: UiRect::all(Val::Px(1.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::horizontal(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(skill_button_color(false, false)),
+            BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.28)),
+            ZIndex(44),
+            Name::new("BoardRollButton"),
+            BoardRollButton,
+            HudEntity,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("Roll"),
+                TextFont {
+                    font_size: 22.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.09, 0.16, 0.24)),
+                TextLayout::new_with_justify(Justify::Center),
+                Name::new("BoardRollButtonLabel"),
+                BoardRollButtonText,
+            ));
+        });
+
+    for action in HUD_SKILL_ACTIONS {
+        commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(SKILL_BUTTON_SIZE),
+                    height: Val::Px(SKILL_BUTTON_SIZE),
+                    border: UiRect::all(Val::Px(1.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    padding: UiRect::all(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(skill_button_color(false, false)),
+                BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.20)),
+                ZIndex(43),
+                Name::new(format!("SharedSkillButton{}", skill_action_name(action))),
+                SharedSkillButton { action },
+                HudEntity,
+            ))
+            .with_children(|button| {
+                button.spawn((
+                    ImageNode {
+                        color: skill_icon_color(false),
+                        ..ImageNode::new(asset_server.load(skill_icon_asset_path(action)))
+                    },
+                    Node {
+                        width: Val::Px(SKILL_ICON_SIZE),
+                        height: Val::Px(SKILL_ICON_SIZE),
+                        ..default()
+                    },
+                    Name::new(format!(
+                        "SharedSkillButtonIcon{}",
+                        skill_action_name(action)
+                    )),
+                    SharedSkillButtonIcon { action },
+                ));
+                button
+                    .spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            top: Val::Px(0.0),
+                            right: Val::Px(0.0),
+                            width: Val::Px(SKILL_BADGE_W),
+                            height: Val::Px(SKILL_BADGE_H),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::MAX,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            padding: UiRect::horizontal(Val::Px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(skill_badge_color(false)),
+                        BorderColor::all(skill_badge_border_color(false)),
+                        ZIndex(1),
+                        Name::new(format!(
+                            "SharedSkillButtonBadge{}",
+                            skill_action_name(action)
+                        )),
+                        SharedSkillButtonBadge { action },
+                    ))
+                    .with_children(|badge| {
+                        badge.spawn((
+                            Text::new(skill_badge_text(0)),
+                            TextFont {
+                                font_size: 11.0,
+                                ..default()
+                            },
+                            TextColor(skill_badge_text_color(false)),
+                            TextLayout::new_with_justify(Justify::Center),
+                            Name::new(format!(
+                                "SharedSkillButtonBadgeText{}",
+                                skill_action_name(action)
+                            )),
+                            SharedSkillButtonText { action },
+                        ));
+                    });
+            });
+    }
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(EVENT_LOG_TOGGLE_W),
+                height: Val::Px(EVENT_LOG_TOGGLE_H),
+                border: UiRect::all(Val::Px(1.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::horizontal(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.84, 0.89, 0.96, 0.74)),
+            BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.30)),
+            ZIndex(46),
+            Name::new("EventLogToggle"),
+            EventLogToggle,
+            HudEntity,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("Log"),
+                TextFont {
+                    font_size: 16.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextLayout::new_with_justify(Justify::Center),
+                Name::new("EventLogToggleText"),
+                EventLogToggleText,
+            ));
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(EVENT_LOG_PANEL_W),
+                height: Val::Px(EVENT_LOG_PANEL_H),
+                border: UiRect::all(Val::Px(1.0)),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(EVENT_LOG_SCROLLBAR_GAP),
+                align_items: AlignItems::Stretch,
+                padding: UiRect::all(Val::Px(EVENT_LOG_PANEL_PADDING)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.98, 0.99, 1.0, 0.96)),
+            BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.28)),
+            Visibility::Hidden,
+            ZIndex(45),
+            Name::new("EventLogPanel"),
+            EventLogPanel,
+            HudEntity,
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn((
+                    Node {
+                        width: Val::Px(EVENT_LOG_CONTENT_W),
+                        height: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Column,
+                        overflow: Overflow::scroll_y(),
+                        ..default()
+                    },
+                    ScrollPosition(Vec2::ZERO),
+                    Name::new("EventLogScrollArea"),
+                    EventLogScrollArea,
+                ))
+                .with_children(|scroll_area| {
+                    scroll_area.spawn((
+                        Text::new("Match started"),
+                        TextFont {
+                            font_size: 13.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
+                        Node {
+                            width: Val::Percent(100.0),
+                            ..default()
+                        },
+                        Name::new("EventLogText"),
+                        EventLogText,
+                    ));
+                });
+            panel
+                .spawn((
+                    Node {
+                        width: Val::Px(EVENT_LOG_SCROLLBAR_W),
+                        height: Val::Percent(100.0),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.55, 0.60, 0.68, 0.24)),
+                    Name::new("EventLogScrollbarTrack"),
+                ))
+                .with_children(|track| {
+                    track.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            top: Val::Px(0.0),
+                            width: Val::Px(EVENT_LOG_SCROLLBAR_W),
+                            height: Val::Px(EVENT_LOG_SCROLLBAR_MIN_THUMB_H),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.22, 0.28, 0.36, 0.62)),
+                        Name::new("EventLogScrollbarThumb"),
+                        EventLogScrollbarThumb,
+                    ));
+                });
+        });
 
     for player in &player_roster.players {
         let player_id = player.state.player_id;
@@ -248,143 +647,142 @@ fn spawn_hud(
                     position_type: PositionType::Absolute,
                     width: Val::Px(HUD_ENTRY_W),
                     height: Val::Px(HUD_ENTRY_H),
-                    border: UiRect::all(Val::Px(2.0)),
+                    border: UiRect::all(Val::Px(0.0)),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(HUD_BADGE_GAP),
                     align_items: AlignItems::Center,
                     justify_content: JustifyContent::Center,
-                    padding: UiRect::horizontal(Val::Px(6.0)),
+                    padding: UiRect::all(Val::Px(0.0)),
                     ..default()
                 },
-                BackgroundColor(player.color.mix(&Color::WHITE, 0.68).with_alpha(0.90)),
-                BorderColor::all(Color::srgba(0.10, 0.16, 0.24, 0.36)),
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+                BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.0)),
                 ZIndex(32),
                 Name::new(format!("PlayerHudEntryP{player_id}")),
                 PlayerHudEntry { player_id },
                 HudEntity,
             ))
             .with_children(|parent| {
-                parent.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 14.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.08, 0.12, 0.18)),
-                    TextLayout::new_with_justify(Justify::Center),
-                    Name::new(format!("PlayerHudEntryTextP{player_id}")),
-                    PlayerHudEntryText { player_id },
-                ));
+                for kind in player_hud_badges_for_seat(player.seat) {
+                    parent
+                        .spawn((
+                            Node {
+                                width: Val::Px(player_hud_badge_width(kind)),
+                                height: Val::Px(HUD_BADGE_H),
+                                border: UiRect::all(Val::Px(1.0)),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                padding: UiRect::horizontal(Val::Px(2.0)),
+                                ..default()
+                            },
+                            BackgroundColor(player.color.mix(&Color::WHITE, 0.68).with_alpha(0.90)),
+                            BorderColor::all(Color::srgba(0.10, 0.16, 0.24, 0.34)),
+                            Name::new(format!(
+                                "PlayerHudBadgeP{}{}",
+                                player_id,
+                                player_hud_badge_name(kind)
+                            )),
+                            PlayerHudBadge { player_id, kind },
+                        ))
+                        .with_children(|badge| {
+                            badge.spawn((
+                                Text::new(""),
+                                TextFont {
+                                    font_size: 12.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.08, 0.12, 0.18)),
+                                TextLayout::new_with_justify(Justify::Center),
+                                Name::new(format!(
+                                    "PlayerHudBadgeTextP{}{}",
+                                    player_id,
+                                    player_hud_badge_name(kind)
+                                )),
+                                PlayerHudBadgeText { player_id, kind },
+                            ));
+                        });
+                }
             });
     }
-
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Px(HUD_PANEL_W),
-                height: Val::Px(HUD_PANEL_H),
-                border: UiRect::all(Val::Px(1.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.98, 0.99, 1.0, 0.97)),
-            BorderColor::all(Color::srgba(0.34, 0.42, 0.55, 0.42)),
-            ZIndex(40),
-            Visibility::Hidden,
-            Name::new("PlayerHudPanel"),
-            PlayerHudPanel,
-            HudEntity,
-        ))
-        .with_children(|panel| {
-            panel.spawn((
-                Text::new(""),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
-                ZIndex(41),
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(HUD_PANEL_INSET),
-                    top: Val::Px(14.0),
-                    width: Val::Px(HUD_PANEL_W - HUD_PANEL_INSET * 2.0),
-                    ..default()
-                },
-                Name::new("PlayerHudPanelText"),
-                PlayerHudPanelText,
-            ));
-
-            for action in HUD_SKILL_ACTIONS {
-                spawn_panel_button(
-                    panel,
-                    panel_skill_button_rect(action),
-                    skill_action_label(action),
-                    Some(action),
-                );
-            }
-
-            spawn_panel_button(panel, panel_roll_button_rect(), "Roll", None);
-        });
-}
-
-fn spawn_panel_button(
-    panel: &mut ChildSpawnerCommands<'_>,
-    rect: ScreenRect,
-    label: &str,
-    action: Option<SkillUiAction>,
-) {
-    let mut entity = panel.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(rect.x),
-            top: Val::Px(rect.y),
-            width: Val::Px(rect.w),
-            height: Val::Px(rect.h),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            padding: UiRect::horizontal(Val::Px(6.0)),
-            ..default()
-        },
-        BackgroundColor(skill_button_color(false, false)),
-        ZIndex(42),
-        Name::new(format!("PlayerHudButton{label}")),
-    ));
-    if let Some(action) = action {
-        entity.insert(HudSkillButton { action });
-    } else {
-        entity.insert(HudRollButton);
-    }
-
-    entity.with_children(|parent| {
-        let mut text_entity = parent.spawn((
-            Text::new(label),
-            TextFont {
-                font_size: 14.0,
-                ..default()
-            },
-            TextColor(Color::srgb(0.09, 0.16, 0.24)),
-            TextLayout::new_with_justify(Justify::Center),
-            Name::new(format!("PlayerHudButtonLabel{label}")),
-        ));
-        if action.is_none() {
-            text_entity.insert(HudRollButtonText);
-        }
-    });
 }
 
 fn update_player_hud_layout(
     windows: Query<&Window>,
     device_profile: Res<DeviceProfile>,
-    hud_state: Res<PlayerHudState>,
     player_roster: Res<PlayerRoster>,
     mut entry_query: PlayerHudEntryLayoutQuery,
-    mut panel_query: Query<(&mut Node, &mut Visibility), With<PlayerHudPanel>>,
+    mut board_roll_button_query: Query<
+        &mut Node,
+        (
+            With<BoardRollButton>,
+            Without<PlayerHudEntry>,
+            Without<SharedSkillButton>,
+            Without<EventLogToggle>,
+            Without<EventLogPanel>,
+        ),
+    >,
+    mut skill_button_query: Query<
+        (&SharedSkillButton, &mut Node),
+        (
+            Without<PlayerHudEntry>,
+            Without<BoardRollButton>,
+            Without<EventLogToggle>,
+            Without<EventLogPanel>,
+        ),
+    >,
+    mut event_log_toggle_query: Query<
+        &mut Node,
+        (
+            With<EventLogToggle>,
+            Without<EventLogPanel>,
+            Without<PlayerHudEntry>,
+            Without<BoardRollButton>,
+            Without<SharedSkillButton>,
+        ),
+    >,
+    mut event_log_panel_query: Query<
+        &mut Node,
+        (
+            With<EventLogPanel>,
+            Without<EventLogToggle>,
+            Without<PlayerHudEntry>,
+            Without<BoardRollButton>,
+            Without<SharedSkillButton>,
+        ),
+    >,
 ) {
     let Ok(window) = windows.single() else {
         return;
     };
     let window_width = window.width();
     let window_height = window.height();
+
+    for mut node in &mut board_roll_button_query {
+        apply_rect_to_node(
+            &mut node,
+            board_roll_button_rect(window_width, window_height, *device_profile),
+        );
+    }
+
+    for (button, mut node) in &mut skill_button_query {
+        let rect =
+            shared_skill_button_rect(window_width, window_height, *device_profile, button.action);
+        apply_rect_to_node(&mut node, rect);
+    }
+
+    for mut node in &mut event_log_toggle_query {
+        apply_rect_to_node(
+            &mut node,
+            event_log_toggle_rect(window_width, window_height, *device_profile),
+        );
+    }
+
+    for mut node in &mut event_log_panel_query {
+        apply_rect_to_node(
+            &mut node,
+            event_log_panel_rect(window_width, window_height, *device_profile),
+        );
+    }
 
     for (entry, mut node) in &mut entry_query {
         let Some(player) = player_profile(&player_roster, entry.player_id) else {
@@ -393,146 +791,84 @@ fn update_player_hud_layout(
         let rect = player_hud_entry_rect(window_width, window_height, *device_profile, player.seat);
         apply_rect_to_node(&mut node, rect);
     }
-
-    let active_player = hud_state.active_player.filter(|player_id| {
-        player_roster
-            .players
-            .iter()
-            .any(|player| player.state.player_id == *player_id)
-    });
-    for (mut node, mut visibility) in &mut panel_query {
-        if let Some(player_id) = active_player {
-            let Some(player) = player_profile(&player_roster, player_id) else {
-                *visibility = Visibility::Hidden;
-                continue;
-            };
-            let rect =
-                player_hud_panel_rect(window_width, window_height, *device_profile, player.seat);
-            apply_rect_to_node(&mut node, rect);
-            *visibility = Visibility::Visible;
-        } else {
-            *visibility = Visibility::Hidden;
-        }
-    }
 }
 
 fn update_hud_content(
-    mut hud_state: ResMut<PlayerHudState>,
     match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     skill_roster: Res<SkillRoster>,
     skill_target_state: Res<SkillTargetState>,
-    input_state: Res<TurnInputState>,
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
+    time: Res<Time>,
     piece_query: HudPieceQuery,
-    mut entry_style_query: PlayerHudEntryStyleQuery,
-    mut entry_text_query: PlayerHudEntryTextQuery,
-    mut panel_text_query: PlayerHudPanelTextQuery,
-    mut skill_button_query: HudSkillButtonQuery,
-    mut roll_button_query: HudRollButtonQuery,
-    mut roll_button_text_query: HudRollButtonTextQuery,
+    mut queries: HudContentQueries,
 ) {
-    if hud_state.active_player.is_some()
-        && !player_roster
-            .players
-            .iter()
-            .any(|player| Some(player.state.player_id) == hud_state.active_player)
-    {
-        hud_state.active_player = None;
-    }
-
-    for (entry, mut background, mut border) in &mut entry_style_query {
+    for (entry, mut background, mut border) in &mut queries.entry_style_query {
         let is_current = entry.player_id == turn_state.current_player;
-        let is_active = hud_state.active_player == Some(entry.player_id);
-        let color = player_roster
+        let _color = player_roster
             .players
             .iter()
             .find(|player| player.state.player_id == entry.player_id)
             .map(|player| player.color)
             .unwrap_or(Color::srgb(0.78, 0.82, 0.89));
-        *background = BackgroundColor(
-            color
-                .mix(&Color::WHITE, if is_current { 0.42 } else { 0.68 })
-                .with_alpha(if is_active { 0.98 } else { 0.90 }),
-        );
-        *border = BorderColor::all(if is_active {
-            Color::srgba(0.06, 0.10, 0.16, 0.94)
-        } else if is_current {
-            Color::srgba(0.12, 0.22, 0.32, 0.76)
+        *background = BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0));
+        *border = BorderColor::all(if is_current {
+            Color::srgba(0.12, 0.22, 0.32, 0.0)
         } else {
-            Color::srgba(0.10, 0.16, 0.24, 0.32)
+            Color::srgba(0.10, 0.16, 0.24, 0.0)
         });
     }
 
-    for (entry_text, mut text) in &mut entry_text_query {
-        let control = player_roster
+    for (badge, mut background, mut border) in &mut queries.badge_style_query {
+        let is_current = badge.player_id == turn_state.current_player;
+        let color = player_roster
             .players
             .iter()
-            .find(|player| player.state.player_id == entry_text.player_id)
-            .map(|player| control_label(player.state.control))
-            .unwrap_or("-");
-        let marker = if entry_text.player_id == turn_state.current_player {
-            "*"
-        } else {
-            ""
-        };
-        *text = Text::new(format!("P{}{}\n{}", entry_text.player_id, marker, control));
+            .find(|player| player.state.player_id == badge.player_id)
+            .map(|player| player.color)
+            .unwrap_or(Color::srgb(0.78, 0.82, 0.89));
+        *background = BackgroundColor(player_hud_badge_color(badge.kind, color, is_current));
+        *border = BorderColor::all(player_hud_badge_border_color(badge.kind, is_current));
     }
 
-    let active_player_id = hud_state.active_player;
-    let active_profile = active_player_id.and_then(|player_id| {
-        player_roster
+    for (badge_text, mut text, mut text_color) in &mut queries.badge_text_query {
+        let Some(player) = player_roster
             .players
             .iter()
-            .find(|player| player.state.player_id == player_id)
-    });
+            .find(|player| player.state.player_id == badge_text.player_id)
+        else {
+            *text = Text::new("");
+            continue;
+        };
+        let is_current = badge_text.player_id == turn_state.current_player;
+        *text = Text::new(player_hud_badge_text(badge_text.kind, player, is_current));
+        *text_color = TextColor(player_hud_badge_text_color(badge_text.kind, is_current));
+    }
 
-    let mut roll_ready = false;
+    let current_profile = player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == turn_state.current_player);
+    let current_human_turn = current_profile.is_some_and(|player| {
+        player.state.control == PlayerControl::Human && !match_result.finished
+    });
     let mut can_use_skill = false;
     let mut board_availability = SkillBoardAvailability::default();
-    if let Some(player) = active_profile {
-        let is_current_player = player.state.player_id == turn_state.current_player;
-        let is_human_turn = is_current_player && player.state.control == PlayerControl::Human;
-        roll_ready = is_human_turn
-            && matches!(game_phase.get(), GamePhase::AwaitDice)
-            && !match_result.finished;
+    if let Some(player) = current_profile {
         can_use_skill =
-            is_human_turn && can_use_skill_this_turn(&skill_roster, player.state.player_id);
-        if is_current_player {
-            board_availability = SkillBoardAvailability::from_query(
-                player.state.player_id,
-                player.state.team_id,
-                &piece_query,
-            );
-        }
+            current_human_turn && can_use_skill_this_turn(&skill_roster, player.state.player_id);
+        board_availability = SkillBoardAvailability::from_query(
+            player.state.player_id,
+            player.state.team_id,
+            &piece_query,
+        );
     }
 
-    for mut text in &mut panel_text_query {
-        *text = Text::new(active_profile.map_or_else(String::new, |player| {
-            format_player_panel_text(
-                player.state.player_id,
-                player.state.team_id,
-                player.state.control,
-                player.state.player_id == turn_state.current_player,
-                game_phase.get(),
-                player_skill_state(&skill_roster, player.state.player_id),
-                panel_prompt_text(
-                    player.state.player_id == turn_state.current_player,
-                    player.state.control,
-                    game_phase.get(),
-                    &input_state,
-                    &skill_target_state,
-                ),
-            )
-        }));
-    }
-
-    let active_skills =
-        active_player_id.and_then(|player_id| player_skill_state(&skill_roster, player_id));
-    for (button, mut background) in &mut skill_button_query {
-        let ready = active_skills
+    let current_skills = player_skill_state(&skill_roster, turn_state.current_player);
+    for (button, mut background, mut border) in &mut queries.skill_button_query {
+        let ready = current_skills
             .map(|skills| {
                 is_skill_button_ready(
                     button.action,
@@ -545,13 +881,163 @@ fn update_hud_content(
             })
             .unwrap_or(false);
         *background = BackgroundColor(skill_button_color(ready, can_use_skill));
+        *border = BorderColor::all(if ready {
+            Color::srgba(0.06, 0.10, 0.16, 0.72)
+        } else {
+            Color::srgba(0.16, 0.22, 0.32, 0.18)
+        });
     }
 
-    for mut background in &mut roll_button_query {
-        *background = BackgroundColor(skill_button_color(roll_ready, active_profile.is_some()));
+    for (button_icon, mut image_node) in &mut queries.skill_button_icon_query {
+        let ready = current_skills
+            .map(|skills| {
+                is_skill_button_ready(
+                    button_icon.action,
+                    skills,
+                    can_use_skill,
+                    game_phase.get(),
+                    match_config.mode,
+                    board_availability,
+                )
+            })
+            .unwrap_or(false);
+        image_node.color = skill_icon_color(ready);
     }
-    for mut text in &mut roll_button_text_query {
-        *text = Text::new(if roll_ready { "Roll" } else { "Roll locked" });
+
+    for (button_badge, mut background, mut border) in &mut queries.skill_button_badge_query {
+        let ready = current_skills
+            .map(|skills| {
+                is_skill_button_ready(
+                    button_badge.action,
+                    skills,
+                    can_use_skill,
+                    game_phase.get(),
+                    match_config.mode,
+                    board_availability,
+                )
+            })
+            .unwrap_or(false);
+        *background = BackgroundColor(skill_badge_color(ready));
+        *border = BorderColor::all(skill_badge_border_color(ready));
+    }
+
+    for (button_text, mut text, mut text_color) in &mut queries.skill_button_text_query {
+        let charges = current_skills
+            .map(|skills| skill_charge(button_text.action, skills))
+            .unwrap_or_default();
+        let ready = current_skills
+            .map(|skills| {
+                is_skill_button_ready(
+                    button_text.action,
+                    skills,
+                    can_use_skill,
+                    game_phase.get(),
+                    match_config.mode,
+                    board_availability,
+                )
+            })
+            .unwrap_or(false);
+        *text = Text::new(skill_badge_text(charges));
+        *text_color = TextColor(skill_badge_text_color(ready));
+    }
+
+    let roll_ready = current_human_turn && matches!(game_phase.get(), GamePhase::AwaitDice);
+    let cancel_target_ready = current_human_turn
+        && matches!(game_phase.get(), GamePhase::ResolveSkillEffect)
+        && skill_target_state.is_active();
+
+    for mut background in &mut queries.board_roll_button_query {
+        *background = BackgroundColor(skill_button_color(
+            roll_ready || cancel_target_ready,
+            current_human_turn,
+        ));
+    }
+    for mut text in &mut queries.board_roll_button_text_query {
+        *text = Text::new(roll_button_text(
+            roll_ready,
+            cancel_target_ready,
+            turn_state.current_roll,
+            time.elapsed_secs(),
+        ));
+    }
+}
+
+fn update_event_log_content(
+    mut event_log: ResMut<EventLogState>,
+    turn_state: Res<TurnState>,
+    skill_roster: Res<SkillRoster>,
+    mut panel_visibility_query: EventLogPanelVisibilityQuery,
+    mut toggle_text_query: EventLogToggleTextQuery,
+    mut scroll_area_query: EventLogScrollAreaQuery,
+    mut scrollbar_thumb_query: EventLogScrollbarThumbQuery,
+    mut log_text_query: EventLogTextQuery,
+) {
+    sync_event_log(&mut event_log, &turn_state, &skill_roster);
+    for mut visibility in &mut panel_visibility_query {
+        *visibility = if event_log.expanded {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    for mut text in &mut toggle_text_query {
+        *text = Text::new(if event_log.expanded { "Log -" } else { "Log +" });
+    }
+    let entries = format_event_log_entries(&event_log.entries);
+    for mut text in &mut log_text_query {
+        *text = Text::new(entries.clone());
+    }
+    for (mut scroll_position, computed) in &mut scroll_area_query {
+        let max_scroll_y = event_log_scroll_max_y(computed);
+        if event_log.scroll_to_bottom_requested {
+            scroll_position.y = max_scroll_y;
+        } else {
+            scroll_position.y = scroll_position.y.clamp(0.0, max_scroll_y);
+        }
+
+        for mut thumb_node in &mut scrollbar_thumb_query {
+            apply_event_log_scrollbar_thumb(&mut thumb_node, &scroll_position, computed);
+        }
+    }
+    event_log.scroll_to_bottom_requested = false;
+}
+
+fn handle_event_log_scroll(
+    mut mouse_wheel_reader: MessageReader<MouseWheel>,
+    windows: Query<&Window>,
+    device_profile: Res<DeviceProfile>,
+    event_log: Res<EventLogState>,
+    mut scroll_area_query: Query<
+        (&mut ScrollPosition, &Node, &ComputedNode),
+        With<EventLogScrollArea>,
+    >,
+) {
+    if !event_log.expanded {
+        mouse_wheel_reader.clear();
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    if !event_log_panel_rect(window.width(), window.height(), *device_profile).contains(cursor) {
+        return;
+    }
+    let Ok((mut scroll_position, node, computed)) = scroll_area_query.single_mut() else {
+        return;
+    };
+    let max_scroll_y = event_log_scroll_max_y(computed);
+    if max_scroll_y <= 0.0 || node.overflow.y != OverflowAxis::Scroll {
+        return;
+    }
+    for mouse_wheel in mouse_wheel_reader.read() {
+        let dy = match mouse_wheel.unit {
+            MouseScrollUnit::Line => mouse_wheel.y * EVENT_LOG_SCROLL_STEP,
+            MouseScrollUnit::Pixel => mouse_wheel.y,
+        };
+        scroll_position.y = (scroll_position.y - dy).clamp(0.0, max_scroll_y);
     }
 }
 
@@ -560,11 +1046,15 @@ fn handle_player_hud_click(
     windows: Query<&Window>,
     device_profile: Res<DeviceProfile>,
     overlay_state: Res<SoundSettingsOverlayState>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
+    skill_roster: Res<SkillRoster>,
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
     turn_state: Res<TurnState>,
+    piece_query: HudPieceQuery,
     mut hud_state: ResMut<PlayerHudState>,
+    mut event_log: ResMut<EventLogState>,
     mut skill_ui_request: ResMut<SkillUiRequest>,
     mut turn_ui_request: ResMut<TurnUiRequest>,
 ) {
@@ -578,8 +1068,76 @@ fn handle_player_hud_click(
         return;
     };
 
+    let log_toggle = event_log_toggle_rect(window.width(), window.height(), *device_profile);
+    if log_toggle.contains(cursor) {
+        event_log.expanded = !event_log.expanded;
+        if event_log.expanded {
+            event_log.scroll_to_bottom_requested = true;
+        }
+        hud_state.event_log_expanded = event_log.expanded;
+        return;
+    }
+    if event_log.expanded
+        && event_log_panel_rect(window.width(), window.height(), *device_profile).contains(cursor)
+    {
+        return;
+    }
+
+    let board_roll_rect = board_roll_button_rect(window.width(), window.height(), *device_profile);
+    if board_roll_rect.contains(cursor) {
+        let current_human_turn = player_roster.players.iter().any(|player| {
+            player.state.player_id == turn_state.current_player
+                && player.state.control == PlayerControl::Human
+        });
+        if current_human_turn && matches!(game_phase.get(), GamePhase::AwaitDice) {
+            turn_ui_request.queue_roll();
+        } else if current_human_turn && matches!(game_phase.get(), GamePhase::ResolveSkillEffect) {
+            skill_ui_request.queue_cancel_target();
+        }
+        return;
+    }
+
+    let current_profile = player_profile(&player_roster, turn_state.current_player);
+    let current_human_turn = current_profile.is_some_and(|player| {
+        player.state.control == PlayerControl::Human && !match_result.finished
+    });
+    let can_use_skill =
+        current_human_turn && can_use_skill_this_turn(&skill_roster, turn_state.current_player);
+    let board_availability = current_profile
+        .map(|player| {
+            SkillBoardAvailability::from_query(
+                player.state.player_id,
+                player.state.team_id,
+                &piece_query,
+            )
+        })
+        .unwrap_or_default();
+    let current_skills = player_skill_state(&skill_roster, turn_state.current_player);
+    for action in HUD_SKILL_ACTIONS {
+        let rect =
+            shared_skill_button_rect(window.width(), window.height(), *device_profile, action);
+        if !rect.contains(cursor) {
+            continue;
+        }
+        if current_skills
+            .map(|skills| {
+                is_skill_button_ready(
+                    action,
+                    skills,
+                    can_use_skill,
+                    game_phase.get(),
+                    match_config.mode,
+                    board_availability,
+                )
+            })
+            .unwrap_or(false)
+        {
+            skill_ui_request.queue(action);
+        }
+        return;
+    }
+
     for player in &player_roster.players {
-        let player_id = player.state.player_id;
         let rect = player_hud_entry_rect(
             window.width(),
             window.height(),
@@ -587,58 +1145,7 @@ fn handle_player_hud_click(
             player.seat,
         );
         if rect.contains(cursor) {
-            hud_state.active_player = if hud_state.active_player == Some(player_id) {
-                None
-            } else {
-                Some(player_id)
-            };
             return;
-        }
-    }
-
-    let Some(active_player_id) = hud_state.active_player else {
-        return;
-    };
-    let Some(player) = player_roster
-        .players
-        .iter()
-        .find(|player| player.state.player_id == active_player_id)
-    else {
-        return;
-    };
-    let panel_rect = player_hud_panel_rect(
-        window.width(),
-        window.height(),
-        *device_profile,
-        player.seat,
-    );
-    if !panel_rect.contains(cursor) {
-        hud_state.active_player = None;
-        return;
-    }
-
-    let is_actionable_turn = active_player_id == turn_state.current_player
-        && player.state.control == PlayerControl::Human;
-    if !is_actionable_turn {
-        return;
-    }
-
-    let Some(action) = player_hud_panel_action_at(cursor, panel_rect) else {
-        return;
-    };
-    match action {
-        PlayerHudPanelAction::Roll => {
-            if matches!(game_phase.get(), GamePhase::AwaitDice) {
-                turn_ui_request.queue_roll();
-            }
-        }
-        PlayerHudPanelAction::Skill(skill_action) => {
-            if matches!(
-                game_phase.get(),
-                GamePhase::AwaitDice | GamePhase::AwaitPieceSelect
-            ) {
-                skill_ui_request.queue(skill_action);
-            }
         }
     }
 }
@@ -650,6 +1157,27 @@ pub fn player_hud_point_is_interactive(
     player_roster: &PlayerRoster,
     hud_state: &PlayerHudState,
 ) -> bool {
+    if top_right_controls_rect(window.width()).contains(point)
+        || board_roll_button_rect(window.width(), window.height(), device_profile).contains(point)
+        || event_log_toggle_rect(window.width(), window.height(), device_profile).contains(point)
+    {
+        return true;
+    }
+
+    if hud_state.event_log_expanded
+        && event_log_panel_rect(window.width(), window.height(), device_profile).contains(point)
+    {
+        return true;
+    }
+
+    for action in HUD_SKILL_ACTIONS {
+        if shared_skill_button_rect(window.width(), window.height(), device_profile, action)
+            .contains(point)
+        {
+            return true;
+        }
+    }
+
     for player in &player_roster.players {
         let rect =
             player_hud_entry_rect(window.width(), window.height(), device_profile, player.seat);
@@ -658,12 +1186,7 @@ pub fn player_hud_point_is_interactive(
         }
     }
 
-    hud_state.active_player.is_some_and(|player_id| {
-        player_profile(player_roster, player_id).is_some_and(|player| {
-            player_hud_panel_rect(window.width(), window.height(), device_profile, player.seat)
-                .contains(point)
-        })
-    })
+    false
 }
 
 fn player_profile(player_roster: &PlayerRoster, player_id: u8) -> Option<&PlayerProfile> {
@@ -678,7 +1201,11 @@ fn gameplay_board_screen_rect(
     window_height: f32,
     device_profile: DeviceProfile,
 ) -> ScreenRect {
-    let size = (window_width.min(window_height) - device_profile.board_screen_padding()).max(240.0);
+    let size = gameplay_board_target_pixels(
+        window_width,
+        window_height,
+        device_profile.board_screen_padding(),
+    );
     ScreenRect {
         x: (window_width - size) * 0.5,
         y: (window_height - size) * 0.5,
@@ -694,72 +1221,59 @@ fn player_hud_entry_rect(
     seat: PlayerSeat,
 ) -> ScreenRect {
     let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
+    let hangar = seat_hangar_screen_rect(board, seat);
     let mut rect = match seat {
         PlayerSeat::Blue => ScreenRect {
-            x: board.x + HUD_EDGE_MARGIN,
-            y: board.y + HUD_EDGE_MARGIN,
+            x: hangar.x,
+            y: hangar.y - HUD_ENTRY_H,
             w: HUD_ENTRY_W,
             h: HUD_ENTRY_H,
         },
         PlayerSeat::Red => ScreenRect {
-            x: board.x + board.w - HUD_ENTRY_W - HUD_EDGE_MARGIN,
-            y: board.y + HUD_EDGE_MARGIN,
+            x: hangar.x + hangar.w - HUD_ENTRY_W,
+            y: hangar.y - HUD_ENTRY_H,
             w: HUD_ENTRY_W,
             h: HUD_ENTRY_H,
         },
         PlayerSeat::Green => ScreenRect {
-            x: board.x + HUD_EDGE_MARGIN,
-            y: board.y + board.h - HUD_ENTRY_H - HUD_EDGE_MARGIN,
+            x: hangar.x,
+            y: hangar.y + hangar.h,
             w: HUD_ENTRY_W,
             h: HUD_ENTRY_H,
         },
         PlayerSeat::Yellow => ScreenRect {
-            x: board.x + board.w - HUD_ENTRY_W - HUD_EDGE_MARGIN,
-            y: board.y + board.h - HUD_ENTRY_H - HUD_EDGE_MARGIN,
+            x: hangar.x + hangar.w - HUD_ENTRY_W,
+            y: hangar.y + hangar.h,
             w: HUD_ENTRY_W,
             h: HUD_ENTRY_H,
         },
     };
     rect = clamp_rect_to_window(rect, window_width, window_height);
 
-    let audio = top_right_audio_rect(window_width);
-    if seat == PlayerSeat::Red && rect.overlaps(audio) {
-        rect.y = (audio.y + audio.h + HUD_EDGE_MARGIN)
+    let top_right_controls = top_right_controls_rect(window_width);
+    if seat == PlayerSeat::Red && rect.overlaps(top_right_controls) {
+        rect.y = (top_right_controls.y + top_right_controls.h + HUD_EDGE_MARGIN)
             .min((window_height - rect.h - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN));
     }
     rect
 }
 
-fn player_hud_panel_rect(
-    window_width: f32,
-    window_height: f32,
-    device_profile: DeviceProfile,
-    seat: PlayerSeat,
-) -> ScreenRect {
-    let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
-    let left_outside = board.x - HUD_PANEL_W - HUD_PANEL_GAP;
-    let right_outside = board.x + board.w + HUD_PANEL_GAP;
-    let x = match seat {
-        PlayerSeat::Blue | PlayerSeat::Green if left_outside >= HUD_EDGE_MARGIN => left_outside,
-        PlayerSeat::Blue | PlayerSeat::Green => board.x + HUD_PANEL_GAP,
-        _ if right_outside + HUD_PANEL_W <= window_width - HUD_EDGE_MARGIN => right_outside,
-        _ => board.x + board.w - HUD_PANEL_W - HUD_PANEL_GAP,
-    };
-    let y = match seat {
-        PlayerSeat::Blue | PlayerSeat::Red => board.y + HUD_ENTRY_H + HUD_PANEL_GAP,
-        PlayerSeat::Green | PlayerSeat::Yellow => {
-            board.y + board.h - HUD_PANEL_H - HUD_ENTRY_H - HUD_PANEL_GAP
-        }
-    };
-    clamp_rect_to_window(
-        ScreenRect {
-            x,
-            y,
-            w: HUD_PANEL_W,
-            h: HUD_PANEL_H,
-        },
-        window_width,
-        window_height,
+fn seat_hangar_screen_rect(board: ScreenRect, seat: PlayerSeat) -> ScreenRect {
+    let center = world_to_board_screen(board, hangar_center_for_seat(seat));
+    let size = HANGAR_BACKGROUND_WORLD_SIZE * board.w / BOARD_WORLD_SIZE;
+    ScreenRect {
+        x: center.x - size * 0.5,
+        y: center.y - size * 0.5,
+        w: size,
+        h: size,
+    }
+}
+
+fn world_to_board_screen(board: ScreenRect, world_pos: Vec2) -> Vec2 {
+    let half = BOARD_WORLD_SIZE * 0.5;
+    Vec2::new(
+        board.x + board.w * ((world_pos.x + half) / BOARD_WORLD_SIZE),
+        board.y + board.h * ((half - world_pos.y) / BOARD_WORLD_SIZE),
     )
 }
 
@@ -773,13 +1287,99 @@ fn clamp_rect_to_window(rect: ScreenRect, window_width: f32, window_height: f32)
     }
 }
 
-fn top_right_audio_rect(window_width: f32) -> ScreenRect {
+fn top_right_controls_rect(window_width: f32) -> ScreenRect {
+    let (x, y, w, h) = global_settings_entry_screen_rect(window_width);
+    ScreenRect { x, y, w, h }
+}
+
+fn board_roll_button_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> ScreenRect {
+    let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
+    roll_button_rect_at(board, 0.5, 0.5)
+}
+
+fn roll_button_rect_at(board: ScreenRect, x_ratio: f32, y_ratio: f32) -> ScreenRect {
     ScreenRect {
-        x: (window_width - TOP_RIGHT_AUDIO_W - TOP_RIGHT_AUDIO_MARGIN).max(TOP_RIGHT_AUDIO_MARGIN),
-        y: TOP_RIGHT_AUDIO_MARGIN,
-        w: TOP_RIGHT_AUDIO_W,
-        h: TOP_RIGHT_AUDIO_H,
+        x: board.x + board.w * x_ratio - BOARD_ROLL_BUTTON_W * 0.5,
+        y: board.y + board.h * y_ratio - BOARD_ROLL_BUTTON_H * 0.5,
+        w: BOARD_ROLL_BUTTON_W,
+        h: BOARD_ROLL_BUTTON_H,
     }
+}
+
+fn shared_skill_bar_width() -> f32 {
+    SKILL_BUTTON_SIZE * HUD_SKILL_ACTIONS.len() as f32
+        + SKILL_BUTTON_GAP * HUD_SKILL_ACTIONS.len().saturating_sub(1) as f32
+}
+
+fn skill_action_index(action: SkillUiAction) -> usize {
+    HUD_SKILL_ACTIONS
+        .iter()
+        .position(|candidate| *candidate == action)
+        .unwrap_or_default()
+}
+
+fn shared_skill_button_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+    action: SkillUiAction,
+) -> ScreenRect {
+    let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
+    let total_width = shared_skill_bar_width();
+    let start_x = (board.x + (board.w - total_width) * 0.5).clamp(
+        HUD_EDGE_MARGIN,
+        (window_width - total_width - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+    );
+    let index = skill_action_index(action) as f32;
+    let y = (board.y + board.h + HUD_EDGE_MARGIN).clamp(
+        HUD_EDGE_MARGIN,
+        (window_height - SKILL_BUTTON_SIZE - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+    );
+    ScreenRect {
+        x: start_x + index * (SKILL_BUTTON_SIZE + SKILL_BUTTON_GAP),
+        y,
+        w: SKILL_BUTTON_SIZE,
+        h: SKILL_BUTTON_SIZE,
+    }
+}
+
+fn event_log_toggle_rect(
+    window_width: f32,
+    window_height: f32,
+    _device_profile: DeviceProfile,
+) -> ScreenRect {
+    clamp_rect_to_window(
+        ScreenRect {
+            x: HUD_EDGE_MARGIN,
+            y: HUD_EDGE_MARGIN,
+            w: EVENT_LOG_TOGGLE_W,
+            h: EVENT_LOG_TOGGLE_H,
+        },
+        window_width,
+        window_height,
+    )
+}
+
+fn event_log_panel_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> ScreenRect {
+    let toggle = event_log_toggle_rect(window_width, window_height, device_profile);
+    clamp_rect_to_window(
+        ScreenRect {
+            x: toggle.x,
+            y: toggle.y + toggle.h + EVENT_LOG_GAP,
+            w: EVENT_LOG_PANEL_W,
+            h: EVENT_LOG_PANEL_H,
+        },
+        window_width,
+        window_height,
+    )
 }
 
 fn apply_rect_to_node(node: &mut Node, rect: ScreenRect) {
@@ -789,164 +1389,245 @@ fn apply_rect_to_node(node: &mut Node, rect: ScreenRect) {
     node.height = Val::Px(rect.h);
 }
 
-fn panel_skill_button_rect(action: SkillUiAction) -> ScreenRect {
-    let index = HUD_SKILL_ACTIONS
-        .iter()
-        .position(|candidate| *candidate == action)
-        .unwrap_or_default() as f32;
-    ScreenRect {
-        x: HUD_PANEL_INSET,
-        y: HUD_SKILL_ROW_START + index * (HUD_SKILL_ROW_HEIGHT + HUD_SKILL_ROW_GAP),
-        w: HUD_PANEL_W - HUD_PANEL_INSET * 2.0,
-        h: HUD_SKILL_ROW_HEIGHT,
-    }
-}
-
-fn panel_roll_button_rect() -> ScreenRect {
-    ScreenRect {
-        x: HUD_PANEL_INSET,
-        y: HUD_ROLL_BUTTON_TOP,
-        w: HUD_PANEL_W - HUD_PANEL_INSET * 2.0,
-        h: HUD_ROLL_BUTTON_H,
-    }
-}
-
-fn player_hud_panel_action_at(
-    cursor: Vec2,
-    panel_rect: ScreenRect,
-) -> Option<PlayerHudPanelAction> {
-    let local = Vec2::new(cursor.x - panel_rect.x, cursor.y - panel_rect.y);
-    if panel_roll_button_rect().contains(local) {
-        return Some(PlayerHudPanelAction::Roll);
-    }
-
-    HUD_SKILL_ACTIONS.iter().find_map(|action| {
-        panel_skill_button_rect(*action)
-            .contains(local)
-            .then_some(PlayerHudPanelAction::Skill(*action))
-    })
-}
-
-fn control_label(control: PlayerControl) -> &'static str {
-    match control {
-        PlayerControl::Human => "Human",
-        PlayerControl::Ai => "AI",
-    }
-}
-
-fn skill_action_label(action: SkillUiAction) -> &'static str {
+fn skill_action_name(action: SkillUiAction) -> &'static str {
     match action {
         SkillUiAction::Dash => "Dash",
         SkillUiAction::Snipe => "Snipe",
         SkillUiAction::Swap => "Swap",
         SkillUiAction::Shield => "Shield",
-        SkillUiAction::DoubleDice => "Double",
+        SkillUiAction::DoubleDice => "DoubleDice",
     }
 }
 
-fn panel_prompt_text(
-    is_current_player: bool,
-    control: PlayerControl,
-    phase: &GamePhase,
-    input_state: &TurnInputState,
-    skill_target_state: &SkillTargetState,
-) -> String {
-    if !is_current_player {
-        return "Waiting".to_string();
-    }
-    if control == PlayerControl::Ai {
-        return "AI is playing".to_string();
-    }
-
-    let base = match phase {
-        GamePhase::AwaitDice => "Ready to roll or use a skill",
-        GamePhase::AwaitPieceSelect => "Choose a highlighted piece",
-        GamePhase::ResolveSkillEffect => skill_target_state
-            .prompt
-            .as_deref()
-            .unwrap_or("Choose a highlighted target"),
-        _ => "Resolving action",
-    };
-    match candidate_piece_hint(input_state, skill_target_state) {
-        Some(hint) => format!("{base}\n{hint}"),
-        None => base.to_string(),
+fn skill_icon_asset_path(action: SkillUiAction) -> &'static str {
+    match action {
+        SkillUiAction::Dash => "ui/skills/dash.png",
+        SkillUiAction::Snipe => "ui/skills/snipe.png",
+        SkillUiAction::Swap => "ui/skills/swap.png",
+        SkillUiAction::Shield => "ui/skills/shield.png",
+        SkillUiAction::DoubleDice => "ui/skills/double_dice.png",
     }
 }
 
-fn candidate_piece_hint(
-    input_state: &TurnInputState,
-    skill_target_state: &SkillTargetState,
-) -> Option<String> {
-    let candidates = if !skill_target_state.candidate_piece_ids().is_empty() {
-        skill_target_state.candidate_piece_ids()
+fn skill_badge_text(charges: u8) -> String {
+    if charges > 99 {
+        "99+".to_string()
     } else {
-        input_state.candidate_piece_ids()
-    };
-
-    if candidates.is_empty() {
-        return None;
+        charges.to_string()
     }
-
-    Some(format!(
-        "Pieces: {}",
-        candidates
-            .iter()
-            .map(|piece_id| format!("#{piece_id}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    ))
 }
 
-fn format_player_panel_text(
-    player_id: u8,
-    team_id: u8,
-    control: PlayerControl,
-    is_current_player: bool,
-    phase: &GamePhase,
-    skills: Option<&PlayerSkillState>,
-    prompt: String,
+fn skill_icon_color(ready: bool) -> Color {
+    if ready {
+        Color::WHITE
+    } else {
+        Color::srgba(0.50, 0.52, 0.56, 0.44)
+    }
+}
+
+fn skill_badge_color(ready: bool) -> Color {
+    if ready {
+        Color::srgba(0.96, 0.98, 1.0, 0.96)
+    } else {
+        Color::srgba(0.68, 0.71, 0.76, 0.70)
+    }
+}
+
+fn skill_badge_border_color(ready: bool) -> Color {
+    if ready {
+        Color::srgba(0.06, 0.10, 0.16, 0.76)
+    } else {
+        Color::srgba(0.16, 0.20, 0.26, 0.26)
+    }
+}
+
+fn skill_badge_text_color(ready: bool) -> Color {
+    if ready {
+        Color::srgb(0.05, 0.08, 0.12)
+    } else {
+        Color::srgba(0.10, 0.14, 0.20, 0.52)
+    }
+}
+
+fn skill_charge(action: SkillUiAction, skills: &PlayerSkillState) -> u8 {
+    match action {
+        SkillUiAction::Dash => skills.dash_charges,
+        SkillUiAction::Snipe => skills.snipe_charges,
+        SkillUiAction::Swap => skills.swap_charges,
+        SkillUiAction::Shield => skills.shield_charges,
+        SkillUiAction::DoubleDice => skills.double_dice_charges,
+    }
+}
+
+fn player_hud_badge_width(kind: PlayerHudBadgeKind) -> f32 {
+    match kind {
+        PlayerHudBadgeKind::Player => HUD_BADGE_PLAYER_W,
+        PlayerHudBadgeKind::Team => HUD_BADGE_TEAM_W,
+        PlayerHudBadgeKind::Turn => HUD_BADGE_TURN_W,
+    }
+}
+
+fn player_hud_badges_for_seat(_seat: PlayerSeat) -> [PlayerHudBadgeKind; 3] {
+    PLAYER_HUD_BADGES
+}
+
+fn player_hud_badges_total_width() -> f32 {
+    PLAYER_HUD_BADGES
+        .iter()
+        .map(|kind| player_hud_badge_width(*kind))
+        .sum::<f32>()
+        + HUD_BADGE_GAP * PLAYER_HUD_BADGES.len().saturating_sub(1) as f32
+}
+
+fn player_hud_badge_name(kind: PlayerHudBadgeKind) -> &'static str {
+    match kind {
+        PlayerHudBadgeKind::Player => "Player",
+        PlayerHudBadgeKind::Team => "Team",
+        PlayerHudBadgeKind::Turn => "Turn",
+    }
+}
+
+fn player_hud_badge_text(
+    kind: PlayerHudBadgeKind,
+    player: &PlayerProfile,
+    is_current: bool,
 ) -> String {
-    let turn_state = if is_current_player {
-        match (control, phase) {
-            (PlayerControl::Human, GamePhase::AwaitDice) => "Turn: ready",
-            (PlayerControl::Human, GamePhase::AwaitPieceSelect) => "Turn: choose piece",
-            (PlayerControl::Human, GamePhase::ResolveSkillEffect) => "Turn: choose target",
-            (PlayerControl::Human, _) => "Turn: resolving",
-            (PlayerControl::Ai, _) => "Turn: AI",
+    match kind {
+        PlayerHudBadgeKind::Player => format!("P{}", player.state.player_id),
+        PlayerHudBadgeKind::Team => format!("T{}", player.state.team_id),
+        PlayerHudBadgeKind::Turn => {
+            if is_current {
+                ">".to_string()
+            } else {
+                "-".to_string()
+            }
         }
-    } else {
-        "Turn: waiting"
-    };
-    let skill_summary = skills.map_or_else(
-        || "Skills: unavailable".to_string(),
-        |skills| {
-            let armed = match (skills.dash_armed, skills.double_dice_armed) {
-                (true, true) => " | Armed: Dash, Double",
-                (true, false) => " | Armed: Dash",
-                (false, true) => " | Armed: Double",
-                (false, false) => "",
-            };
-            format!(
-                "Skills: Dash {}  Snipe {}\nSwap {}  Shield {}  Double {}{}",
-                skills.dash_charges,
-                skills.snipe_charges,
-                skills.swap_charges,
-                skills.shield_charges,
-                skills.double_dice_charges,
-                armed
-            )
-        },
-    );
+    }
+}
 
-    format!(
-        "P{} {} | Team {}\n{}\n{}\n{}",
-        player_id,
-        control_label(control),
-        team_id,
-        turn_state,
-        skill_summary,
-        prompt
-    )
+fn player_hud_badge_color(
+    kind: PlayerHudBadgeKind,
+    player_color: Color,
+    is_current: bool,
+) -> Color {
+    match kind {
+        PlayerHudBadgeKind::Player => player_color
+            .mix(&Color::WHITE, if is_current { 0.36 } else { 0.62 })
+            .with_alpha(0.94),
+        PlayerHudBadgeKind::Team => {
+            Color::srgba(0.90, 0.94, 0.98, if is_current { 0.96 } else { 0.82 })
+        }
+        PlayerHudBadgeKind::Turn if is_current => Color::srgba(0.12, 0.18, 0.26, 0.92),
+        PlayerHudBadgeKind::Turn => Color::srgba(0.78, 0.82, 0.88, 0.54),
+    }
+}
+
+fn player_hud_badge_border_color(kind: PlayerHudBadgeKind, is_current: bool) -> Color {
+    match (kind, is_current) {
+        (PlayerHudBadgeKind::Turn, true) => Color::srgba(0.05, 0.08, 0.12, 0.92),
+        (_, true) => Color::srgba(0.08, 0.14, 0.22, 0.70),
+        _ => Color::srgba(0.10, 0.16, 0.24, 0.26),
+    }
+}
+
+fn player_hud_badge_text_color(kind: PlayerHudBadgeKind, is_current: bool) -> Color {
+    match (kind, is_current) {
+        (PlayerHudBadgeKind::Turn, true) => Color::WHITE,
+        (PlayerHudBadgeKind::Turn, false) => Color::srgba(0.10, 0.16, 0.24, 0.40),
+        _ => Color::srgb(0.07, 0.11, 0.17),
+    }
+}
+
+fn roll_button_text(
+    roll_ready: bool,
+    cancel_target_ready: bool,
+    current_roll: Option<u8>,
+    elapsed_secs: f32,
+) -> String {
+    if cancel_target_ready {
+        return "X".to_string();
+    }
+    if let Some(roll) = current_roll {
+        return roll.to_string();
+    }
+    if roll_ready {
+        return (((elapsed_secs * 10.0) as u8 % 6) + 1).to_string();
+    }
+    "-".to_string()
+}
+
+fn sync_event_log(
+    event_log: &mut EventLogState,
+    turn_state: &TurnState,
+    skill_roster: &SkillRoster,
+) {
+    if let Some(action) = turn_state.last_action.as_ref() {
+        let key = (turn_state.turn_index, action.clone());
+        if event_log.last_turn_action_key.as_ref() != Some(&key) {
+            push_event_log_entry(event_log, format!("T{}: {}", key.0, key.1));
+            event_log.last_turn_action_key = Some(key);
+        }
+    }
+    if let Some(action) = skill_roster.last_skill_action.as_ref() {
+        let key = (turn_state.turn_index, action.clone());
+        if event_log.last_skill_action_key.as_ref() != Some(&key) {
+            push_event_log_entry(event_log, format!("T{}: {}", key.0, key.1));
+            event_log.last_skill_action_key = Some(key);
+        }
+    }
+}
+
+fn push_event_log_entry(event_log: &mut EventLogState, entry: String) {
+    event_log.entries.push(entry);
+    prune_event_log_entries(event_log);
+}
+
+fn prune_event_log_entries(event_log: &mut EventLogState) {
+    let overflow = event_log
+        .entries
+        .len()
+        .saturating_sub(EVENT_LOG_MAX_ENTRIES);
+    if overflow > 0 {
+        event_log.entries.drain(0..overflow);
+    }
+}
+
+fn format_event_log_entries(entries: &[String]) -> String {
+    if entries.is_empty() {
+        "No events yet".to_string()
+    } else {
+        entries.join("\n")
+    }
+}
+
+fn event_log_scroll_max_y(computed: &ComputedNode) -> f32 {
+    let max_offset = (computed.content_size() - computed.size()) * computed.inverse_scale_factor();
+    max_offset.y.max(0.0)
+}
+
+fn apply_event_log_scrollbar_thumb(
+    thumb_node: &mut Node,
+    scroll_position: &ScrollPosition,
+    computed: &ComputedNode,
+) {
+    let visible_height = (computed.size().y * computed.inverse_scale_factor()).max(1.0);
+    let content_height = (computed.content_size().y * computed.inverse_scale_factor()).max(1.0);
+    let max_scroll_y = event_log_scroll_max_y(computed);
+    let thumb_height = if max_scroll_y <= 0.0 {
+        visible_height
+    } else {
+        (visible_height * (visible_height / content_height))
+            .clamp(EVENT_LOG_SCROLLBAR_MIN_THUMB_H, visible_height)
+    };
+    let travel = (visible_height - thumb_height).max(0.0);
+    let scroll_ratio = if max_scroll_y > 0.0 {
+        (scroll_position.y / max_scroll_y).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    thumb_node.top = Val::Px(travel * scroll_ratio);
+    thumb_node.height = Val::Px(thumb_height);
 }
 
 fn is_skill_button_ready(
@@ -965,6 +1646,7 @@ fn is_skill_button_ready(
             matches!(phase, GamePhase::AwaitPieceSelect)
                 && !skills.dash_armed
                 && skills.dash_charges > 0
+                && board_availability.active_self
         }
         SkillUiAction::Snipe => {
             matches!(phase, GamePhase::AwaitDice)
@@ -1241,25 +1923,57 @@ fn cleanup_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::rules::LaunchRule;
+    use crate::gameplay::ai::AiDifficulty;
+    use crate::gameplay::match_flow::{MatchSetup, build_match_rosters};
 
     fn test_profile(width: f32, height: f32) -> DeviceProfile {
         DeviceProfile::from_window_size(width, height)
     }
 
+    fn test_roster() -> PlayerRoster {
+        let setup = MatchSetup {
+            mode: GameMode::TwoVsTwo,
+            ai_difficulty: AiDifficulty::Normal,
+            fast_mode: false,
+            launch_rule: LaunchRule::SixOnly,
+            player_seats: PlayerSeat::ALL,
+            pieces_per_player: 2,
+            player_controls: [
+                PlayerControl::Human,
+                PlayerControl::Ai,
+                PlayerControl::Human,
+                PlayerControl::Ai,
+            ],
+        };
+        let (players, _) = build_match_rosters(&setup);
+        PlayerRoster::from_players(players)
+    }
+
     #[test]
-    fn player_hud_entries_follow_centered_board_corners() {
+    fn player_hud_entries_align_outside_hangar_edges() {
         let profile = test_profile(1280.0, 720.0);
         let board = gameplay_board_screen_rect(1280.0, 720.0, profile);
         let p1 = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Blue);
         let p2 = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Red);
         let p3 = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Green);
         let p4 = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Yellow);
+        let blue = seat_hangar_screen_rect(board, PlayerSeat::Blue);
+        let red = seat_hangar_screen_rect(board, PlayerSeat::Red);
+        let green = seat_hangar_screen_rect(board, PlayerSeat::Green);
+        let yellow = seat_hangar_screen_rect(board, PlayerSeat::Yellow);
 
-        assert!((p1.x - (board.x + HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
-        assert!((p1.y - (board.y + HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
-        assert!((p2.x + p2.w - (board.x + board.w - HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
-        assert!((p3.y + p3.h - (board.y + board.h - HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
-        assert!((p4.x + p4.w - (board.x + board.w - HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+        assert!((p1.x - blue.x).abs() < 0.001);
+        assert!((p1.y + p1.h - blue.y).abs() < 0.001);
+        assert!((p2.x + p2.w - (red.x + red.w)).abs() < 0.001);
+        assert!((p2.y + p2.h - red.y).abs() < 0.001);
+        assert!((p3.x - green.x).abs() < 0.001);
+        assert!((p3.y - (green.y + green.h)).abs() < 0.001);
+        assert!((p4.x + p4.w - (yellow.x + yellow.w)).abs() < 0.001);
+        assert!((p4.y - (yellow.y + yellow.h)).abs() < 0.001);
+        for (entry, hangar) in [(p1, blue), (p2, red), (p3, green), (p4, yellow)] {
+            assert!(!entry.overlaps(hangar));
+        }
     }
 
     #[test]
@@ -1267,59 +1981,367 @@ mod tests {
         let profile = test_profile(1280.0, 720.0);
         let board = gameplay_board_screen_rect(1280.0, 720.0, profile);
         let p1_red = player_hud_entry_rect(1280.0, 720.0, profile, PlayerSeat::Red);
+        let red = seat_hangar_screen_rect(board, PlayerSeat::Red);
 
-        assert!((p1_red.x + p1_red.w - (board.x + board.w - HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
-        assert!((p1_red.y - (board.y + HUD_EDGE_MARGIN)).abs() < f32::EPSILON);
+        assert!((p1_red.x + p1_red.w - (red.x + red.w)).abs() < 0.001);
+        assert!((p1_red.y + p1_red.h - red.y).abs() < 0.001);
+        assert!(!p1_red.overlaps(red));
     }
 
     #[test]
-    fn top_right_player_entry_does_not_cover_audio_entry() {
-        let profile = test_profile(360.0, 640.0);
-        let p2 = player_hud_entry_rect(360.0, 640.0, profile, PlayerSeat::Red);
-        let audio = top_right_audio_rect(360.0);
+    fn top_right_controls_match_global_settings_entry() {
+        for width in [360.0, 1280.0, 2560.0] {
+            let controls = top_right_controls_rect(width);
+            let (x, y, w, h) = global_settings_entry_screen_rect(width);
 
-        assert!(!p2.overlaps(audio));
-    }
-
-    #[test]
-    fn player_hud_panel_stays_inside_common_windows() {
-        for (width, height) in [(1280.0, 720.0), (2560.0, 1600.0), (640.0, 360.0)] {
-            let profile = test_profile(width, height);
-            for seat in PlayerSeat::ALL {
-                let panel = player_hud_panel_rect(width, height, profile, seat);
-                assert!(panel.x >= HUD_EDGE_MARGIN);
-                assert!(panel.y >= HUD_EDGE_MARGIN);
-                assert!(panel.x + panel.w <= width - HUD_EDGE_MARGIN || width < panel.w);
-                assert!(panel.y + panel.h <= height - HUD_EDGE_MARGIN || height < panel.h);
-            }
+            assert_eq!(controls.x, x);
+            assert_eq!(controls.y, y);
+            assert_eq!(controls.w, w);
+            assert_eq!(controls.h, h);
         }
     }
 
     #[test]
-    fn panel_hit_targets_map_to_expected_actions() {
-        let panel = ScreenRect {
-            x: 100.0,
-            y: 80.0,
-            w: HUD_PANEL_W,
-            h: HUD_PANEL_H,
-        };
-        let dash = panel_skill_button_rect(SkillUiAction::Dash);
-        let roll = panel_roll_button_rect();
+    fn gameplay_board_screen_rect_matches_camera_world_size_cap_on_large_screens() {
+        let profile = test_profile(2560.0, 1600.0);
+        let board = gameplay_board_screen_rect(2560.0, 1600.0, profile);
 
-        assert!(matches!(
-            player_hud_panel_action_at(
-                Vec2::new(panel.x + dash.x + 4.0, panel.y + dash.y + 4.0),
-                panel
-            ),
-            Some(PlayerHudPanelAction::Skill(SkillUiAction::Dash))
+        assert_eq!(board.w, BOARD_WORLD_SIZE);
+        assert_eq!(board.h, BOARD_WORLD_SIZE);
+        assert!((board.x - (2560.0 - BOARD_WORLD_SIZE) * 0.5).abs() < f32::EPSILON);
+        assert!((board.y - (1600.0 - BOARD_WORLD_SIZE) * 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn top_right_player_entry_does_not_cover_game_controls() {
+        for (width, height) in [(360.0, 640.0), (640.0, 360.0), (1280.0, 720.0)] {
+            let profile = test_profile(width, height);
+            let p2 = player_hud_entry_rect(width, height, profile, PlayerSeat::Red);
+            let controls = top_right_controls_rect(width);
+
+            assert!(!p2.overlaps(controls));
+        }
+    }
+
+    #[test]
+    fn player_status_cards_fit_within_hangar_width() {
+        assert!(HUD_ENTRY_W <= 150.0);
+        assert!(HUD_ENTRY_H <= 54.0);
+        assert!(player_hud_badges_total_width() <= HUD_ENTRY_W);
+        for kind in PLAYER_HUD_BADGES {
+            assert!(player_hud_badge_width(kind) >= 28.0);
+        }
+    }
+
+    #[test]
+    fn player_status_badges_keep_identity_order_for_each_seat() {
+        assert_eq!(
+            player_hud_badges_for_seat(PlayerSeat::Blue),
+            PLAYER_HUD_BADGES
+        );
+        assert_eq!(
+            player_hud_badges_for_seat(PlayerSeat::Green),
+            PLAYER_HUD_BADGES
+        );
+        assert_eq!(
+            player_hud_badges_for_seat(PlayerSeat::Red),
+            PLAYER_HUD_BADGES
+        );
+        assert_eq!(
+            player_hud_badges_for_seat(PlayerSeat::Yellow),
+            PLAYER_HUD_BADGES
+        );
+    }
+
+    #[test]
+    fn player_status_badges_format_independent_info() {
+        let roster = test_roster();
+        let player = roster
+            .players
+            .iter()
+            .find(|player| player.state.player_id == 1)
+            .unwrap();
+
+        assert_eq!(
+            player_hud_badge_text(PlayerHudBadgeKind::Player, player, true),
+            "P1"
+        );
+        assert_eq!(
+            player_hud_badge_text(PlayerHudBadgeKind::Team, player, true),
+            "T1"
+        );
+        assert_eq!(
+            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, true),
+            ">"
+        );
+        assert_eq!(
+            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, false),
+            "-"
+        );
+    }
+
+    #[test]
+    fn skill_buttons_use_icon_assets_and_badges_each_charge_independently() {
+        let skills = PlayerSkillState {
+            player_id: 1,
+            dash_charges: 1,
+            dash_armed: false,
+            snipe_charges: 2,
+            swap_charges: 0,
+            shield_charges: 1,
+            double_dice_charges: 3,
+            double_dice_armed: true,
+            skip_next_skill_turn: false,
+            skill_blocked_this_turn: false,
+        };
+
+        assert_eq!(
+            skill_icon_asset_path(SkillUiAction::Dash),
+            "ui/skills/dash.png"
+        );
+        assert_eq!(
+            skill_icon_asset_path(SkillUiAction::Snipe),
+            "ui/skills/snipe.png"
+        );
+        assert_eq!(
+            skill_icon_asset_path(SkillUiAction::Swap),
+            "ui/skills/swap.png"
+        );
+        assert_eq!(
+            skill_icon_asset_path(SkillUiAction::Shield),
+            "ui/skills/shield.png"
+        );
+        assert_eq!(
+            skill_icon_asset_path(SkillUiAction::DoubleDice),
+            "ui/skills/double_dice.png"
+        );
+        assert_eq!(
+            skill_badge_text(skill_charge(SkillUiAction::Dash, &skills)),
+            "1"
+        );
+        assert_eq!(
+            skill_badge_text(skill_charge(SkillUiAction::Snipe, &skills)),
+            "2"
+        );
+        assert_eq!(
+            skill_badge_text(skill_charge(SkillUiAction::Swap, &skills)),
+            "0"
+        );
+        assert_eq!(
+            skill_badge_text(skill_charge(SkillUiAction::Shield, &skills)),
+            "1"
+        );
+        assert_eq!(
+            skill_badge_text(skill_charge(SkillUiAction::DoubleDice, &skills)),
+            "3"
+        );
+        assert_eq!(skill_badge_text(120), "99+");
+    }
+
+    #[test]
+    fn skill_badge_is_circular() {
+        assert_eq!(SKILL_BADGE_W, SKILL_BADGE_H);
+    }
+
+    #[test]
+    fn dash_button_requires_an_active_piece_after_roll() {
+        let skills = PlayerSkillState {
+            player_id: 1,
+            dash_charges: 1,
+            dash_armed: false,
+            snipe_charges: 0,
+            swap_charges: 0,
+            shield_charges: 0,
+            double_dice_charges: 0,
+            double_dice_armed: false,
+            skip_next_skill_turn: false,
+            skill_blocked_this_turn: false,
+        };
+        let no_active_piece = SkillBoardAvailability {
+            active_self: false,
+            ..default()
+        };
+        let with_active_piece = SkillBoardAvailability {
+            active_self: true,
+            ..default()
+        };
+
+        assert!(!is_skill_button_ready(
+            SkillUiAction::Dash,
+            &skills,
+            true,
+            &GamePhase::AwaitPieceSelect,
+            GameMode::TwoVsTwo,
+            no_active_piece,
         ));
-        assert!(matches!(
-            player_hud_panel_action_at(
-                Vec2::new(panel.x + roll.x + 4.0, panel.y + roll.y + 4.0),
-                panel
-            ),
-            Some(PlayerHudPanelAction::Roll)
+        assert!(is_skill_button_ready(
+            SkillUiAction::Dash,
+            &skills,
+            true,
+            &GamePhase::AwaitPieceSelect,
+            GameMode::TwoVsTwo,
+            with_active_piece,
         ));
+    }
+
+    #[test]
+    fn board_roll_button_stays_inside_center_board_area() {
+        for (width, height) in [(1280.0, 720.0), (2560.0, 1600.0), (640.0, 360.0)] {
+            let profile = test_profile(width, height);
+            let board = gameplay_board_screen_rect(width, height, profile);
+            let roll = board_roll_button_rect(width, height, profile);
+
+            assert!(board.contains(Vec2::new(roll.x, roll.y)));
+            assert!(board.contains(Vec2::new(roll.x + roll.w, roll.y + roll.h)));
+            assert!((roll.x + roll.w * 0.5 - (board.x + board.w * 0.5)).abs() < f32::EPSILON);
+            assert!((roll.y + roll.h * 0.5 - (board.y + board.h * 0.5)).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn board_roll_button_is_square_and_large_enough_for_touch() {
+        let roll = board_roll_button_rect(1280.0, 720.0, test_profile(1280.0, 720.0));
+
+        assert_eq!(roll.w, BOARD_ROLL_BUTTON_W);
+        assert_eq!(roll.h, BOARD_ROLL_BUTTON_H);
+        assert_eq!(roll.w, roll.h);
+        assert!(roll.w >= 44.0);
+    }
+
+    #[test]
+    fn shared_skill_buttons_are_square_and_below_board_when_space_allows() {
+        let width = 720.0;
+        let height = 1280.0;
+        let profile = test_profile(width, height);
+        let board = gameplay_board_screen_rect(width, height, profile);
+        let first = shared_skill_button_rect(width, height, profile, SkillUiAction::Dash);
+        let last = shared_skill_button_rect(width, height, profile, SkillUiAction::DoubleDice);
+        let bar_center = (first.x + last.x + last.w) * 0.5;
+
+        assert_eq!(first.w, SKILL_BUTTON_SIZE);
+        assert_eq!(first.h, SKILL_BUTTON_SIZE);
+        assert_eq!(first.w, first.h);
+        assert!(first.y >= board.y + board.h);
+        assert!((bar_center - (board.x + board.w * 0.5)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn shared_skill_buttons_are_large_enough_for_touch() {
+        for action in HUD_SKILL_ACTIONS {
+            let rect = shared_skill_button_rect(1280.0, 720.0, test_profile(1280.0, 720.0), action);
+            assert!(rect.w >= 44.0);
+            assert!(rect.h >= 44.0);
+        }
+    }
+
+    #[test]
+    fn shared_roll_and_settings_entries_are_treated_as_interactive() {
+        let window = Window {
+            resolution: (1280, 720).into(),
+            ..default()
+        };
+        let profile = test_profile(1280.0, 720.0);
+        let roster = test_roster();
+        let mut hud_state = PlayerHudState::default();
+        let roll = board_roll_button_rect(window.width(), window.height(), profile);
+        let settings = top_right_controls_rect(window.width());
+        let skill = shared_skill_button_rect(
+            window.width(),
+            window.height(),
+            profile,
+            SkillUiAction::Shield,
+        );
+        let log = event_log_toggle_rect(window.width(), window.height(), profile);
+        let log_panel = event_log_panel_rect(window.width(), window.height(), profile);
+
+        assert!(player_hud_point_is_interactive(
+            Vec2::new(roll.x + 2.0, roll.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+        assert!(player_hud_point_is_interactive(
+            Vec2::new(settings.x + 2.0, settings.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+        assert!(player_hud_point_is_interactive(
+            Vec2::new(skill.x + 2.0, skill.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+        assert!(player_hud_point_is_interactive(
+            Vec2::new(log.x + 2.0, log.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+        assert!(!player_hud_point_is_interactive(
+            Vec2::new(log_panel.x + 2.0, log_panel.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+        hud_state.event_log_expanded = true;
+        assert!(player_hud_point_is_interactive(
+            Vec2::new(log_panel.x + 2.0, log_panel.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+    }
+
+    #[test]
+    fn roll_button_text_hides_old_roll_without_current_roll() {
+        assert_eq!(roll_button_text(false, false, None, 0.0), "-");
+        assert_eq!(roll_button_text(false, false, Some(5), 0.0), "5");
+        assert_eq!(roll_button_text(false, true, Some(5), 0.0), "X");
+        assert_ne!(roll_button_text(true, false, None, 0.0), "-");
+    }
+
+    #[test]
+    fn event_log_collects_turn_and_skill_actions() {
+        let mut event_log = EventLogState::default();
+        let mut turn_state = TurnState::opening_turn();
+        let mut skill_roster = SkillRoster::default();
+
+        turn_state.last_action = Some("P1 rolled 4".to_string());
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        assert_eq!(event_log.entries, vec!["T1: P1 rolled 4"]);
+
+        skill_roster.last_skill_action = Some("P1 used Shield".to_string());
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        assert_eq!(
+            event_log.entries,
+            vec!["T1: P1 rolled 4", "T1: P1 used Shield"]
+        );
+    }
+
+    #[test]
+    fn event_log_prunes_old_entries_above_limit() {
+        let mut event_log = EventLogState::default();
+
+        for index in 0..(EVENT_LOG_MAX_ENTRIES + 3) {
+            push_event_log_entry(&mut event_log, format!("entry {index}"));
+        }
+
+        assert_eq!(event_log.entries.len(), EVENT_LOG_MAX_ENTRIES);
+        assert_eq!(event_log.entries.first().unwrap(), "entry 3");
+        assert_eq!(
+            event_log.entries.last().unwrap(),
+            &format!("entry {}", EVENT_LOG_MAX_ENTRIES + 2)
+        );
     }
 
     #[test]
