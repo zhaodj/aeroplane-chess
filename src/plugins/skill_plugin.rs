@@ -941,7 +941,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         let note = execute_snipe(1, &mut query);
         let states = query
@@ -980,7 +980,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         let note = execute_snipe(1, &mut query);
         let states = query
@@ -1058,7 +1058,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
 
         assert_eq!(find_active_teammate_piece_for_swap(1, 1, &query), Some(4));
     }
@@ -1098,7 +1098,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         let note = execute_swap(1, 2, &mut query);
         let states = query
@@ -1172,7 +1172,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
 
         assert_eq!(collect_snipe_targets_for_full_query(1, 1, &query), vec![3]);
     }

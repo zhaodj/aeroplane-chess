@@ -1168,7 +1168,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1215,7 +1215,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1253,7 +1253,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1296,7 +1296,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1333,7 +1333,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1375,7 +1375,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1410,7 +1410,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         maybe_arm_dash_for_ai_after_roll(
             2,

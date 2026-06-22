@@ -739,7 +739,7 @@ mod tests {
 
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
         let mut skill_roster = build_skill_roster(&sample_roster());
         set_charges(&mut skill_roster, 2, 0, 0, 0, 0, 1);
 
@@ -764,7 +764,7 @@ mod tests {
 
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
         let mut skill_roster = build_skill_roster(&sample_roster());
         set_charges(&mut skill_roster, 2, 0, 0, 0, 1, 0);
 
@@ -802,7 +802,7 @@ mod tests {
 
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
         let mut skill_roster = build_skill_roster(&sample_roster());
         set_charges(&mut skill_roster, 2, 0, 0, 0, 1, 0);
 
@@ -852,7 +852,7 @@ mod tests {
 
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
 
         assert_eq!(collect_snipe_targets(1, 1, &query), vec![3, 2]);
     }
@@ -899,7 +899,7 @@ mod tests {
 
         let mut system_state: SystemState<Query<(&PieceId, &mut PieceState)>> =
             SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
 
         assert_eq!(collect_snipe_targets(1, 1, &query), vec![3]);
     }

@@ -278,11 +278,11 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
             parent.spawn((
                 Text::new("Settings"),
                 TextFont {
-                    font_size: 16.0,
+                    font_size: FontSize::Px(16.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Name::new("GlobalSoundEntryLabel"),
             ));
         });
@@ -325,7 +325,7 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                     panel.spawn((
                         Text::new("Settings"),
                         TextFont {
-                            font_size: 28.0,
+                            font_size: FontSize::Px(28.0),
                             ..default()
                         },
                         TextColor(Color::srgb(0.10, 0.16, 0.24)),
@@ -340,7 +340,7 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                     panel.spawn((
                         Text::new("Audio"),
                         TextFont {
-                            font_size: 18.0,
+                            font_size: FontSize::Px(18.0),
                             ..default()
                         },
                         TextColor(Color::srgb(0.16, 0.22, 0.32)),
@@ -391,7 +391,7 @@ fn spawn_global_sound_row(
     panel.spawn((
         Text::new(label),
         TextFont {
-            font_size: 20.0,
+            font_size: FontSize::Px(20.0),
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
@@ -419,11 +419,11 @@ fn spawn_global_sound_row(
     panel.spawn((
         Text::new("  0%"),
         TextFont {
-            font_size: 22.0,
+            font_size: FontSize::Px(22.0),
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
-        TextLayout::new_with_justify(Justify::Center),
+        TextLayout::justify(Justify::Center),
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(GLOBAL_SOUND_CONTROL_LEFT + GLOBAL_SOUND_BUTTON + 10.0),
@@ -475,11 +475,11 @@ fn spawn_global_sound_panel_button(
             button.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size,
+                    font_size: FontSize::Px(font_size),
                     ..default()
                 },
                 TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Name::new("GlobalSoundButtonLabel"),
             ));
         });
@@ -746,11 +746,11 @@ fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
     commands.spawn((
         Text::new("Aeroplane Chess"),
         TextFont {
-            font_size: 54.0,
+            font_size: FontSize::Px(54.0),
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
-        TextLayout::new_with_justify(Justify::Center),
+        TextLayout::justify(Justify::Center),
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(title_rect.y),
@@ -975,7 +975,7 @@ fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSetting
     commands.spawn((
         Text::new("Sound Settings"),
         TextFont {
-            font_size: 46.0,
+            font_size: FontSize::Px(46.0),
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
@@ -992,7 +992,7 @@ fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSetting
     commands.spawn((
         Text::new(sound_settings_content(&audio_settings)),
         TextFont {
-            font_size: 19.0,
+            font_size: FontSize::Px(19.0),
             ..default()
         },
         TextColor(Color::srgb(0.16, 0.22, 0.32)),
@@ -1053,7 +1053,7 @@ fn spawn_sound_row(
     commands.spawn((
         Text::new(label),
         TextFont {
-            font_size: 24.0,
+            font_size: FontSize::Px(24.0),
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
@@ -1083,11 +1083,11 @@ fn spawn_sound_row(
     commands.spawn((
         Text::new(format_volume_percent(value)),
         TextFont {
-            font_size: 26.0,
+            font_size: FontSize::Px(26.0),
             ..default()
         },
         TextColor(Color::srgb(0.10, 0.16, 0.24)),
-        TextLayout::new_with_justify(Justify::Center),
+        TextLayout::justify(Justify::Center),
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(top + 10.0),
@@ -1311,7 +1311,7 @@ fn spawn_section_label(commands: &mut Commands, layout: ModeSelectLayout, label:
     commands.spawn((
         Text::new(label),
         TextFont {
-            font_size: layout.font(20.0),
+            font_size: FontSize::Px(layout.font(20.0)),
             ..default()
         },
         TextColor(MODE_SELECT_BLACK),
@@ -1414,11 +1414,11 @@ fn spawn_box_with_label(
             let mut label_entity = parent.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size: fitted_box_font_size(font_size, rect.h),
+                    font_size: FontSize::Px(fitted_box_font_size(font_size, rect.h)),
                     ..default()
                 },
                 TextColor(MODE_SELECT_UNSELECTED_TEXT),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Name::new("MenuOptionLabel"),
             ));
             if action.is_some() {

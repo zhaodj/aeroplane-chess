@@ -562,11 +562,11 @@ fn spawn_lock_effect(commands: &mut Commands, target_world: Vec2) {
             lock.spawn((
                 Text2d::new("LOCK"),
                 TextFont {
-                    font_size: 11.0,
+                    font_size: FontSize::Px(11.0),
                     ..default()
                 },
                 TextColor(Color::srgba(1.0, 0.96, 0.92, 0.96)),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Transform::from_xyz(0.0, 0.0, 0.1),
                 Name::new("TargetLockLabel"),
             ));
@@ -665,11 +665,11 @@ fn spawn_floating_text_effect(commands: &mut Commands, target_world: Vec2, text:
     commands.spawn((
         Text2d::new(text),
         TextFont {
-            font_size: 22.0,
+            font_size: FontSize::Px(22.0),
             ..default()
         },
         TextColor(Color::srgba(0.08, 0.16, 0.24, 0.96)),
-        TextLayout::new_with_justify(Justify::Center),
+        TextLayout::justify(Justify::Center),
         Transform::from_xyz(target_world.x, target_world.y + 26.0, EFFECT_Z + 2.0),
         FloatingTextEffect {
             age: 0.0,
@@ -732,11 +732,11 @@ fn spawn_hud_skill_effect(
             effect.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size: if locked { 12.0 } else { 9.5 },
+                    font_size: FontSize::Px(if locked { 12.0 } else { 9.5 }),
                     ..default()
                 },
                 TextColor(Color::srgba(1.0, 1.0, 1.0, 0.94)),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Name::new("HudSkillEffectLabel"),
             ));
         });

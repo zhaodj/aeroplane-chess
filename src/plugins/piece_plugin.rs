@@ -326,11 +326,11 @@ fn spawn_pieces(
             commands.spawn((
                 Text2d::new(""),
                 TextFont {
-                    font_size: 10.5,
+                    font_size: FontSize::Px(10.5),
                     ..default()
                 },
                 TextColor(Color::WHITE),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Anchor::CENTER,
                 Transform::from_xyz(
                     hangar_slot.x + STACK_BADGE_OFFSET.x,
@@ -361,11 +361,11 @@ fn spawn_pieces(
             commands.spawn((
                 Text2d::new(""),
                 TextFont {
-                    font_size: 11.0,
+                    font_size: FontSize::Px(11.0),
                     ..default()
                 },
                 TextColor(Color::WHITE),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Anchor::CENTER,
                 Transform::from_xyz(
                     hangar_slot.x + SHIELD_BADGE_OFFSET.x,
@@ -397,11 +397,11 @@ fn spawn_pieces(
             commands.spawn((
                 Text2d::new(""),
                 TextFont {
-                    font_size: 10.5,
+                    font_size: FontSize::Px(10.5),
                     ..default()
                 },
                 TextColor(Color::WHITE),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Transform::from_xyz(
                     hangar_slot.x + EFFECT_BADGE_OFFSET.x,
                     hangar_slot.y + EFFECT_BADGE_OFFSET.y - 6.0,

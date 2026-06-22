@@ -544,7 +544,7 @@ fn update_player_dice_displays(
         } else {
             Visibility::Hidden
         };
-        if let Some(material) = materials.get_mut(&material_handle.0) {
+        if let Some(mut material) = materials.get_mut(&material_handle.0) {
             material.color = player_dice_display_color(display.layer, display_state.active());
         }
     }
@@ -560,7 +560,7 @@ fn update_player_dice_displays(
         } else {
             Visibility::Hidden
         };
-        if let Some(material) = materials.get_mut(&material_handle.0) {
+        if let Some(mut material) = materials.get_mut(&material_handle.0) {
             material.color = player_dice_pip_color(display_state.active());
         }
     }

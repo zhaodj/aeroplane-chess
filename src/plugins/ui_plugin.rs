@@ -447,11 +447,11 @@ fn spawn_hud(
             button.spawn((
                 Text::new("Roll"),
                 TextFont {
-                    font_size: 22.0,
+                    font_size: FontSize::Px(22.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.09, 0.16, 0.24)),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Name::new("BoardRollButtonLabel"),
                 BoardRollButtonText,
             ));
@@ -522,11 +522,11 @@ fn spawn_hud(
                         badge.spawn((
                             Text::new(skill_badge_text(0)),
                             TextFont {
-                                font_size: 11.0,
+                                font_size: FontSize::Px(11.0),
                                 ..default()
                             },
                             TextColor(skill_badge_text_color(false)),
-                            TextLayout::new_with_justify(Justify::Center),
+                            TextLayout::justify(Justify::Center),
                             Name::new(format!(
                                 "SharedSkillButtonBadgeText{}",
                                 skill_action_name(action)
@@ -562,11 +562,11 @@ fn spawn_hud(
             panel.spawn((
                 Text::new(""),
                 TextFont {
-                    font_size: 13.0,
+                    font_size: FontSize::Px(13.0),
                     ..default()
                 },
                 TextColor(event_notice_text_color(false)),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Node {
                     width: Val::Percent(100.0),
                     ..default()
@@ -599,11 +599,11 @@ fn spawn_hud(
             button.spawn((
                 Text::new("Log"),
                 TextFont {
-                    font_size: 16.0,
+                    font_size: FontSize::Px(16.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Name::new("EventLogToggleText"),
                 EventLogToggleText,
             ));
@@ -648,11 +648,11 @@ fn spawn_hud(
                     scroll_area.spawn((
                         Text::new("Match started"),
                         TextFont {
-                            font_size: 13.0,
+                            font_size: FontSize::Px(13.0),
                             ..default()
                         },
                         TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                        TextLayout::new_with_linebreak(LineBreak::WordOrCharacter),
+                        TextLayout::linebreak(LineBreak::WordOrCharacter),
                         Node {
                             width: Val::Percent(100.0),
                             ..default()
@@ -738,11 +738,11 @@ fn spawn_hud(
                             badge.spawn((
                                 Text::new(""),
                                 TextFont {
-                                    font_size: 12.0,
+                                    font_size: FontSize::Px(12.0),
                                     ..default()
                                 },
                                 TextColor(Color::srgb(0.08, 0.12, 0.18)),
-                                TextLayout::new_with_justify(Justify::Center),
+                                TextLayout::justify(Justify::Center),
                                 Name::new(format!(
                                     "PlayerHudBadgeTextP{}{}",
                                     player_id,
@@ -1998,11 +1998,11 @@ fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
                 panel.spawn((
                     Text::new("Match Result"),
                     TextFont {
-                        font_size: 34.0,
+                        font_size: FontSize::Px(34.0),
                         ..default()
                     },
                     TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                    TextLayout::new_with_justify(Justify::Center),
+                    TextLayout::justify(Justify::Center),
                     Node {
                         position_type: PositionType::Absolute,
                         top: Val::Px(28.0),
@@ -2015,11 +2015,11 @@ fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
                 panel.spawn((
                     Text::new(format!("Team {winner} wins\nPlayers: {winner_players}")),
                     TextFont {
-                        font_size: 24.0,
+                        font_size: FontSize::Px(24.0),
                         ..default()
                     },
                     TextColor(Color::srgb(0.14, 0.20, 0.30)),
-                    TextLayout::new_with_justify(Justify::Center),
+                    TextLayout::justify(Justify::Center),
                     Node {
                         position_type: PositionType::Absolute,
                         top: Val::Px(88.0),
@@ -2109,11 +2109,11 @@ fn spawn_result_button(
             button.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size: 18.0,
+                    font_size: FontSize::Px(18.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                TextLayout::new_with_justify(Justify::Center),
+                TextLayout::justify(Justify::Center),
                 Name::new(format!("ResultButtonLabel{label}")),
             ));
         });

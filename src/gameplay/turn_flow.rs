@@ -2247,7 +2247,7 @@ mod tests {
 
         while !match_result.finished && turns_taken < max_turns {
             turns_taken += 1;
-            let mut query = system_state.get_mut(&mut world);
+            let mut query = system_state.get_mut(&mut world).unwrap();
 
             if let Some((roll_value, action)) = choose_simulated_turn_action(
                 &turn_state,
@@ -2284,7 +2284,7 @@ mod tests {
         }
 
         if !match_result.finished {
-            let query = system_state.get_mut(&mut world);
+            let query = system_state.get_mut(&mut world).unwrap();
             panic!(
                 "simulated match did not finish in {max_turns} turns; mode={:?}, launch_rule={:?}, pieces={}, seats={:?}, current_player={}, last_action={:?}, pieces={:?}",
                 setup.mode,
@@ -2741,7 +2741,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         apply_action(
             &PlannedAction::Launch {
@@ -2790,7 +2790,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         apply_jump_effect(
@@ -2862,7 +2862,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
         let action = PlannedAction::Move {
             piece_id: 1,
@@ -2945,7 +2945,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         apply_jump_effect(
@@ -3043,7 +3043,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         apply_jump_effect(
@@ -3274,7 +3274,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         execute_action(
             PlannedAction::Move {
@@ -3336,7 +3336,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         apply_jump_effect(
@@ -3387,7 +3387,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         apply_jump_effect(
@@ -3451,7 +3451,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
 
         let actions = collect_actions(
             1,
@@ -3503,7 +3503,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
 
         assert_eq!(
             collect_actions(
@@ -3548,7 +3548,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let query = system_state.get_mut(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
 
         let six_only_actions = collect_actions(
             1,
@@ -3666,7 +3666,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         apply_team_stack(
@@ -3750,7 +3750,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         clear_stack_from_origin(
             &PlannedAction::Move {
@@ -3833,7 +3833,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         let attacker_landed = resolve_collision(
@@ -3952,7 +3952,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         let attacker_landed = resolve_collision(
@@ -4064,7 +4064,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         let attacker_landed = resolve_collision(
@@ -4166,7 +4166,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         resolve_collision(
@@ -4248,7 +4248,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
 
         resolve_collision(
@@ -4320,7 +4320,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         let before = skill_roster
             .players
@@ -4400,7 +4400,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut final_progress = 2;
 
         let outcome = apply_event_kind_effect(
@@ -4468,7 +4468,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
         let mut piece_effect_notice = None;
 
@@ -4560,7 +4560,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
 
         execute_action(
             PlannedAction::Move {
@@ -4643,7 +4643,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
         let mut piece_effect_notice = None;
 
@@ -4701,7 +4701,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut final_progress = 2;
 
         let note = apply_event_kind_effect(
@@ -4763,7 +4763,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut final_progress = start_progress;
         let mut notes = Vec::new();
 
@@ -4850,7 +4850,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut final_progress = p1_start_progress;
         let mut notes = Vec::new();
 
@@ -4964,7 +4964,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut final_progress = p1_start_progress;
         let mut notes = Vec::new();
 
@@ -5078,7 +5078,7 @@ mod tests {
         let mut system_state: SystemState<
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
         let mut final_progress = 3;
 
         let note = apply_event_kind_effect(
