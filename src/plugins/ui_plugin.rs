@@ -11,11 +11,12 @@ use crate::gameplay::match_flow::{
 };
 use crate::gameplay::skill_flow::{
     PlayerSkillState, SkillRoster, can_use_skill_this_turn, is_active_teammate_piece,
-    is_current_player_active_piece, is_legal_shield_target, is_legal_snipe_target,
-    player_skill_state,
+    is_current_player_active_piece, is_current_player_dash_move_piece, is_legal_shield_target,
+    is_legal_snipe_target, player_skill_state,
 };
 use crate::gameplay::turn_flow::TurnState;
 use crate::platform::{DeviceProfile, PointerInputState};
+use crate::plugins::effects_plugin::EffectRevealDelays;
 use crate::plugins::menu_plugin::{SoundSettingsOverlayState, global_settings_entry_screen_rect};
 use crate::plugins::piece_plugin::PieceId;
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
@@ -37,6 +38,7 @@ impl Plugin for UiPlugin {
                     update_player_hud_layout,
                     update_hud_content,
                     update_event_log_content,
+                    update_event_notice_content,
                 )
                     .chain()
                     .run_if(in_state(AppState::InGame)),
@@ -117,6 +119,12 @@ struct BoardRollButton;
 struct BoardRollButtonText;
 
 #[derive(Component)]
+struct EventNoticePanel;
+
+#[derive(Component)]
+struct EventNoticeText;
+
+#[derive(Component)]
 struct EventLogToggle;
 
 #[derive(Component)]
@@ -144,8 +152,8 @@ struct EventLogState {
     expanded: bool,
     scroll_to_bottom_requested: bool,
     entries: Vec<String>,
-    last_turn_action_key: Option<(u32, String)>,
-    last_skill_action_key: Option<(u32, String)>,
+    last_turn_action_key: Option<u64>,
+    last_skill_action_key: Option<u64>,
 }
 
 type HudPieceQuery<'w, 's> = Query<'w, 's, (&'static PieceId, &'static PieceState)>;
@@ -339,11 +347,11 @@ const PLAYER_HUD_BADGES: [PlayerHudBadgeKind; 3] = [
 ];
 
 #[derive(Clone, Copy, Debug)]
-struct ScreenRect {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+pub(crate) struct ScreenRect {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) w: f32,
+    pub(crate) h: f32,
 }
 
 impl ScreenRect {
@@ -375,6 +383,7 @@ impl ScreenRect {
 struct SkillBoardAvailability {
     shield_target: bool,
     snipe_target: bool,
+    dash_move_target: bool,
     active_self: bool,
     active_teammate: bool,
 }
@@ -390,6 +399,8 @@ impl SkillBoardAvailability {
             availability.shield_target |= is_legal_shield_target(current_player, piece_state);
             availability.snipe_target |=
                 is_legal_snipe_target(current_player, current_team, piece_state);
+            availability.dash_move_target |=
+                is_current_player_dash_move_piece(current_player, piece_state);
             availability.active_self |= is_current_player_active_piece(current_player, piece_state);
             availability.active_teammate |=
                 is_active_teammate_piece(current_player, current_team, piece_state);
@@ -525,6 +536,45 @@ fn spawn_hud(
                     });
             });
     }
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(shared_skill_bar_width()),
+                height: Val::Px(SKILL_BUTTON_SIZE),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::horizontal(Val::Px(10.0)),
+                ..default()
+            },
+            BackgroundColor(event_notice_panel_color(false)),
+            BorderColor::all(event_notice_border_color(false)),
+            Visibility::Hidden,
+            ZIndex(43),
+            Name::new("EventNoticePanel"),
+            EventNoticePanel,
+            HudEntity,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(event_notice_text_color(false)),
+                TextLayout::new_with_justify(Justify::Center),
+                Node {
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+                Name::new("EventNoticeText"),
+                EventNoticeText,
+            ));
+        });
 
     commands
         .spawn((
@@ -719,6 +769,7 @@ fn update_player_hud_layout(
             Without<SharedSkillButton>,
             Without<EventLogToggle>,
             Without<EventLogPanel>,
+            Without<EventNoticePanel>,
         ),
     >,
     mut skill_button_query: Query<
@@ -728,6 +779,18 @@ fn update_player_hud_layout(
             Without<BoardRollButton>,
             Without<EventLogToggle>,
             Without<EventLogPanel>,
+            Without<EventNoticePanel>,
+        ),
+    >,
+    mut event_notice_panel_query: Query<
+        &mut Node,
+        (
+            With<EventNoticePanel>,
+            Without<PlayerHudEntry>,
+            Without<BoardRollButton>,
+            Without<SharedSkillButton>,
+            Without<EventLogToggle>,
+            Without<EventLogPanel>,
         ),
     >,
     mut event_log_toggle_query: Query<
@@ -735,6 +798,7 @@ fn update_player_hud_layout(
         (
             With<EventLogToggle>,
             Without<EventLogPanel>,
+            Without<EventNoticePanel>,
             Without<PlayerHudEntry>,
             Without<BoardRollButton>,
             Without<SharedSkillButton>,
@@ -745,6 +809,7 @@ fn update_player_hud_layout(
         (
             With<EventLogPanel>,
             Without<EventLogToggle>,
+            Without<EventNoticePanel>,
             Without<PlayerHudEntry>,
             Without<BoardRollButton>,
             Without<SharedSkillButton>,
@@ -768,6 +833,13 @@ fn update_player_hud_layout(
         let rect =
             shared_skill_button_rect(window_width, window_height, *device_profile, button.action);
         apply_rect_to_node(&mut node, rect);
+    }
+
+    for mut node in &mut event_notice_panel_query {
+        apply_rect_to_node(
+            &mut node,
+            event_notice_panel_rect(window_width, window_height, *device_profile),
+        );
     }
 
     for mut node in &mut event_log_toggle_query {
@@ -801,6 +873,7 @@ fn update_hud_content(
     turn_state: Res<TurnState>,
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
+    reveal_delays: Res<EffectRevealDelays>,
     time: Res<Time>,
     piece_query: HudPieceQuery,
     mut queries: HudContentQueries,
@@ -877,7 +950,9 @@ fn update_hud_content(
                     game_phase.get(),
                     match_config.mode,
                     board_availability,
-                )
+                ) && reveal_delays
+                    .visible_skill_charge(button.action, skill_charge(button.action, skills))
+                    > 0
             })
             .unwrap_or(false);
         *background = BackgroundColor(skill_button_color(ready, can_use_skill));
@@ -898,7 +973,10 @@ fn update_hud_content(
                     game_phase.get(),
                     match_config.mode,
                     board_availability,
-                )
+                ) && reveal_delays.visible_skill_charge(
+                    button_icon.action,
+                    skill_charge(button_icon.action, skills),
+                ) > 0
             })
             .unwrap_or(false);
         image_node.color = skill_icon_color(ready);
@@ -914,7 +992,10 @@ fn update_hud_content(
                     game_phase.get(),
                     match_config.mode,
                     board_availability,
-                )
+                ) && reveal_delays.visible_skill_charge(
+                    button_badge.action,
+                    skill_charge(button_badge.action, skills),
+                ) > 0
             })
             .unwrap_or(false);
         *background = BackgroundColor(skill_badge_color(ready));
@@ -923,7 +1004,12 @@ fn update_hud_content(
 
     for (button_text, mut text, mut text_color) in &mut queries.skill_button_text_query {
         let charges = current_skills
-            .map(|skills| skill_charge(button_text.action, skills))
+            .map(|skills| {
+                reveal_delays.visible_skill_charge(
+                    button_text.action,
+                    skill_charge(button_text.action, skills),
+                )
+            })
             .unwrap_or_default();
         let ready = current_skills
             .map(|skills| {
@@ -934,7 +1020,7 @@ fn update_hud_content(
                     game_phase.get(),
                     match_config.mode,
                     board_availability,
-                )
+                ) && charges > 0
             })
             .unwrap_or(false);
         *text = Text::new(skill_badge_text(charges));
@@ -1000,6 +1086,36 @@ fn update_event_log_content(
         }
     }
     event_log.scroll_to_bottom_requested = false;
+}
+
+fn update_event_notice_content(
+    turn_state: Res<TurnState>,
+    mut panel_query: Query<
+        (&mut Visibility, &mut BackgroundColor, &mut BorderColor),
+        With<EventNoticePanel>,
+    >,
+    mut text_query: Query<(&mut Text, &mut TextColor), With<EventNoticeText>>,
+) {
+    let notice = turn_state
+        .last_action
+        .as_deref()
+        .and_then(event_notice_text_from_action);
+    let active = notice.is_some();
+
+    for (mut visibility, mut background, mut border) in &mut panel_query {
+        *visibility = if active {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        *background = BackgroundColor(event_notice_panel_color(active));
+        *border = BorderColor::all(event_notice_border_color(active));
+    }
+
+    for (mut text, mut text_color) in &mut text_query {
+        *text = Text::new(notice.clone().unwrap_or_default());
+        *text_color = TextColor(event_notice_text_color(active));
+    }
 }
 
 fn handle_event_log_scroll(
@@ -1322,7 +1438,7 @@ fn skill_action_index(action: SkillUiAction) -> usize {
         .unwrap_or_default()
 }
 
-fn shared_skill_button_rect(
+pub(crate) fn shared_skill_button_rect(
     window_width: f32,
     window_height: f32,
     device_profile: DeviceProfile,
@@ -1343,6 +1459,29 @@ fn shared_skill_button_rect(
         x: start_x + index * (SKILL_BUTTON_SIZE + SKILL_BUTTON_GAP),
         y,
         w: SKILL_BUTTON_SIZE,
+        h: SKILL_BUTTON_SIZE,
+    }
+}
+
+fn event_notice_panel_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> ScreenRect {
+    let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
+    let width = shared_skill_bar_width();
+    let x = (board.x + (board.w - width) * 0.5).clamp(
+        HUD_EDGE_MARGIN,
+        (window_width - width - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+    );
+    let y = (board.y - HUD_EDGE_MARGIN - SKILL_BUTTON_SIZE).clamp(
+        HUD_EDGE_MARGIN,
+        (window_height - SKILL_BUTTON_SIZE - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+    );
+    ScreenRect {
+        x,
+        y,
+        w: width,
         h: SKILL_BUTTON_SIZE,
     }
 }
@@ -1421,7 +1560,7 @@ fn skill_icon_color(ready: bool) -> Color {
     if ready {
         Color::WHITE
     } else {
-        Color::srgba(0.50, 0.52, 0.56, 0.44)
+        Color::srgba(0.64, 0.67, 0.72, 0.74)
     }
 }
 
@@ -1429,7 +1568,7 @@ fn skill_badge_color(ready: bool) -> Color {
     if ready {
         Color::srgba(0.96, 0.98, 1.0, 0.96)
     } else {
-        Color::srgba(0.68, 0.71, 0.76, 0.70)
+        Color::srgba(0.78, 0.81, 0.86, 0.86)
     }
 }
 
@@ -1437,7 +1576,7 @@ fn skill_badge_border_color(ready: bool) -> Color {
     if ready {
         Color::srgba(0.06, 0.10, 0.16, 0.76)
     } else {
-        Color::srgba(0.16, 0.20, 0.26, 0.26)
+        Color::srgba(0.18, 0.22, 0.30, 0.44)
     }
 }
 
@@ -1445,7 +1584,7 @@ fn skill_badge_text_color(ready: bool) -> Color {
     if ready {
         Color::srgb(0.05, 0.08, 0.12)
     } else {
-        Color::srgba(0.10, 0.14, 0.20, 0.52)
+        Color::srgba(0.12, 0.16, 0.23, 0.76)
     }
 }
 
@@ -1467,8 +1606,15 @@ fn player_hud_badge_width(kind: PlayerHudBadgeKind) -> f32 {
     }
 }
 
-fn player_hud_badges_for_seat(_seat: PlayerSeat) -> [PlayerHudBadgeKind; 3] {
-    PLAYER_HUD_BADGES
+fn player_hud_badges_for_seat(seat: PlayerSeat) -> [PlayerHudBadgeKind; 3] {
+    match seat {
+        PlayerSeat::Blue | PlayerSeat::Green => PLAYER_HUD_BADGES,
+        PlayerSeat::Red | PlayerSeat::Yellow => [
+            PlayerHudBadgeKind::Turn,
+            PlayerHudBadgeKind::Team,
+            PlayerHudBadgeKind::Player,
+        ],
+    }
 }
 
 fn player_hud_badges_total_width() -> f32 {
@@ -1556,25 +1702,128 @@ fn roll_button_text(
     "-".to_string()
 }
 
+fn event_notice_text_from_action(action: &str) -> Option<String> {
+    let mut notice = None;
+    for segment in action.split(';').flat_map(|part| part.split(", ")) {
+        if let Some(event_note) = extract_event_note(segment.trim()) {
+            notice = Some(format_event_notice(event_note));
+        }
+    }
+    notice
+}
+
+fn extract_event_note(segment: &str) -> Option<&str> {
+    if let Some(note) = segment.strip_prefix("pre-jump event tile ") {
+        let (_, note) = note.split_once(": ")?;
+        return note.starts_with("event ").then_some(note);
+    }
+
+    if segment.starts_with("event ") {
+        return Some(segment);
+    }
+
+    segment
+        .find(": event ")
+        .map(|index| &segment[index + 2..])
+        .filter(|note| note.starts_with("event "))
+}
+
+fn format_event_notice(event_note: &str) -> String {
+    if event_note == "event advance +2" {
+        return "Event: Advance +2\nMoved forward 2 spaces.".to_string();
+    }
+
+    if let Some(detail) = event_note.strip_prefix("event GainShield: gained shield ") {
+        let shield = detail.trim().trim_start_matches('(').trim_end_matches(')');
+        return format!("Event: Shield +1\nCurrent shield: {shield}");
+    }
+
+    if let Some(skill) = event_note
+        .strip_prefix("event GainSkillCharge: gained 1 ")
+        .and_then(|detail| detail.strip_suffix(" charge"))
+    {
+        return format!("Event: Skill charge\n{skill} +1");
+    }
+
+    if let Some(player) =
+        event_note.strip_prefix("event DisableNextSkill: next skill turn disabled for ")
+    {
+        return format!("Event: Skill jam\n{player} cannot use skills next turn.");
+    }
+
+    if let Some(piece_id) =
+        event_note.strip_prefix("event RemoveEnemyShield: removed shield from piece #")
+    {
+        return format!("Event: Shield break\nPiece #{piece_id} loses 1 shield.");
+    }
+
+    match event_note {
+        "event fizzled: could not disable next skill turn" => {
+            "Event fizzled\nNo skill turn could be disabled.".to_string()
+        }
+        "event fizzled: no enemy shield to remove" => {
+            "Event fizzled\nNo enemy shield to remove.".to_string()
+        }
+        "event failed: selected enemy shield target disappeared" => {
+            "Event failed\nTarget disappeared.".to_string()
+        }
+        _ => format!(
+            "Event\n{}",
+            event_note.strip_prefix("event ").unwrap_or(event_note)
+        ),
+    }
+}
+
 fn sync_event_log(
     event_log: &mut EventLogState,
     turn_state: &TurnState,
     skill_roster: &SkillRoster,
 ) {
     if let Some(action) = turn_state.last_action.as_ref() {
-        let key = (turn_state.turn_index, action.clone());
+        let key = turn_state.last_action_serial;
         if event_log.last_turn_action_key.as_ref() != Some(&key) {
-            push_event_log_entry(event_log, format!("T{}: {}", key.0, key.1));
+            push_event_log_entry(
+                event_log,
+                format_event_log_entry(
+                    turn_state.last_action_turn_index,
+                    turn_state.last_action_player_id,
+                    action,
+                ),
+            );
             event_log.last_turn_action_key = Some(key);
         }
     }
     if let Some(action) = skill_roster.last_skill_action.as_ref() {
-        let key = (turn_state.turn_index, action.clone());
+        let key = skill_roster.last_skill_action_serial;
         if event_log.last_skill_action_key.as_ref() != Some(&key) {
-            push_event_log_entry(event_log, format!("T{}: {}", key.0, key.1));
+            push_event_log_entry(
+                event_log,
+                format_event_log_entry(
+                    skill_roster.last_skill_action_turn_index,
+                    skill_roster.last_skill_action_player_id,
+                    action,
+                ),
+            );
             event_log.last_skill_action_key = Some(key);
         }
     }
+}
+
+fn format_event_log_entry(turn_index: u32, player_id: Option<u8>, action: &str) -> String {
+    let Some(player_id) = player_id else {
+        return format!("T{}: {}", turn_index, action);
+    };
+    format!(
+        "T{} P{}: {}",
+        turn_index,
+        player_id,
+        strip_player_prefix(action, player_id)
+    )
+}
+
+fn strip_player_prefix(action: &str, player_id: u8) -> &str {
+    let prefix = format!("P{player_id} ");
+    action.strip_prefix(&prefix).unwrap_or(action)
 }
 
 fn push_event_log_entry(event_log: &mut EventLogState, entry: String) {
@@ -1646,7 +1895,7 @@ fn is_skill_button_ready(
             matches!(phase, GamePhase::AwaitPieceSelect)
                 && !skills.dash_armed
                 && skills.dash_charges > 0
-                && board_availability.active_self
+                && board_availability.dash_move_target
         }
         SkillUiAction::Snipe => {
             matches!(phase, GamePhase::AwaitDice)
@@ -1677,9 +1926,33 @@ fn skill_button_color(ready: bool, available_context: bool) -> Color {
     if ready {
         Color::srgba(0.45, 0.70, 0.92, 0.52)
     } else if available_context {
-        Color::srgba(0.76, 0.82, 0.89, 0.34)
+        Color::srgba(0.78, 0.84, 0.91, 0.46)
     } else {
-        Color::srgba(0.70, 0.73, 0.79, 0.18)
+        Color::srgba(0.73, 0.77, 0.84, 0.34)
+    }
+}
+
+fn event_notice_panel_color(active: bool) -> Color {
+    if active {
+        Color::srgba(0.96, 0.98, 1.0, 0.90)
+    } else {
+        Color::srgba(0.96, 0.98, 1.0, 0.0)
+    }
+}
+
+fn event_notice_border_color(active: bool) -> Color {
+    if active {
+        Color::srgba(0.12, 0.18, 0.28, 0.44)
+    } else {
+        Color::srgba(0.12, 0.18, 0.28, 0.0)
+    }
+}
+
+fn event_notice_text_color(active: bool) -> Color {
+    if active {
+        Color::srgb(0.08, 0.12, 0.18)
+    } else {
+        Color::srgba(0.08, 0.12, 0.18, 0.0)
     }
 }
 
@@ -1926,6 +2199,8 @@ mod tests {
     use crate::domain::rules::LaunchRule;
     use crate::gameplay::ai::AiDifficulty;
     use crate::gameplay::match_flow::{MatchSetup, build_match_rosters};
+    use crate::gameplay::skill_flow::record_skill_action;
+    use crate::gameplay::turn_flow::record_turn_action;
 
     fn test_profile(width: f32, height: f32) -> DeviceProfile {
         DeviceProfile::from_window_size(width, height)
@@ -2034,7 +2309,7 @@ mod tests {
     }
 
     #[test]
-    fn player_status_badges_keep_identity_order_for_each_seat() {
+    fn right_side_player_status_badges_mirror_left_side_order() {
         assert_eq!(
             player_hud_badges_for_seat(PlayerSeat::Blue),
             PLAYER_HUD_BADGES
@@ -2045,11 +2320,19 @@ mod tests {
         );
         assert_eq!(
             player_hud_badges_for_seat(PlayerSeat::Red),
-            PLAYER_HUD_BADGES
+            [
+                PlayerHudBadgeKind::Turn,
+                PlayerHudBadgeKind::Team,
+                PlayerHudBadgeKind::Player,
+            ]
         );
         assert_eq!(
             player_hud_badges_for_seat(PlayerSeat::Yellow),
-            PLAYER_HUD_BADGES
+            [
+                PlayerHudBadgeKind::Turn,
+                PlayerHudBadgeKind::Team,
+                PlayerHudBadgeKind::Player,
+            ]
         );
     }
 
@@ -2144,7 +2427,16 @@ mod tests {
     }
 
     #[test]
-    fn dash_button_requires_an_active_piece_after_roll() {
+    fn disabled_skill_controls_remain_readable() {
+        assert!(skill_icon_color(false).to_srgba().alpha >= 0.70);
+        assert!(skill_badge_color(false).to_srgba().alpha >= 0.80);
+        assert!(skill_badge_text_color(false).to_srgba().alpha >= 0.70);
+        assert!(skill_button_color(false, false).to_srgba().alpha >= 0.30);
+        assert!(skill_button_color(false, true).to_srgba().alpha >= 0.42);
+    }
+
+    #[test]
+    fn dash_button_requires_a_movable_piece_after_roll() {
         let skills = PlayerSkillState {
             player_id: 1,
             dash_charges: 1,
@@ -2157,12 +2449,12 @@ mod tests {
             skip_next_skill_turn: false,
             skill_blocked_this_turn: false,
         };
-        let no_active_piece = SkillBoardAvailability {
-            active_self: false,
+        let no_movable_piece = SkillBoardAvailability {
+            dash_move_target: false,
             ..default()
         };
-        let with_active_piece = SkillBoardAvailability {
-            active_self: true,
+        let with_movable_piece = SkillBoardAvailability {
+            dash_move_target: true,
             ..default()
         };
 
@@ -2172,7 +2464,7 @@ mod tests {
             true,
             &GamePhase::AwaitPieceSelect,
             GameMode::TwoVsTwo,
-            no_active_piece,
+            no_movable_piece,
         ));
         assert!(is_skill_button_ready(
             SkillUiAction::Dash,
@@ -2180,7 +2472,7 @@ mod tests {
             true,
             &GamePhase::AwaitPieceSelect,
             GameMode::TwoVsTwo,
-            with_active_piece,
+            with_movable_piece,
         ));
     }
 
@@ -2223,6 +2515,24 @@ mod tests {
         assert_eq!(first.w, first.h);
         assert!(first.y >= board.y + board.h);
         assert!((bar_center - (board.x + board.w * 0.5)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn event_notice_panel_mirrors_shared_skill_bar_above_board() {
+        let width = 720.0;
+        let height = 1280.0;
+        let profile = test_profile(width, height);
+        let board = gameplay_board_screen_rect(width, height, profile);
+        let notice = event_notice_panel_rect(width, height, profile);
+        let first = shared_skill_button_rect(width, height, profile, SkillUiAction::Dash);
+        let last = shared_skill_button_rect(width, height, profile, SkillUiAction::DoubleDice);
+
+        assert_eq!(notice.w, shared_skill_bar_width());
+        assert_eq!(notice.h, SKILL_BUTTON_SIZE);
+        assert!((notice.x - first.x).abs() < f32::EPSILON);
+        assert!((notice.x + notice.w - (last.x + last.w)).abs() < f32::EPSILON);
+        assert!((notice.x + notice.w * 0.5 - (board.x + board.w * 0.5)).abs() < f32::EPSILON);
+        assert!((notice.y + notice.h + HUD_EDGE_MARGIN - board.y).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -2313,18 +2623,137 @@ mod tests {
         let mut turn_state = TurnState::opening_turn();
         let mut skill_roster = SkillRoster::default();
 
-        turn_state.last_action = Some("P1 rolled 4".to_string());
+        record_turn_action(&mut turn_state, "P1 rolled 4");
         sync_event_log(&mut event_log, &turn_state, &skill_roster);
         sync_event_log(&mut event_log, &turn_state, &skill_roster);
 
-        assert_eq!(event_log.entries, vec!["T1: P1 rolled 4"]);
+        assert_eq!(event_log.entries, vec!["T1 P1: rolled 4"]);
 
-        skill_roster.last_skill_action = Some("P1 used Shield".to_string());
+        record_skill_action(
+            &mut skill_roster,
+            turn_state.turn_index,
+            1,
+            "P1 used Shield",
+        );
         sync_event_log(&mut event_log, &turn_state, &skill_roster);
 
         assert_eq!(
             event_log.entries,
-            vec!["T1: P1 rolled 4", "T1: P1 used Shield"]
+            vec!["T1 P1: rolled 4", "T1 P1: used Shield"]
+        );
+    }
+
+    #[test]
+    fn event_log_formats_player_prefix_for_bare_skill_actions() {
+        let mut event_log = EventLogState::default();
+        let turn_state = TurnState::opening_turn();
+        let mut skill_roster = SkillRoster::default();
+
+        record_skill_action(
+            &mut skill_roster,
+            turn_state.turn_index,
+            1,
+            "Snipe selection cancelled",
+        );
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        assert_eq!(event_log.entries, vec!["T1 P1: Snipe selection cancelled"]);
+    }
+
+    #[test]
+    fn event_notice_formats_tile_event_actions() {
+        assert_eq!(
+            event_notice_text_from_action("rolled 3, moved piece #1 to tile 5; event advance +2"),
+            Some("Event: Advance +2\nMoved forward 2 spaces.".to_string())
+        );
+        assert_eq!(
+            event_notice_text_from_action(
+                "rolled 4, moved piece #1 to tile 9; event GainShield: gained shield (2)"
+            ),
+            Some("Event: Shield +1\nCurrent shield: 2".to_string())
+        );
+        assert_eq!(
+            event_notice_text_from_action(
+                "rolled 2, moved piece #1 to tile 3; jumped to next same-color tile 6, pre-jump event tile 0: event GainSkillCharge: gained 1 Dash charge"
+            ),
+            Some("Event: Skill charge\nDash +1".to_string())
+        );
+    }
+
+    #[test]
+    fn event_notice_ignores_non_event_actions() {
+        assert_eq!(
+            event_notice_text_from_action("rolled 4, moved piece #1 to tile 9"),
+            None
+        );
+        assert_eq!(
+            event_notice_text_from_action("P1 used Shield on piece #1"),
+            None
+        );
+    }
+
+    #[test]
+    fn event_log_does_not_replay_stale_turn_action_on_later_turns() {
+        let mut event_log = EventLogState::default();
+        let mut turn_state = TurnState::opening_turn();
+        let skill_roster = SkillRoster::default();
+
+        record_turn_action(&mut turn_state, "P1 rolled 1 but had no legal action");
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        turn_state.turn_index += 1;
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        assert_eq!(
+            event_log.entries,
+            vec!["T1 P1: rolled 1 but had no legal action"]
+        );
+
+        record_turn_action(&mut turn_state, "P1 rolled 1 but had no legal action");
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        assert_eq!(
+            event_log.entries,
+            vec![
+                "T1 P1: rolled 1 but had no legal action",
+                "T2 P1: rolled 1 but had no legal action"
+            ]
+        );
+    }
+
+    #[test]
+    fn event_log_does_not_replay_stale_skill_action_on_later_turns() {
+        let mut event_log = EventLogState::default();
+        let mut turn_state = TurnState::opening_turn();
+        let mut skill_roster = SkillRoster::default();
+
+        record_skill_action(
+            &mut skill_roster,
+            turn_state.turn_index,
+            1,
+            "P1 armed Dash for +3 movement",
+        );
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        turn_state.turn_index += 1;
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        assert_eq!(event_log.entries, vec!["T1 P1: armed Dash for +3 movement"]);
+
+        record_skill_action(
+            &mut skill_roster,
+            turn_state.turn_index,
+            1,
+            "P1 armed Dash for +3 movement",
+        );
+        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+
+        assert_eq!(
+            event_log.entries,
+            vec![
+                "T1 P1: armed Dash for +3 movement",
+                "T2 P1: armed Dash for +3 movement"
+            ]
         );
     }
 

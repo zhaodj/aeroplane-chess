@@ -3,6 +3,7 @@ pub mod animation_plugin;
 pub mod audio_plugin;
 pub mod board_plugin;
 pub mod boot_plugin;
+pub mod effects_plugin;
 pub mod game_plugin;
 pub mod menu_plugin;
 pub mod piece_plugin;
@@ -17,6 +18,7 @@ use self::animation_plugin::AnimationPlugin;
 use self::audio_plugin::AudioPlugin;
 use self::board_plugin::BoardPlugin;
 use self::boot_plugin::BootPlugin;
+use self::effects_plugin::EffectsPlugin;
 use self::game_plugin::GamePlugin;
 use self::menu_plugin::MenuPlugin;
 use self::piece_plugin::PiecePlugin;
@@ -38,6 +40,7 @@ impl Plugin for AeroplaneChessPlugins {
             TurnPlugin,
             SkillPlugin,
             AiPlugin,
+            EffectsPlugin,
             UiPlugin,
             AudioPlugin,
             AnimationPlugin,

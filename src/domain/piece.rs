@@ -1,5 +1,9 @@
 use bevy::prelude::*;
 
+/// Swap intentionally uses a distinct motion tick so the animation layer can
+/// render an arc instead of a normal route walk.
+pub const SWAP_MOTION_SERIAL_DELTA: u32 = 2;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PieceStatus {
     InHangar,

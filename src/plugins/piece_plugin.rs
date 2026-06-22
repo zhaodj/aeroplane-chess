@@ -9,6 +9,7 @@ use crate::gameplay::skill_flow::{SkillRoster, dash_bonus};
 use crate::gameplay::turn_flow::{
     FINISH_DISTANCE, PieceEffectKind, TurnInputState, TurnState, world_position_for_piece,
 };
+use crate::plugins::effects_plugin::EffectRevealDelays;
 use crate::plugins::skill_plugin::SkillTargetState;
 use crate::states::AppState;
 use crate::states::GamePhase;
@@ -156,6 +157,7 @@ struct ShieldBadgeData<'w, 's> {
     skill_roster: Res<'w, SkillRoster>,
     turn_state: Res<'w, TurnState>,
     input_state: Res<'w, TurnInputState>,
+    reveal_delays: Res<'w, EffectRevealDelays>,
     piece_query: PieceTransformQuery<'w, 's>,
 }
 
@@ -808,7 +810,8 @@ fn update_piece_shield_badges(data: ShieldBadgeData, mut nodes: ShieldBadgeNodes
             (
                 piece_id.0,
                 shield_badge_info(
-                    piece_state.shield,
+                    data.reveal_delays
+                        .visible_shield(piece_id.0, piece_state.shield),
                     piece_state.stack_shield,
                     movement_buff_bonus_for_piece(
                         piece_id.0,
@@ -930,7 +933,7 @@ fn shield_badge_label(shield: u8, stack_shield: u8, movement_bonus: Option<u8>) 
         labels.push(format!("SH{shield}"));
     }
     if stack_shield > 0 {
-        labels.push(format!("ST{stack_shield}"));
+        labels.push(format!("Team{stack_shield}"));
     }
     if let Some(movement_bonus) = movement_bonus.filter(|bonus| *bonus > 0) {
         labels.push(format!("D+{movement_bonus}"));
@@ -1252,14 +1255,14 @@ mod tests {
     fn shield_badge_labels_explain_personal_and_stack_buffs() {
         assert_eq!(shield_badge_label(0, 0, None), None);
         assert_eq!(shield_badge_label(1, 0, None), Some("SH1".to_string()));
-        assert_eq!(shield_badge_label(0, 1, None), Some("ST1".to_string()));
+        assert_eq!(shield_badge_label(0, 1, None), Some("Team1".to_string()));
         assert_eq!(
             shield_badge_label(2, 1, Some(3)),
-            Some("SH2+ST1+D+3".to_string())
+            Some("SH2+Team1+D+3".to_string())
         );
 
         let combined = shield_badge_info(2, 1, Some(3)).expect("combined badge is visible");
-        assert_eq!(combined.label, "SH2+ST1+D+3");
+        assert_eq!(combined.label, "SH2+Team1+D+3");
         assert!(combined.size.x > SHIELD_BADGE_MIN_SIZE.x);
     }
 
@@ -1282,6 +1285,9 @@ mod tests {
                 skill_blocked_this_turn: false,
             }],
             last_skill_action: None,
+            last_skill_action_player_id: None,
+            last_skill_action_turn_index: 0,
+            last_skill_action_serial: 0,
             active_turn_player: Some(1),
             skill_used_this_turn: true,
         };

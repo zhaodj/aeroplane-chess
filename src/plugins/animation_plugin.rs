@@ -1,10 +1,11 @@
 use bevy::prelude::*;
 
-use crate::domain::piece::{PieceState, PieceStatus};
+use crate::domain::piece::{PieceState, PieceStatus, SWAP_MOTION_SERIAL_DELTA};
 use crate::gameplay::match_flow::{BoardLayout, MatchConfig, PlayerRoster};
 use crate::gameplay::turn_flow::{
     FINISH_DISTANCE, TurnState, movement_steps_between_progresses, world_position_for_piece,
 };
+use crate::plugins::effects_plugin::{AdvanceTwoPause, PieceMotionEffects, VisualEffectQueue};
 use crate::plugins::piece_plugin::PieceId;
 use crate::states::AppState;
 
@@ -15,6 +16,8 @@ const NORMAL_HANGAR_RETURN_SEGMENT_DURATION: f32 = 0.18;
 const FAST_HANGAR_RETURN_SEGMENT_DURATION: f32 = 0.065;
 const HANGAR_RETURN_ARC_OFFSET: f32 = 54.0;
 const HANGAR_RETURN_Z_LIFT: f32 = 8.0;
+const SWAP_ARC_RADIUS_LIFT: f32 = 52.0;
+const SWAP_ARC_Z_LIFT: f32 = 14.0;
 
 /// 动画插件入口：把规则层的瞬时位置变化转成短视觉插值。
 pub struct AnimationPlugin;
@@ -46,6 +49,17 @@ pub(crate) struct PieceMoveAnimation {
     segment_index: usize,
     segment_elapsed: f32,
     segment_duration: f32,
+    start_delay: f32,
+    pause_cue: Option<PieceMovePauseCue>,
+}
+
+#[derive(Clone, Debug)]
+struct PieceMovePauseCue {
+    waypoint_index: usize,
+    duration: f32,
+    remaining: f32,
+    started: bool,
+    text: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,6 +81,7 @@ type ChangedPieceAnimationQuery<'w, 's> = Query<
     's,
     (
         Entity,
+        &'static PieceId,
         &'static PieceState,
         &'static mut Transform,
         &'static mut PieceAnimationState,
@@ -92,9 +107,10 @@ fn capture_piece_motion(
     match_config: Res<MatchConfig>,
     board_layout: Res<BoardLayout>,
     player_roster: Res<PlayerRoster>,
+    mut motion_effects: ResMut<PieceMotionEffects>,
     mut query: ChangedPieceAnimationQuery,
 ) {
-    for (entity, piece_state, mut transform, mut animation_state) in &mut query {
+    for (entity, piece_id, piece_state, mut transform, mut animation_state) in &mut query {
         let from = animation_state.logical_translation;
         let to = transform.translation;
         let previous_piece = animation_state.logical_piece;
@@ -119,6 +135,17 @@ fn capture_piece_motion(
             continue;
         }
 
+        let motion_effect = motion_effects.take_for_piece(piece_id.0);
+        let pause_cue = motion_effect.advance_two.and_then(|cue| {
+            advance_two_pause_cue(
+                cue,
+                current_piece.owner_player_id,
+                to.z,
+                &waypoints,
+                &board_layout,
+                &player_roster,
+            )
+        });
         animation_state.logical_translation = to;
         animation_state.logical_piece = current_piece;
         transform.translation = from;
@@ -134,6 +161,8 @@ fn capture_piece_motion(
                 current_piece,
                 match_config.fast_mode,
             ),
+            start_delay: motion_effect.start_delay_secs,
+            pause_cue,
         });
     }
 }
@@ -142,6 +171,7 @@ fn animate_piece_motion(
     time: Res<Time>,
     mut commands: Commands,
     mut turn_state: ResMut<TurnState>,
+    mut effect_queue: ResMut<VisualEffectQueue>,
     mut query: Query<(Entity, &mut Transform, &mut PieceMoveAnimation)>,
 ) {
     let mut saw_animation = false;
@@ -153,22 +183,52 @@ fn animate_piece_motion(
             continue;
         }
 
-        animation.segment_elapsed += time.delta_secs();
-        while animation.segment_elapsed >= animation.segment_duration
-            && animation.segment_index + 1 < animation.waypoints.len() - 1
-        {
-            animation.segment_elapsed -= animation.segment_duration;
-            animation.segment_index += 1;
+        if consume_start_delay(&mut animation, time.delta_secs()) {
+            any_animation_continues = true;
+            continue;
         }
 
-        if animation.segment_elapsed >= animation.segment_duration {
-            if let Some(rotation) =
-                waypoint_segment_rotation(&animation.waypoints, animation.segment_index)
+        if consume_pause_delay(&mut animation, time.delta_secs()) {
+            any_animation_continues = true;
+            continue;
+        }
+
+        if animation.segment_index + 1 >= animation.waypoints.len() {
+            transform.translation = *animation.waypoints.last().unwrap_or(&transform.translation);
+            commands.entity(entity).remove::<PieceMoveAnimation>();
+            continue;
+        }
+
+        animation.segment_elapsed += time.delta_secs();
+        let mut paused = false;
+        let mut finished = false;
+        while animation.segment_elapsed >= animation.segment_duration {
+            let next_index = animation.segment_index + 1;
+            transform.translation = animation.waypoints[next_index];
+            if let Some(rotation) = waypoint_segment_rotation(&animation.waypoints, next_index - 1)
             {
                 transform.rotation = rotation;
             }
-            transform.translation = *animation.waypoints.last().unwrap_or(&transform.translation);
-            commands.entity(entity).remove::<PieceMoveAnimation>();
+            animation.segment_elapsed -= animation.segment_duration;
+            animation.segment_index = next_index;
+
+            if start_pause_cue(&mut animation, &mut effect_queue) {
+                paused = true;
+                break;
+            }
+
+            if animation.segment_index + 1 >= animation.waypoints.len() {
+                commands.entity(entity).remove::<PieceMoveAnimation>();
+                finished = true;
+                break;
+            }
+        }
+
+        if paused {
+            any_animation_continues = true;
+            continue;
+        }
+        if finished {
             continue;
         }
 
@@ -183,6 +243,47 @@ fn animate_piece_motion(
     }
 
     sync_roll_display_hold_after_animation(&mut turn_state, saw_animation, any_animation_continues);
+}
+
+fn consume_start_delay(animation: &mut PieceMoveAnimation, delta_secs: f32) -> bool {
+    if animation.start_delay <= 0.0 {
+        return false;
+    }
+
+    animation.start_delay = (animation.start_delay - delta_secs).max(0.0);
+    true
+}
+
+fn consume_pause_delay(animation: &mut PieceMoveAnimation, delta_secs: f32) -> bool {
+    let Some(cue) = animation.pause_cue.as_mut() else {
+        return false;
+    };
+    if !cue.started || cue.remaining <= 0.0 {
+        return false;
+    }
+
+    cue.remaining = (cue.remaining - delta_secs).max(0.0);
+    true
+}
+
+fn start_pause_cue(
+    animation: &mut PieceMoveAnimation,
+    effect_queue: &mut VisualEffectQueue,
+) -> bool {
+    let Some(cue) = animation.pause_cue.as_mut() else {
+        return false;
+    };
+    if cue.started || cue.waypoint_index != animation.segment_index {
+        return false;
+    }
+
+    cue.started = true;
+    cue.remaining = cue.duration;
+    animation.segment_elapsed = 0.0;
+    if let Some(waypoint) = animation.waypoints.get(cue.waypoint_index) {
+        effect_queue.floating_text(waypoint.truncate(), cue.text);
+    }
+    true
 }
 
 fn sync_roll_display_hold_after_animation(
@@ -273,6 +374,11 @@ fn build_motion_waypoints(
         return waypoints;
     }
 
+    if is_swap_arc_motion(previous_piece, current_piece) {
+        append_clockwise_swap_arc_waypoints(&mut waypoints, from, to);
+        return waypoints;
+    }
+
     append_board_path_waypoints(
         &mut waypoints,
         previous_piece,
@@ -285,6 +391,34 @@ fn build_motion_waypoints(
     waypoints
 }
 
+fn advance_two_pause_cue(
+    cue: AdvanceTwoPause,
+    owner_player_id: u8,
+    z: f32,
+    waypoints: &[Vec3],
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<PieceMovePauseCue> {
+    let event_position = world_position_for_piece(
+        owner_player_id,
+        cue.event_progress,
+        PieceStatus::Active,
+        board_layout,
+        player_roster,
+    )?
+    .extend(z);
+    let waypoint_index = waypoints
+        .iter()
+        .position(|waypoint| waypoint.distance_squared(event_position) < 0.25)?;
+    (waypoint_index + 1 < waypoints.len()).then_some(PieceMovePauseCue {
+        waypoint_index,
+        duration: cue.pause_secs,
+        remaining: 0.0,
+        started: false,
+        text: "+2",
+    })
+}
+
 fn is_returning_to_hangar(
     previous_piece: PieceAnimationSnapshot,
     current_piece: PieceAnimationSnapshot,
@@ -292,6 +426,20 @@ fn is_returning_to_hangar(
     previous_piece.owner_player_id == current_piece.owner_player_id
         && previous_piece.status != PieceStatus::InHangar
         && current_piece.status == PieceStatus::InHangar
+}
+
+fn is_swap_arc_motion(
+    previous_piece: PieceAnimationSnapshot,
+    current_piece: PieceAnimationSnapshot,
+) -> bool {
+    previous_piece.owner_player_id == current_piece.owner_player_id
+        && previous_piece.status == PieceStatus::Active
+        && current_piece.status == PieceStatus::Active
+        && previous_piece.progress != current_piece.progress
+        && current_piece.motion_serial
+            == previous_piece
+                .motion_serial
+                .wrapping_add(SWAP_MOTION_SERIAL_DELTA)
 }
 
 fn append_hangar_return_waypoints(waypoints: &mut Vec<Vec3>, from: Vec3, to: Vec3) {
@@ -311,6 +459,30 @@ fn append_hangar_return_waypoints(waypoints: &mut Vec<Vec3>, from: Vec3, to: Vec
                 HANGAR_RETURN_Z_LIFT,
             );
         push_distinct_waypoint(waypoints, midpoint);
+    }
+    push_distinct_waypoint(waypoints, to);
+}
+
+fn append_clockwise_swap_arc_waypoints(waypoints: &mut Vec<Vec3>, from: Vec3, to: Vec3) {
+    let from_2d = from.truncate();
+    let to_2d = to.truncate();
+    if from_2d.distance_squared(to_2d) < 0.25 {
+        push_distinct_waypoint(waypoints, to);
+        return;
+    }
+
+    let start_angle = from_2d.y.atan2(from_2d.x);
+    let mut end_angle = to_2d.y.atan2(to_2d.x);
+    while end_angle >= start_angle {
+        end_angle -= std::f32::consts::TAU;
+    }
+
+    let radius = from_2d.length().max(to_2d.length()) + SWAP_ARC_RADIUS_LIFT;
+    for ratio in [0.33, 0.66] {
+        let angle = start_angle + (end_angle - start_angle) * ratio;
+        let point = Vec2::new(angle.cos(), angle.sin()) * radius;
+        let z = from.z + (to.z - from.z) * ratio + SWAP_ARC_Z_LIFT;
+        push_distinct_waypoint(waypoints, point.extend(z));
     }
     push_distinct_waypoint(waypoints, to);
 }
@@ -683,6 +855,157 @@ mod tests {
 
         assert_eq!(waypoints, vec![from, source, to]);
         assert!(!waypoints.contains(&route_after_source));
+    }
+
+    #[test]
+    fn swap_motion_waypoints_follow_clockwise_arc() {
+        let (board_layout, player_roster) = test_roster();
+        let previous_piece = PieceAnimationSnapshot {
+            owner_player_id: 1,
+            status: PieceStatus::Active,
+            progress: 8,
+            motion_serial: 4,
+        };
+        let current_piece = PieceAnimationSnapshot {
+            owner_player_id: 1,
+            status: PieceStatus::Active,
+            progress: 24,
+            motion_serial: previous_piece
+                .motion_serial
+                .wrapping_add(SWAP_MOTION_SERIAL_DELTA),
+        };
+        let from = Vec3::new(0.0, 120.0, 1.0);
+        let to = Vec3::new(120.0, 0.0, 1.0);
+
+        assert!(is_swap_arc_motion(previous_piece, current_piece));
+        let waypoints = build_motion_waypoints(
+            previous_piece,
+            current_piece,
+            from,
+            to,
+            &board_layout,
+            &player_roster,
+        );
+
+        assert_eq!(waypoints.len(), 4);
+        assert_eq!(waypoints.first().copied(), Some(from));
+        assert_eq!(waypoints.last().copied(), Some(to));
+        assert!(waypoints[1].z > from.z);
+        let start_angle = from.y.atan2(from.x);
+        let first_angle = waypoints[1].y.atan2(waypoints[1].x);
+        assert!(first_angle < start_angle);
+    }
+
+    #[test]
+    fn normal_motion_serial_delta_is_not_swap_arc_motion() {
+        let previous_piece = PieceAnimationSnapshot {
+            owner_player_id: 1,
+            status: PieceStatus::Active,
+            progress: 8,
+            motion_serial: 4,
+        };
+        let current_piece = PieceAnimationSnapshot {
+            owner_player_id: 1,
+            status: PieceStatus::Active,
+            progress: 12,
+            motion_serial: previous_piece.motion_serial.wrapping_add(1),
+        };
+
+        assert!(!is_swap_arc_motion(previous_piece, current_piece));
+    }
+
+    #[test]
+    fn advance_two_motion_cue_pauses_at_event_waypoint() {
+        let (board_layout, player_roster) = test_roster();
+        let from =
+            world_position_for_piece(1, 4, PieceStatus::Active, &board_layout, &player_roster)
+                .unwrap()
+                .extend(1.0);
+        let to = world_position_for_piece(1, 8, PieceStatus::Active, &board_layout, &player_roster)
+            .unwrap()
+            .extend(1.0);
+        let waypoints = build_motion_waypoints(
+            PieceAnimationSnapshot {
+                owner_player_id: 1,
+                status: PieceStatus::Active,
+                progress: 4,
+                motion_serial: 0,
+            },
+            PieceAnimationSnapshot {
+                owner_player_id: 1,
+                status: PieceStatus::Active,
+                progress: 8,
+                motion_serial: 0,
+            },
+            from,
+            to,
+            &board_layout,
+            &player_roster,
+        );
+
+        let cue = advance_two_pause_cue(
+            AdvanceTwoPause {
+                event_progress: 6,
+                pause_secs: 0.62,
+            },
+            1,
+            1.0,
+            &waypoints,
+            &board_layout,
+            &player_roster,
+        )
+        .expect("event waypoint should be present");
+
+        assert_eq!(cue.waypoint_index, 2);
+        assert_eq!(cue.duration, 0.62);
+        assert_eq!(cue.text, "+2");
+    }
+
+    #[test]
+    fn motion_pause_cue_queues_plus_two_before_continuing() {
+        let mut animation = PieceMoveAnimation {
+            waypoints: vec![
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(10.0, 0.0, 1.0),
+                Vec3::new(20.0, 0.0, 1.0),
+            ],
+            segment_index: 1,
+            segment_elapsed: 0.0,
+            segment_duration: 0.13,
+            start_delay: 0.0,
+            pause_cue: Some(PieceMovePauseCue {
+                waypoint_index: 1,
+                duration: 0.62,
+                remaining: 0.0,
+                started: false,
+                text: "+2",
+            }),
+        };
+        let mut effect_queue = VisualEffectQueue::default();
+
+        assert!(start_pause_cue(&mut animation, &mut effect_queue));
+        let cue = animation.pause_cue.as_ref().unwrap();
+        assert!(cue.started);
+        assert_eq!(cue.remaining, 0.62);
+        assert_eq!(effect_queue.pending_count(), 1);
+    }
+
+    #[test]
+    fn motion_start_delay_blocks_initial_interpolation() {
+        let mut animation = PieceMoveAnimation {
+            waypoints: vec![Vec3::ZERO, Vec3::X],
+            segment_index: 0,
+            segment_elapsed: 0.0,
+            segment_duration: 0.13,
+            start_delay: 0.5,
+            pause_cue: None,
+        };
+
+        assert!(consume_start_delay(&mut animation, 0.2));
+        assert!((animation.start_delay - 0.3).abs() < 0.001);
+        assert!(consume_start_delay(&mut animation, 0.3));
+        assert_eq!(animation.start_delay, 0.0);
+        assert!(!consume_start_delay(&mut animation, 0.1));
     }
 
     #[test]

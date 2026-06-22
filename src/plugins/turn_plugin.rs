@@ -3,7 +3,7 @@ use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
 use crate::domain::dice::DiceRoll;
-use crate::domain::piece::PieceState;
+use crate::domain::piece::{PieceState, SWAP_MOTION_SERIAL_DELTA};
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
@@ -13,19 +13,23 @@ use crate::gameplay::match_flow::{
 use crate::gameplay::skill_flow::{
     MAX_PIECE_SHIELD, SkillRoster, arm_dash, arm_double_dice, can_use_skill_this_turn,
     clear_dash_arm, dash_bonus, is_active_teammate_piece, is_legal_shield_target,
-    is_legal_snipe_target, mark_skill_used, player_skill_state, resolve_roll_value,
-    spend_shield_charge, spend_snipe_charge, spend_swap_charge,
+    is_legal_snipe_target, mark_skill_used, player_skill_state, record_skill_action,
+    resolve_roll_value, spend_shield_charge, spend_snipe_charge, spend_swap_charge,
 };
 use crate::gameplay::turn_flow::{
     ActionResources, ActionState, PlannedAction, TurnInputState, TurnState, choose_action,
     collect_actions, current_player_control, execute_action, find_pending_action_by_piece_id,
-    finish_turn_without_action, get_pending_action, pressed_selection_key, set_pending_actions,
-    set_roll,
+    finish_turn_without_action, get_pending_action, pressed_selection_key, record_turn_action,
+    set_pending_actions, set_roll,
 };
 use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::boot_plugin::AutoplayMatch;
+use crate::plugins::effects_plugin::{
+    EffectRevealDelays, PieceMotionEffects, TARGETED_MISSILE_REVEAL_DURATION, VisualEffectQueue,
+};
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
+use crate::plugins::skill_plugin::SkillUiAction;
 use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
 use crate::states::{AppState, GamePhase};
 
@@ -95,6 +99,9 @@ struct TurnActionParams<'w, 's> {
     player_roster: Res<'w, PlayerRoster>,
     team_roster: Res<'w, TeamRoster>,
     skill_roster: ResMut<'w, SkillRoster>,
+    effect_queue: ResMut<'w, VisualEffectQueue>,
+    reveal_delays: ResMut<'w, EffectRevealDelays>,
+    motion_effects: ResMut<'w, PieceMotionEffects>,
     match_result: ResMut<'w, MatchResult>,
     piece_query: TurnPieceQuery<'w, 's>,
 }
@@ -184,8 +191,12 @@ fn drive_ai_turn_loop(
 
     maybe_use_ai_skills(
         params.turn_state.current_player,
+        params.turn_state.turn_index,
         &params.match_config,
         &mut params.skill_roster,
+        &mut params.effect_queue,
+        &mut params.reveal_delays,
+        &mut params.motion_effects,
         &mut params.piece_query,
     );
 
@@ -195,15 +206,21 @@ fn drive_ai_turn_loop(
     let roll = DiceRoll(roll_value);
     set_roll(&mut params.turn_state, roll_value);
     if roll_resolution.used_double_dice {
-        params.skill_roster.last_skill_action = Some(format!(
-            "P{} resolved DoubleDice into {}",
-            params.turn_state.current_player, roll_value
-        ));
+        record_skill_action(
+            &mut params.skill_roster,
+            params.turn_state.turn_index,
+            params.turn_state.current_player,
+            format!(
+                "P{} resolved DoubleDice into {}",
+                params.turn_state.current_player, roll_value
+            ),
+        );
     }
 
     let current_player = params.turn_state.current_player;
     maybe_arm_dash_for_ai_after_roll(
         current_player,
+        params.turn_state.turn_index,
         AiDashEvaluation {
             ai_difficulty: params.match_config.ai_difficulty,
             roll,
@@ -223,9 +240,10 @@ fn drive_ai_turn_loop(
         &params.player_roster,
         &params.piece_query,
     ) else {
-        params.turn_state.last_action = Some(format!(
-            "P{current_player} rolled {roll_value} but had no legal action"
-        ));
+        record_turn_action(
+            &mut params.turn_state,
+            format!("P{current_player} rolled {roll_value} but had no legal action"),
+        );
         finish_turn_without_action(
             &mut params.turn_state,
             &mut params.input_state,
@@ -244,8 +262,12 @@ const HARD_AI_SNIPE_MIN_PROGRESS: u8 = 8;
 /// AI 技能策略：Easy 不主动用技能，Normal 偏防御/起飞，Hard 才主动攻击与换位。
 fn maybe_use_ai_skills(
     current_player: u8,
+    turn_index: u32,
     match_config: &MatchConfig,
     skill_roster: &mut SkillRoster,
+    effect_queue: &mut VisualEffectQueue,
+    reveal_delays: &mut EffectRevealDelays,
+    motion_effects: &mut PieceMotionEffects,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
     if !can_use_skill_this_turn(skill_roster, current_player) {
@@ -255,26 +277,49 @@ fn maybe_use_ai_skills(
     match match_config.ai_difficulty {
         AiDifficulty::Easy => {}
         AiDifficulty::Normal => {
-            let _ = try_ai_shield(current_player, skill_roster, piece_query)
-                || try_ai_double_dice(current_player, skill_roster, piece_query);
+            let _ = try_ai_shield(
+                current_player,
+                turn_index,
+                skill_roster,
+                effect_queue,
+                piece_query,
+            ) || try_ai_double_dice(current_player, turn_index, skill_roster, piece_query);
         }
         AiDifficulty::Hard => {
             let _ = try_ai_snipe(
                 current_player,
+                turn_index,
                 HARD_AI_SNIPE_MIN_PROGRESS,
                 skill_roster,
+                effect_queue,
+                reveal_delays,
+                motion_effects,
                 piece_query,
-            ) || try_ai_shield(current_player, skill_roster, piece_query)
-                || try_ai_swap(current_player, match_config.mode, skill_roster, piece_query)
-                || try_ai_double_dice(current_player, skill_roster, piece_query);
+            ) || try_ai_shield(
+                current_player,
+                turn_index,
+                skill_roster,
+                effect_queue,
+                piece_query,
+            ) || try_ai_swap(
+                current_player,
+                turn_index,
+                match_config.mode,
+                skill_roster,
+                piece_query,
+            ) || try_ai_double_dice(current_player, turn_index, skill_roster, piece_query);
         }
     }
 }
 
 fn try_ai_snipe(
     current_player: u8,
+    turn_index: u32,
     minimum_target_progress: u8,
     skill_roster: &mut SkillRoster,
+    effect_queue: &mut VisualEffectQueue,
+    reveal_delays: &mut EffectRevealDelays,
+    motion_effects: &mut PieceMotionEffects,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> bool {
     let can_use_snipe = player_skill_state(skill_roster, current_player)
@@ -295,17 +340,25 @@ fn try_ai_snipe(
     }
 
     mark_skill_used(skill_roster, current_player);
-    skill_roster.last_skill_action = Some(execute_snipe_on_turn_query(
-        target_piece_id,
-        piece_query,
-        true,
-    ));
+    if let Some(target_world) = piece_world_position_for_turn_query(target_piece_id, piece_query) {
+        effect_queue.hud_skill_missile(SkillUiAction::Snipe, target_world);
+    }
+    if piece_personal_shield_for_turn_query(target_piece_id, piece_query).unwrap_or_default() > 0 {
+        reveal_delays.delay_shield_loss(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
+    }
+    if snipe_will_send_to_hangar_for_turn_query(target_piece_id, piece_query) {
+        motion_effects.delay_piece_motion(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
+    }
+    let message = execute_snipe_on_turn_query(target_piece_id, piece_query, true);
+    record_skill_action(skill_roster, turn_index, current_player, message);
     true
 }
 
 fn try_ai_shield(
     current_player: u8,
+    turn_index: u32,
     skill_roster: &mut SkillRoster,
+    effect_queue: &mut VisualEffectQueue,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> bool {
     let can_use_shield = player_skill_state(skill_roster, current_player)
@@ -320,14 +373,22 @@ fn try_ai_shield(
     };
 
     if spend_shield_charge(skill_roster, current_player)
+        && let Some(target_world) =
+            piece_world_position_for_turn_query(target_piece_id, piece_query)
         && let Some(shield_value) =
             apply_shield_to_piece_to_turn_query(target_piece_id, piece_query)
     {
         mark_skill_used(skill_roster, current_player);
-        skill_roster.last_skill_action = Some(format!(
-            "P{} (AI) used Shield on piece #{} ({})",
-            current_player, target_piece_id, shield_value
-        ));
+        effect_queue.shield_flash(target_world);
+        record_skill_action(
+            skill_roster,
+            turn_index,
+            current_player,
+            format!(
+                "P{} (AI) used Shield on piece #{} ({})",
+                current_player, target_piece_id, shield_value
+            ),
+        );
         return true;
     }
 
@@ -336,6 +397,7 @@ fn try_ai_shield(
 
 fn try_ai_swap(
     current_player: u8,
+    turn_index: u32,
     mode: GameMode,
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -360,16 +422,14 @@ fn try_ai_swap(
     }
 
     mark_skill_used(skill_roster, current_player);
-    skill_roster.last_skill_action = Some(execute_swap_on_turn_query(
-        current_player,
-        teammate_piece_id,
-        piece_query,
-    ));
+    let message = execute_swap_on_turn_query(current_player, teammate_piece_id, piece_query);
+    record_skill_action(skill_roster, turn_index, current_player, message);
     true
 }
 
 fn try_ai_double_dice(
     current_player: u8,
+    turn_index: u32,
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> bool {
@@ -377,10 +437,15 @@ fn try_ai_double_dice(
         && arm_double_dice(skill_roster, current_player)
     {
         mark_skill_used(skill_roster, current_player);
-        skill_roster.last_skill_action = Some(format!(
-            "P{} (AI) armed DoubleDice for launch pressure",
-            current_player
-        ));
+        record_skill_action(
+            skill_roster,
+            turn_index,
+            current_player,
+            format!(
+                "P{} (AI) armed DoubleDice for launch pressure",
+                current_player
+            ),
+        );
         return true;
     }
 
@@ -398,6 +463,7 @@ struct AiDashEvaluation<'a> {
 
 fn maybe_arm_dash_for_ai_after_roll(
     current_player: u8,
+    turn_index: u32,
     evaluation: AiDashEvaluation,
     skill_roster: &mut SkillRoster,
     piece_query: &mut TurnPieceQuery,
@@ -433,10 +499,15 @@ fn maybe_arm_dash_for_ai_after_roll(
 
     if arm_dash(skill_roster, current_player) {
         mark_skill_used(skill_roster, current_player);
-        skill_roster.last_skill_action = Some(format!(
-            "P{} (AI) armed Dash after roll for +3 movement",
-            current_player
-        ));
+        record_skill_action(
+            skill_roster,
+            turn_index,
+            current_player,
+            format!(
+                "P{} (AI) armed Dash after roll for +3 movement",
+                current_player
+            ),
+        );
     }
 }
 
@@ -555,6 +626,39 @@ fn should_ai_arm_double_dice(
     !has_active_piece && has_hangar_piece
 }
 
+/// 读取 turn_query 中棋子的世界坐标（供 AI 特效路径调用）。
+fn piece_world_position_for_turn_query(
+    piece_id: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<Vec2> {
+    piece_query
+        .iter_mut()
+        .find(|(query_piece_id, _, _, _)| query_piece_id.0 == piece_id)
+        .map(|(_, _, _, transform)| transform.translation.truncate())
+}
+
+fn piece_personal_shield_for_turn_query(
+    piece_id: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    piece_query
+        .iter_mut()
+        .find(|(query_piece_id, _, _, _)| query_piece_id.0 == piece_id)
+        .map(|(_, _, piece_state, _)| piece_state.shield)
+}
+
+fn snipe_will_send_to_hangar_for_turn_query(
+    piece_id: u8,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    piece_query
+        .iter_mut()
+        .find(|(query_piece_id, _, _, _)| query_piece_id.0 == piece_id)
+        .is_some_and(|(_, _, piece_state, _)| {
+            piece_state.shield == 0 && piece_state.stack_shield == 0
+        })
+}
+
 /// 在 turn_query 上直接给目标棋子加盾（供 AI 路径调用）。
 fn apply_shield_to_piece_to_turn_query(
     piece_id: u8,
@@ -643,12 +747,18 @@ fn execute_swap_on_turn_query(
             piece_state.progress = teammate_state.progress;
             piece_state.shield = teammate_state.shield;
             piece_state.stack_shield = teammate_state.stack_shield;
+            piece_state.motion_serial = piece_state
+                .motion_serial
+                .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
             transform.translation = teammate_translation;
         } else if piece_id.0 == teammate_piece_id {
             piece_state.status = current_state.status;
             piece_state.progress = current_state.progress;
             piece_state.shield = current_state.shield;
             piece_state.stack_shield = current_state.stack_shield;
+            piece_state.motion_serial = piece_state
+                .motion_serial
+                .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
             transform.translation = current_translation;
         }
     }
@@ -691,10 +801,15 @@ fn handle_human_roll_input(
     let roll = DiceRoll(roll_value);
     set_roll(&mut params.turn_state, roll_value);
     if roll_resolution.used_double_dice {
-        params.skill_roster.last_skill_action = Some(format!(
-            "P{} resolved DoubleDice into {}",
-            params.turn_state.current_player, roll_value
-        ));
+        record_skill_action(
+            &mut params.skill_roster,
+            params.turn_state.turn_index,
+            params.turn_state.current_player,
+            format!(
+                "P{} resolved DoubleDice into {}",
+                params.turn_state.current_player, roll_value
+            ),
+        );
     }
 
     let current_player = params.turn_state.current_player;
@@ -709,10 +824,14 @@ fn handle_human_roll_input(
     );
 
     if actions.is_empty() {
-        params.turn_state.last_action = Some(format!(
-            "P{} rolled {} but had no legal action",
-            params.turn_state.current_player, roll_value
-        ));
+        let current_player = params.turn_state.current_player;
+        record_turn_action(
+            &mut params.turn_state,
+            format!(
+                "P{} rolled {} but had no legal action",
+                current_player, roll_value
+            ),
+        );
         finish_turn_without_action(
             &mut params.turn_state,
             &mut params.input_state,
@@ -940,6 +1059,7 @@ mod tests {
     use crate::gameplay::skill_flow::{
         build_skill_roster, player_skill_state, sync_turn_skill_usage,
     };
+    use crate::plugins::effects_plugin::PieceMotionEffect;
     use bevy::ecs::system::SystemState;
 
     fn setup(mode: GameMode) -> MatchSetup {
@@ -1049,11 +1169,24 @@ mod tests {
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
         let mut query = system_state.get_mut(&mut world);
+        let mut effect_queue = VisualEffectQueue::default();
+        let mut reveal_delays = EffectRevealDelays::default();
+        let mut motion_effects = PieceMotionEffects::default();
 
-        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+        maybe_use_ai_skills(
+            2,
+            1,
+            &match_config,
+            &mut skill_roster,
+            &mut effect_queue,
+            &mut reveal_delays,
+            &mut motion_effects,
+            &mut query,
+        );
         let state = player_skill_state(&skill_roster, 2).unwrap();
         assert!(!state.dash_armed);
         assert!(!skill_roster.skill_used_this_turn);
+        assert_eq!(effect_queue.pending_count(), 0);
     }
 
     #[test]
@@ -1083,13 +1216,26 @@ mod tests {
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
         let mut query = system_state.get_mut(&mut world);
+        let mut effect_queue = VisualEffectQueue::default();
+        let mut reveal_delays = EffectRevealDelays::default();
+        let mut motion_effects = PieceMotionEffects::default();
 
-        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+        maybe_use_ai_skills(
+            2,
+            1,
+            &match_config,
+            &mut skill_roster,
+            &mut effect_queue,
+            &mut reveal_delays,
+            &mut motion_effects,
+            &mut query,
+        );
 
         let state = player_skill_state(&skill_roster, 2).unwrap();
         assert_eq!(state.snipe_charges, 1);
         assert_eq!(state.shield_charges, 1);
         assert!(!skill_roster.skill_used_this_turn);
+        assert_eq!(effect_queue.pending_count(), 0);
     }
 
     #[test]
@@ -1108,12 +1254,25 @@ mod tests {
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
         let mut query = system_state.get_mut(&mut world);
+        let mut effect_queue = VisualEffectQueue::default();
+        let mut reveal_delays = EffectRevealDelays::default();
+        let mut motion_effects = PieceMotionEffects::default();
 
-        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+        maybe_use_ai_skills(
+            2,
+            1,
+            &match_config,
+            &mut skill_roster,
+            &mut effect_queue,
+            &mut reveal_delays,
+            &mut motion_effects,
+            &mut query,
+        );
 
         let state = player_skill_state(&skill_roster, 2).unwrap();
         assert_eq!(state.snipe_charges, 1);
         assert_eq!(state.shield_charges, 0);
+        assert_eq!(effect_queue.pending_count(), 1);
         assert!(
             skill_roster
                 .last_skill_action
@@ -1138,16 +1297,71 @@ mod tests {
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
         let mut query = system_state.get_mut(&mut world);
+        let mut effect_queue = VisualEffectQueue::default();
+        let mut reveal_delays = EffectRevealDelays::default();
+        let mut motion_effects = PieceMotionEffects::default();
 
-        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+        maybe_use_ai_skills(
+            2,
+            1,
+            &match_config,
+            &mut skill_roster,
+            &mut effect_queue,
+            &mut reveal_delays,
+            &mut motion_effects,
+            &mut query,
+        );
 
         let state = player_skill_state(&skill_roster, 2).unwrap();
         assert_eq!(state.snipe_charges, 1);
         assert!(!skill_roster.skill_used_this_turn);
+        assert_eq!(effect_queue.pending_count(), 0);
     }
 
     #[test]
     fn hard_ai_uses_snipe_on_advanced_target() {
+        let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Hard);
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        set_ai_skill_charges(&mut skill_roster, 2, 1, 0, 0, 0, 0);
+
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
+        spawn_test_piece(&mut world, 2, 1, 1, HARD_AI_SNIPE_MIN_PROGRESS, 1);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut effect_queue = VisualEffectQueue::default();
+        let mut reveal_delays = EffectRevealDelays::default();
+        let mut motion_effects = PieceMotionEffects::default();
+
+        maybe_use_ai_skills(
+            2,
+            1,
+            &match_config,
+            &mut skill_roster,
+            &mut effect_queue,
+            &mut reveal_delays,
+            &mut motion_effects,
+            &mut query,
+        );
+
+        let state = player_skill_state(&skill_roster, 2).unwrap();
+        assert_eq!(state.snipe_charges, 0);
+        assert!(skill_roster.skill_used_this_turn);
+        assert_eq!(effect_queue.pending_count(), 1);
+        assert_eq!(reveal_delays.visible_shield(2, 0), 1);
+        assert_eq!(
+            motion_effects.take_for_piece(2),
+            PieceMotionEffect::default()
+        );
+    }
+
+    #[test]
+    fn hard_ai_snipe_delays_unshielded_target_return_motion() {
         let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Hard);
         let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
         let player_roster = PlayerRoster::from_players(players);
@@ -1162,12 +1376,24 @@ mod tests {
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
         > = SystemState::new(&mut world);
         let mut query = system_state.get_mut(&mut world);
+        let mut effect_queue = VisualEffectQueue::default();
+        let mut reveal_delays = EffectRevealDelays::default();
+        let mut motion_effects = PieceMotionEffects::default();
 
-        maybe_use_ai_skills(2, &match_config, &mut skill_roster, &mut query);
+        maybe_use_ai_skills(
+            2,
+            1,
+            &match_config,
+            &mut skill_roster,
+            &mut effect_queue,
+            &mut reveal_delays,
+            &mut motion_effects,
+            &mut query,
+        );
 
-        let state = player_skill_state(&skill_roster, 2).unwrap();
-        assert_eq!(state.snipe_charges, 0);
-        assert!(skill_roster.skill_used_this_turn);
+        let effect = motion_effects.take_for_piece(2);
+        assert!(effect.start_delay_secs >= TARGETED_MISSILE_REVEAL_DURATION);
+        assert!(effect.advance_two.is_none());
     }
 
     #[test]
@@ -1188,6 +1414,7 @@ mod tests {
 
         maybe_arm_dash_for_ai_after_roll(
             2,
+            1,
             AiDashEvaluation {
                 ai_difficulty: AiDifficulty::Normal,
                 roll: DiceRoll(2),

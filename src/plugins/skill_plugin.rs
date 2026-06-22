@@ -2,17 +2,20 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
-use crate::domain::piece::PieceState;
+use crate::domain::piece::{PieceState, SWAP_MOTION_SERIAL_DELTA};
 use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster};
 use crate::gameplay::skill_flow::{
     MAX_PIECE_SHIELD, SkillRoster, arm_dash, arm_double_dice, build_skill_roster,
     can_use_skill_this_turn, current_player_type, dash_bonus, is_active_teammate_piece,
-    is_current_player_active_piece, is_legal_shield_target, is_legal_snipe_target, mark_skill_used,
-    player_skill_state, spend_shield_charge, spend_snipe_charge, spend_swap_charge,
-    sync_turn_skill_usage,
+    is_current_player_active_piece, is_current_player_dash_move_piece, is_legal_shield_target,
+    is_legal_snipe_target, mark_skill_used, player_skill_state, record_skill_action,
+    spend_shield_charge, spend_snipe_charge, spend_swap_charge, sync_turn_skill_usage,
 };
 use crate::gameplay::turn_flow::TurnState;
 use crate::platform::{DeviceProfile, PointerInputState};
+use crate::plugins::effects_plugin::{
+    EffectRevealDelays, PieceMotionEffects, TARGETED_MISSILE_REVEAL_DURATION, VisualEffectQueue,
+};
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
@@ -104,6 +107,9 @@ struct HumanSkillInputParams<'w, 's> {
     skill_roster: ResMut<'w, SkillRoster>,
     skill_ui_request: ResMut<'w, SkillUiRequest>,
     target_state: ResMut<'w, SkillTargetState>,
+    effect_queue: ResMut<'w, VisualEffectQueue>,
+    reveal_delays: ResMut<'w, EffectRevealDelays>,
+    motion_effects: ResMut<'w, PieceMotionEffects>,
     next_phase: ResMut<'w, NextState<GamePhase>>,
     piece_query: SkillPieceQuery<'w, 's>,
 }
@@ -111,9 +117,13 @@ struct HumanSkillInputParams<'w, 's> {
 #[derive(SystemParam)]
 struct SnipeTargetParams<'w, 's> {
     game_phase: Res<'w, State<GamePhase>>,
+    turn_state: Res<'w, TurnState>,
     target_state: ResMut<'w, SkillTargetState>,
     skill_roster: ResMut<'w, SkillRoster>,
     skill_ui_request: ResMut<'w, SkillUiRequest>,
+    effect_queue: ResMut<'w, VisualEffectQueue>,
+    reveal_delays: ResMut<'w, EffectRevealDelays>,
+    motion_effects: ResMut<'w, PieceMotionEffects>,
     next_phase: ResMut<'w, NextState<GamePhase>>,
     piece_query: SkillPieceQuery<'w, 's>,
 }
@@ -207,7 +217,7 @@ fn handle_human_skill_input(
             player_skill_state(&params.skill_roster, params.turn_state.current_player)
                 .map(|state| state.skill_blocked_this_turn)
                 .unwrap_or(false);
-        params.skill_roster.last_skill_action = Some(if blocked_by_event {
+        let message = if blocked_by_event {
             format!(
                 "P{} cannot use skills this turn (event lock)",
                 params.turn_state.current_player
@@ -217,7 +227,13 @@ fn handle_human_skill_input(
                 "P{} already used a skill this turn",
                 params.turn_state.current_player
             )
-        });
+        };
+        record_skill_action(
+            &mut params.skill_roster,
+            params.turn_state.turn_index,
+            params.turn_state.current_player,
+            message,
+        );
         return;
     }
 
@@ -227,29 +243,47 @@ fn handle_human_skill_input(
                 params.turn_state.current_player,
                 &params.piece_query,
             ) else {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} could not find a piece for Shield",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} could not find a piece for Shield",
+                        params.turn_state.current_player
+                    ),
+                );
                 return;
             };
 
             if !spend_shield_charge(&mut params.skill_roster, params.turn_state.current_player) {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} has no Shield charges left",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} has no Shield charges left",
+                        params.turn_state.current_player
+                    ),
+                );
                 return;
             }
 
+            if let Some(target_world) = piece_world_position(target_piece_id, &params.piece_query) {
+                params.effect_queue.shield_flash(target_world);
+            }
             if let Some(shield_value) =
                 apply_shield_to_piece_for_full_query(target_piece_id, &mut params.piece_query)
             {
                 mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} used Shield on piece #{} ({})",
-                    params.turn_state.current_player, target_piece_id, shield_value
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} used Shield on piece #{} ({})",
+                        params.turn_state.current_player, target_piece_id, shield_value
+                    ),
+                );
             }
         }
         SkillUiAction::Snipe if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
@@ -269,24 +303,54 @@ fn handle_human_skill_input(
             );
 
             if targets.is_empty() {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} found no Snipe target",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} found no Snipe target",
+                        params.turn_state.current_player
+                    ),
+                );
                 return;
             }
             if !spend_snipe_charge(&mut params.skill_roster, params.turn_state.current_player) {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} has no Snipe charges left",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} has no Snipe charges left",
+                        params.turn_state.current_player
+                    ),
+                );
                 return;
             }
 
             if targets.len() == 1 {
                 mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
-                params.skill_roster.last_skill_action =
-                    Some(execute_snipe(targets[0], &mut params.piece_query));
+                if let Some(target_world) = piece_world_position(targets[0], &params.piece_query) {
+                    params
+                        .effect_queue
+                        .hud_skill_missile(SkillUiAction::Snipe, target_world);
+                }
+                if piece_personal_shield(targets[0], &params.piece_query).unwrap_or_default() > 0 {
+                    params
+                        .reveal_delays
+                        .delay_shield_loss(targets[0], TARGETED_MISSILE_REVEAL_DURATION);
+                }
+                if snipe_will_send_to_hangar(targets[0], &params.piece_query) {
+                    params
+                        .motion_effects
+                        .delay_piece_motion(targets[0], TARGETED_MISSILE_REVEAL_DURATION);
+                }
+                let message = execute_snipe(targets[0], &mut params.piece_query);
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    message,
+                );
                 return;
             }
 
@@ -300,10 +364,15 @@ fn handle_human_skill_input(
         SkillUiAction::DoubleDice if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
             if arm_double_dice(&mut params.skill_roster, params.turn_state.current_player) {
                 mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} armed DoubleDice for the next roll",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} armed DoubleDice for the next roll",
+                        params.turn_state.current_player
+                    ),
+                );
             } else {
                 let armed =
                     player_skill_state(&params.skill_roster, params.turn_state.current_player)
@@ -320,40 +389,64 @@ fn handle_human_skill_input(
                         params.turn_state.current_player
                     )
                 };
-                params.skill_roster.last_skill_action = Some(message);
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    message,
+                );
             }
         }
         SkillUiAction::Dash
             if matches!(params.game_phase.get(), GamePhase::AwaitPieceSelect)
                 && dash_bonus(&params.skill_roster, params.turn_state.current_player) == 0 =>
         {
-            if !current_player_has_active_piece(
+            if !current_player_has_dash_move_piece(
                 params.turn_state.current_player,
                 &params.piece_query,
             ) {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} needs an active piece to use Dash",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} needs a movable piece to use Dash",
+                        params.turn_state.current_player
+                    ),
+                );
                 return;
             }
             if arm_dash(&mut params.skill_roster, params.turn_state.current_player) {
                 mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} armed Dash for +3 movement",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} armed Dash for +3 movement",
+                        params.turn_state.current_player
+                    ),
+                );
             } else {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} has no Dash charges left",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} has no Dash charges left",
+                        params.turn_state.current_player
+                    ),
+                );
             }
         }
         SkillUiAction::Swap if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
             if params.match_config.mode != GameMode::TwoVsTwo {
-                params.skill_roster.last_skill_action =
-                    Some("Swap is only available in 2v2".to_string());
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    "Swap is only available in 2v2",
+                );
                 return;
             }
 
@@ -372,40 +465,65 @@ fn handle_human_skill_input(
                 current_team_id,
                 &params.piece_query,
             ) else {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} found no teammate piece to Swap with",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} found no teammate piece to Swap with",
+                        params.turn_state.current_player
+                    ),
+                );
                 return;
             };
             if !current_player_has_active_piece(
                 params.turn_state.current_player,
                 &params.piece_query,
             ) {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} needs an active piece to use Swap",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} needs an active piece to use Swap",
+                        params.turn_state.current_player
+                    ),
+                );
                 return;
             }
             if !spend_swap_charge(&mut params.skill_roster, params.turn_state.current_player) {
-                params.skill_roster.last_skill_action = Some(format!(
-                    "P{} has no Swap charges left",
-                    params.turn_state.current_player
-                ));
+                record_skill_action(
+                    &mut params.skill_roster,
+                    params.turn_state.turn_index,
+                    params.turn_state.current_player,
+                    format!(
+                        "P{} has no Swap charges left",
+                        params.turn_state.current_player
+                    ),
+                );
                 return;
             }
 
             mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
-            params.skill_roster.last_skill_action = Some(execute_swap(
+            let message = execute_swap(
                 params.turn_state.current_player,
                 teammate_piece_id,
                 &mut params.piece_query,
-            ));
+            );
+            record_skill_action(
+                &mut params.skill_roster,
+                params.turn_state.turn_index,
+                params.turn_state.current_player,
+                message,
+            );
         }
         _ => {
-            params.skill_roster.last_skill_action =
-                Some("Skill not available in current phase".to_string());
+            record_skill_action(
+                &mut params.skill_roster,
+                params.turn_state.turn_index,
+                params.turn_state.current_player,
+                "Skill not available in current phase",
+            );
         }
     }
 }
@@ -424,7 +542,12 @@ fn handle_human_snipe_key_select(
     }
 
     if keyboard.just_pressed(KeyCode::Escape) || params.skill_ui_request.take_cancel_target() {
-        params.skill_roster.last_skill_action = Some("Snipe selection cancelled".to_string());
+        record_skill_action(
+            &mut params.skill_roster,
+            params.turn_state.turn_index,
+            params.turn_state.current_player,
+            "Snipe selection cancelled",
+        );
         clear_target_state(&mut params.target_state);
         params.next_phase.set(GamePhase::AwaitDice);
         return;
@@ -444,8 +567,28 @@ fn handle_human_snipe_key_select(
     };
 
     let target_piece_id = params.target_state.candidate_piece_ids[selection];
-    params.skill_roster.last_skill_action =
-        Some(execute_snipe(target_piece_id, &mut params.piece_query));
+    if let Some(target_world) = piece_world_position(target_piece_id, &params.piece_query) {
+        params
+            .effect_queue
+            .hud_skill_missile(SkillUiAction::Snipe, target_world);
+    }
+    if piece_personal_shield(target_piece_id, &params.piece_query).unwrap_or_default() > 0 {
+        params
+            .reveal_delays
+            .delay_shield_loss(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
+    }
+    if snipe_will_send_to_hangar(target_piece_id, &params.piece_query) {
+        params
+            .motion_effects
+            .delay_piece_motion(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
+    }
+    let message = execute_snipe(target_piece_id, &mut params.piece_query);
+    record_skill_action(
+        &mut params.skill_roster,
+        params.turn_state.turn_index,
+        params.turn_state.current_player,
+        message,
+    );
     clear_target_state(&mut params.target_state);
     params.next_phase.set(GamePhase::AwaitDice);
 }
@@ -516,8 +659,28 @@ fn handle_human_snipe_click(
     let Some(target_piece_id) = selected_piece_id else {
         return;
     };
-    params.skill_roster.last_skill_action =
-        Some(execute_snipe(target_piece_id, &mut params.piece_query));
+    if let Some(target_world) = piece_world_position(target_piece_id, &params.piece_query) {
+        params
+            .effect_queue
+            .hud_skill_missile(SkillUiAction::Snipe, target_world);
+    }
+    if piece_personal_shield(target_piece_id, &params.piece_query).unwrap_or_default() > 0 {
+        params
+            .reveal_delays
+            .delay_shield_loss(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
+    }
+    if snipe_will_send_to_hangar(target_piece_id, &params.piece_query) {
+        params
+            .motion_effects
+            .delay_piece_motion(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
+    }
+    let message = execute_snipe(target_piece_id, &mut params.piece_query);
+    record_skill_action(
+        &mut params.skill_roster,
+        params.turn_state.turn_index,
+        params.turn_state.current_player,
+        message,
+    );
     clear_target_state(&mut params.target_state);
     params.next_phase.set(GamePhase::AwaitDice);
 }
@@ -539,6 +702,38 @@ fn preferred_shield_target_for_full_query(
         .filter(|(_, _, piece_state, _)| is_legal_shield_target(player_id, piece_state))
         .map(|(piece_id, _, _, _)| piece_id.0)
         .min()
+}
+
+fn piece_world_position(
+    piece_id: u8,
+    piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<Vec2> {
+    piece_query
+        .iter()
+        .find(|(query_piece_id, _, _, _)| query_piece_id.0 == piece_id)
+        .map(|(_, _, _, transform)| transform.translation.truncate())
+}
+
+fn piece_personal_shield(
+    piece_id: u8,
+    piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> Option<u8> {
+    piece_query
+        .iter()
+        .find(|(query_piece_id, _, _, _)| query_piece_id.0 == piece_id)
+        .map(|(_, _, piece_state, _)| piece_state.shield)
+}
+
+fn snipe_will_send_to_hangar(
+    piece_id: u8,
+    piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    piece_query
+        .iter()
+        .find(|(query_piece_id, _, _, _)| query_piece_id.0 == piece_id)
+        .is_some_and(|(_, _, piece_state, _)| {
+            piece_state.shield == 0 && piece_state.stack_shield == 0
+        })
 }
 
 /// 给目标棋子加盾（技能插件查询版本）。
@@ -624,6 +819,16 @@ fn current_player_has_active_piece(
         .any(|(_, _, piece_state, _)| is_current_player_active_piece(current_player, piece_state))
 }
 
+/// 判断当前玩家是否至少有一枚可通过 Dash 增幅的移动棋子。
+fn current_player_has_dash_move_piece(
+    current_player: u8,
+    piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    piece_query.iter().any(|(_, _, piece_state, _)| {
+        is_current_player_dash_move_piece(current_player, piece_state)
+    })
+}
+
 /// 查找可用于 Swap 的队友 Active 棋子。
 fn find_active_teammate_piece_for_swap(
     current_player: u8,
@@ -675,12 +880,18 @@ fn execute_swap(
             piece_state.progress = teammate_state.progress;
             piece_state.shield = teammate_state.shield;
             piece_state.stack_shield = teammate_state.stack_shield;
+            piece_state.motion_serial = piece_state
+                .motion_serial
+                .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
             transform.translation = teammate_translation;
         } else if piece_id.0 == teammate_piece_id {
             piece_state.status = current_state.status;
             piece_state.progress = current_state.progress;
             piece_state.shield = current_state.shield;
             piece_state.stack_shield = current_state.stack_shield;
+            piece_state.motion_serial = piece_state
+                .motion_serial
+                .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
             transform.translation = current_translation;
         }
     }

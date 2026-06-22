@@ -40,6 +40,9 @@ pub struct TurnState {
     pub player_last_rolls: [Option<u8>; 4],
     pub last_piece_effect: Option<PieceEffectNotice>,
     pub last_action: Option<String>,
+    pub last_action_player_id: Option<u8>,
+    pub last_action_turn_index: u32,
+    pub last_action_serial: u64,
 }
 
 impl TurnState {
@@ -58,6 +61,9 @@ impl TurnState {
             player_last_rolls: [None; 4],
             last_piece_effect: None,
             last_action: None,
+            last_action_player_id: None,
+            last_action_turn_index: 0,
+            last_action_serial: 0,
         }
     }
 
@@ -68,6 +74,14 @@ impl TurnState {
             .copied()
             .flatten()
     }
+}
+
+/// 记录一次行动日志事件，并保留其发生时的回合号。
+pub fn record_turn_action(turn_state: &mut TurnState, action: impl Into<String>) {
+    turn_state.last_action = Some(action.into());
+    turn_state.last_action_player_id = Some(turn_state.current_player);
+    turn_state.last_action_turn_index = turn_state.turn_index;
+    turn_state.last_action_serial = turn_state.last_action_serial.saturating_add(1);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -580,7 +594,10 @@ pub fn execute_action(
         ));
     }
 
-    state.turn_state.last_action = Some(describe_action(&action, roll_value, &notes));
+    record_turn_action(
+        state.turn_state,
+        describe_action(&action, roll_value, &notes),
+    );
     state.turn_state.last_piece_effect = piece_effect_notice;
     clear_pending_input(state.input_state);
 
@@ -1048,6 +1065,10 @@ fn apply_jump_effect(
         return;
     }
 
+    if attacker_has_enemy_on_current_tile(action, player_roster, piece_query) {
+        return;
+    }
+
     let Some(jump) = jump_resolution_for_same_color_landing(
         owner_player_id,
         tile_index,
@@ -1068,6 +1089,35 @@ fn apply_jump_effect(
         "jumped to next same-color tile {}",
         jump.target_progress
     ));
+}
+
+fn attacker_has_enemy_on_current_tile(
+    action: &PlannedAction,
+    player_roster: &PlayerRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+) -> bool {
+    let Some(BoardPosition::Main(target_tile_index)) =
+        attacker_position(action, player_roster, piece_query)
+    else {
+        return false;
+    };
+
+    let attacker_piece_id = action.piece_id();
+    let Some(attacker_team) = piece_query
+        .iter()
+        .find(|(piece_id, _, _, _)| piece_id.0 == attacker_piece_id)
+        .map(|(_, _, piece_state, _)| piece_state.team_id)
+    else {
+        return false;
+    };
+
+    piece_query.iter().any(|(piece_id, _, piece_state, _)| {
+        piece_id.0 != attacker_piece_id
+            && piece_state.status == PieceStatus::Active
+            && piece_state.team_id != attacker_team
+            && piece_board_position(*piece_state, player_roster)
+                == Some(BoardPosition::Main(target_tile_index))
+    })
 }
 
 fn move_route_effects_for_action(
@@ -1327,7 +1377,9 @@ fn jump_source_event_tile(
 }
 
 /// 撞击主逻辑：
-/// - 先判定共享护盾；
+/// - 攻击格清场优先，穿透共享护盾与单体护盾；
+/// - 再判定普通格叠防；
+/// - 再判定共享护盾；
 /// - 再判定单体护盾；
 /// - 无护盾则送回机库。
 fn resolve_collision(
@@ -1371,6 +1423,19 @@ fn resolve_collision(
             .then_some(piece_id.0)
         })
         .collect::<Vec<_>>();
+
+    if is_attack_route_tile(board_layout, target_tile_index) && !defender_piece_ids.is_empty() {
+        clear_attack_tile_defenders(
+            attacker_piece_id,
+            attacker_team,
+            target_tile_index,
+            player_roster,
+            piece_query,
+            notes,
+        );
+        append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        return true;
+    }
 
     if is_plain_route_tile(board_layout, target_tile_index) && defender_piece_ids.len() >= 2 {
         send_attacker_to_hangar(action, piece_query);
@@ -1455,6 +1520,39 @@ fn resolve_collision(
 /// 普通主环道格：不含攻击、防御、随机、飞跃等特殊效果。
 fn is_plain_route_tile(board_layout: &BoardLayout, target_tile_index: u8) -> bool {
     board_layout.tile_kind_for_route_index(target_tile_index) == Some(TileKind::Normal)
+}
+
+fn is_attack_route_tile(board_layout: &BoardLayout, target_tile_index: u8) -> bool {
+    board_layout.tile_kind_for_route_index(target_tile_index) == Some(TileKind::Attack)
+}
+
+/// 攻击格撞击会穿透护盾，将目标格上的所有敌方棋子送回机库。
+fn clear_attack_tile_defenders(
+    attacker_piece_id: u8,
+    attacker_team: u8,
+    target_tile_index: u8,
+    player_roster: &PlayerRoster,
+    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    notes: &mut Vec<String>,
+) {
+    for (piece_id, hangar_slot, mut piece_state, mut transform) in piece_query.iter_mut() {
+        if piece_id.0 == attacker_piece_id
+            || piece_state.status != PieceStatus::Active
+            || piece_state.team_id == attacker_team
+            || piece_board_position(*piece_state, player_roster)
+                != Some(BoardPosition::Main(target_tile_index))
+        {
+            continue;
+        }
+
+        piece_state.status = PieceStatus::InHangar;
+        piece_state.progress = 0;
+        piece_state.shield = 0;
+        piece_state.stack_shield = 0;
+        transform.translation.x = hangar_slot.0.x;
+        transform.translation.y = hangar_slot.0.y;
+        notes.push(format!("sent piece #{} back to hangar", piece_id.0));
+    }
 }
 
 /// 若撞击发生在攻击格，补充一条强化撞击说明。
@@ -1774,7 +1872,7 @@ fn apply_event_kind_effect(
             );
             Some(TileEventOutcome {
                 kind: event_kind,
-                note: format!("event {event_kind:?}: advanced to tile {next_progress}"),
+                note: "event advance +2".to_string(),
                 attacker_still_landed,
             })
         }
@@ -2522,6 +2620,9 @@ mod tests {
             player_last_rolls: [Some(6), None, None, None],
             last_piece_effect: None,
             last_action: None,
+            last_action_player_id: None,
+            last_action_turn_index: 0,
+            last_action_serial: 0,
         };
 
         advance_turn(&mut turn_state, 4);
@@ -2714,6 +2815,101 @@ mod tests {
             notes
                 .iter()
                 .any(|note| note.contains("next same-color tile"))
+        );
+    }
+
+    #[test]
+    fn same_color_jump_is_blocked_by_enemy_on_landing_tile() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let board_layout = BoardLayout::default();
+        let player_roster = PlayerRoster::from_players(players);
+        let match_config = match_config(GameMode::OneVsOne);
+        let landing_tile = 40;
+        let p1_landing_progress = progress_for_main_tile(&player_roster, 1, landing_tile);
+        let p2_landing_progress = progress_for_main_tile(&player_roster, 2, landing_tile);
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: p1_landing_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(Vec2::new(30.0, -30.0)),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: p2_landing_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+        let action = PlannedAction::Move {
+            piece_id: 1,
+            target_progress: p1_landing_progress,
+        };
+
+        apply_jump_effect(
+            &action,
+            MoveRouteEffects::default(),
+            &board_layout,
+            &player_roster,
+            &mut query,
+            &mut notes,
+        );
+
+        let p1_progress = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 1)
+            .map(|(_, _, piece_state, _)| piece_state.progress)
+            .unwrap_or_default();
+        assert_eq!(p1_progress, p1_landing_progress);
+        assert!(
+            !notes
+                .iter()
+                .any(|note| note.contains("next same-color tile"))
+        );
+
+        assert!(resolve_collision(
+            &action,
+            None,
+            &board_layout,
+            &player_roster,
+            &match_config,
+            &mut query,
+            &mut notes,
+        ));
+
+        let p2_status = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 2)
+            .map(|(_, _, piece_state, _)| piece_state.status)
+            .unwrap();
+        assert_eq!(p2_status, PieceStatus::InHangar);
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("sent piece #2 back to hangar"))
         );
     }
 
@@ -3690,6 +3886,140 @@ mod tests {
     }
 
     #[test]
+    fn attack_tile_collision_clears_all_defenders_through_shields() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let player_roster = PlayerRoster::from_players(players);
+        let match_config = match_config(GameMode::TwoVsTwo);
+        let board_layout = BoardLayout::default();
+        let attack_tile = 14;
+        let attacker_hangar = Vec2::new(320.0, 280.0);
+        let p1_hangar = Vec2::new(-320.0, 280.0);
+        let p3_hangar = Vec2::new(-320.0, -280.0);
+        let p1_progress = progress_for_main_tile(&player_roster, 1, attack_tile);
+        let p2_progress = progress_for_main_tile(&player_roster, 2, attack_tile);
+        let p3_progress = progress_for_main_tile(&player_roster, 3, attack_tile);
+
+        assert_eq!(
+            board_layout.tile_kind_for_route_index(attack_tile),
+            Some(TileKind::Attack)
+        );
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(attacker_hangar),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: PieceStatus::Active,
+                progress: p2_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::from_xyz(12.0, 34.0, 0.0),
+        ));
+        world.spawn((
+            PieceId(2),
+            HangarSlot(p1_hangar),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: p1_progress,
+                shield: 2,
+                stack_shield: 1,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(3),
+            HangarSlot(p3_hangar),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: p3_progress,
+                shield: 1,
+                stack_shield: 1,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut notes = Vec::new();
+
+        let attacker_landed = resolve_collision(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: p2_progress,
+            },
+            Some(ActionOrigin {
+                owner_player_id: 2,
+                status: PieceStatus::Active,
+                progress: p2_progress.saturating_sub(1),
+                translation: Vec3::new(-50.0, -70.0, 0.0),
+                new_progress: p2_progress,
+            }),
+            &board_layout,
+            &player_roster,
+            &match_config,
+            &mut query,
+            &mut notes,
+        );
+
+        assert!(attacker_landed);
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, transform)| {
+                (
+                    piece_id.0,
+                    piece_state.status,
+                    piece_state.progress,
+                    piece_state.shield,
+                    piece_state.stack_shield,
+                    transform.translation.x,
+                    transform.translation.y,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            vec![
+                (1, PieceStatus::Active, p2_progress, 0, 0, 12.0, 34.0),
+                (2, PieceStatus::InHangar, 0, 0, 0, p1_hangar.x, p1_hangar.y),
+                (3, PieceStatus::InHangar, 0, 0, 0, p3_hangar.x, p3_hangar.y),
+            ]
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note == "sent piece #2 back to hangar")
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note == "sent piece #3 back to hangar")
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note == "enhanced collision on attack tile")
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|note| note.contains("blocked") || note.contains("bounced"))
+        );
+    }
+
+    #[test]
     fn free_for_all_treats_two_vs_two_teammates_as_enemies_on_collision() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::FreeForAll));
@@ -4405,6 +4735,76 @@ mod tests {
     }
 
     #[test]
+    fn advance_two_event_advances_exactly_two_progress() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let match_config = match_config(GameMode::OneVsOne);
+        let board_layout = BoardLayout::default();
+        let start_progress = 10;
+
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: start_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world);
+        let mut final_progress = start_progress;
+        let mut notes = Vec::new();
+
+        let event_result = apply_event_kind_effect(
+            TileEventKind::AdvanceTwo,
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress: start_progress,
+            },
+            &mut final_progress,
+            LandingResources {
+                player_roster: &player_roster,
+                match_config: &match_config,
+                board_layout: &board_layout,
+                jump_source_event_tile: None,
+            },
+            &mut query,
+            &mut skill_roster,
+            &mut notes,
+        );
+
+        assert_eq!(
+            event_result,
+            Some(TileEventOutcome {
+                kind: TileEventKind::AdvanceTwo,
+                note: "event advance +2".to_string(),
+                attacker_still_landed: true,
+            })
+        );
+        assert_eq!(final_progress, start_progress + 2);
+
+        let progress = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 1)
+            .map(|(_, _, piece_state, _)| piece_state.progress)
+            .unwrap_or_default();
+        assert_eq!(progress, start_progress + 2);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
     fn advance_two_event_can_send_enemy_back_to_hangar() {
         let (players, _) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
@@ -4476,11 +4876,7 @@ mod tests {
             event_result,
             Some(TileEventOutcome {
                 kind: TileEventKind::AdvanceTwo,
-                note: format!(
-                    "event {:?}: advanced to tile {}",
-                    TileEventKind::AdvanceTwo,
-                    p1_start_progress + 2
-                ),
+                note: "event advance +2".to_string(),
                 attacker_still_landed: true,
             })
         );
@@ -4594,11 +4990,7 @@ mod tests {
             event_result,
             Some(TileEventOutcome {
                 kind: TileEventKind::AdvanceTwo,
-                note: format!(
-                    "event {:?}: advanced to tile {}",
-                    TileEventKind::AdvanceTwo,
-                    p1_start_progress + 2
-                ),
+                note: "event advance +2".to_string(),
                 attacker_still_landed: false,
             })
         );

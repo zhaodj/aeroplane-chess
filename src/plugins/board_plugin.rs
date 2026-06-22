@@ -35,6 +35,7 @@ struct BoardSceneEntity;
 /// 玩家停机坪中心的骰面底板。
 struct PlayerDiceDisplay {
     player_id: u8,
+    layer: PlayerDiceDisplayLayer,
 }
 
 #[derive(Clone, Copy, Component, Eq, PartialEq)]
@@ -42,6 +43,32 @@ struct PlayerDiceDisplay {
 struct PlayerDicePip {
     player_id: u8,
     slot: DicePipSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlayerDiceDisplayLayer {
+    Rim,
+    Face,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlayerDiceDisplayState {
+    Hidden,
+    Active(u8),
+    Disabled(u8),
+}
+
+impl PlayerDiceDisplayState {
+    fn roll(self) -> Option<u8> {
+        match self {
+            Self::Hidden => None,
+            Self::Active(roll) | Self::Disabled(roll) => Some(roll),
+        }
+    }
+
+    fn active(self) -> bool {
+        matches!(self, Self::Active(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -493,21 +520,38 @@ fn cleanup_board(
 fn update_player_dice_displays(
     turn_state: Res<TurnState>,
     animation_query: Query<(), With<PieceMoveAnimation>>,
-    mut display_query: Query<(&PlayerDiceDisplay, &mut Visibility)>,
-    mut pip_query: Query<(&PlayerDicePip, &mut Visibility), Without<PlayerDiceDisplay>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut display_query: Query<(
+        &PlayerDiceDisplay,
+        &mut Visibility,
+        &MeshMaterial2d<ColorMaterial>,
+    )>,
+    mut pip_query: Query<
+        (
+            &PlayerDicePip,
+            &mut Visibility,
+            &MeshMaterial2d<ColorMaterial>,
+        ),
+        Without<PlayerDiceDisplay>,
+    >,
 ) {
     let animation_active = !animation_query.is_empty();
-    for (display, mut visibility) in &mut display_query {
-        *visibility =
-            if visible_player_roll(&turn_state, display.player_id, animation_active).is_some() {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            };
+    for (display, mut visibility, material_handle) in &mut display_query {
+        let display_state =
+            player_dice_display_state(&turn_state, display.player_id, animation_active);
+        *visibility = if display_state.roll().is_some() {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        if let Some(material) = materials.get_mut(&material_handle.0) {
+            material.color = player_dice_display_color(display.layer, display_state.active());
+        }
     }
 
-    for (pip, mut visibility) in &mut pip_query {
-        let Some(roll) = visible_player_roll(&turn_state, pip.player_id, animation_active) else {
+    for (pip, mut visibility, material_handle) in &mut pip_query {
+        let display_state = player_dice_display_state(&turn_state, pip.player_id, animation_active);
+        let Some(roll) = display_state.roll() else {
             *visibility = Visibility::Hidden;
             continue;
         };
@@ -516,25 +560,39 @@ fn update_player_dice_displays(
         } else {
             Visibility::Hidden
         };
+        if let Some(material) = materials.get_mut(&material_handle.0) {
+            material.color = player_dice_pip_color(display_state.active());
+        }
     }
 }
 
-fn visible_player_roll(
+fn player_dice_display_state(
     turn_state: &TurnState,
     player_id: u8,
     animation_active: bool,
-) -> Option<u8> {
+) -> PlayerDiceDisplayState {
     if let Some(roll) = turn_state.current_roll {
-        return (turn_state.current_player == player_id).then_some(roll);
+        if turn_state.current_player == player_id {
+            return PlayerDiceDisplayState::Active(roll);
+        }
+        return disabled_player_roll_state(turn_state, player_id);
     }
 
     if (animation_active || turn_state.hold_last_roll_display)
         && turn_state.last_roll_player == Some(player_id)
+        && let Some(roll) = turn_state.last_roll
     {
-        return turn_state.last_roll;
+        return PlayerDiceDisplayState::Active(roll);
     }
 
-    None
+    disabled_player_roll_state(turn_state, player_id)
+}
+
+fn disabled_player_roll_state(turn_state: &TurnState, player_id: u8) -> PlayerDiceDisplayState {
+    turn_state
+        .player_last_roll(player_id)
+        .map(PlayerDiceDisplayState::Disabled)
+        .unwrap_or(PlayerDiceDisplayState::Hidden)
 }
 
 fn board_surface_color() -> Color {
@@ -618,6 +676,23 @@ fn pip_visible_for_roll(roll: u8, slot: DicePipSlot) -> bool {
     }
 }
 
+fn player_dice_display_color(layer: PlayerDiceDisplayLayer, active: bool) -> Color {
+    match (layer, active) {
+        (PlayerDiceDisplayLayer::Rim, true) => Color::srgba(0.08, 0.11, 0.16, 0.82),
+        (PlayerDiceDisplayLayer::Face, true) => Color::srgba(1.0, 1.0, 1.0, 0.92),
+        (PlayerDiceDisplayLayer::Rim, false) => Color::srgba(0.18, 0.19, 0.22, 0.48),
+        (PlayerDiceDisplayLayer::Face, false) => Color::srgba(0.70, 0.72, 0.76, 0.68),
+    }
+}
+
+fn player_dice_pip_color(active: bool) -> Color {
+    if active {
+        Color::srgb(0.08, 0.11, 0.16)
+    } else {
+        Color::srgba(0.30, 0.32, 0.36, 0.74)
+    }
+}
+
 fn spawn_player_dice_display(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -625,24 +700,18 @@ fn spawn_player_dice_display(
     player_id: u8,
     center: Vec2,
 ) {
-    for (radius, color, z) in [
-        (
-            20.0,
-            Color::srgba(0.08, 0.11, 0.16, 0.82),
-            BOARD_Z_LAYER + 1.26,
-        ),
-        (
-            17.2,
-            Color::srgba(1.0, 1.0, 1.0, 0.92),
-            BOARD_Z_LAYER + 1.27,
-        ),
+    for (radius, layer, z) in [
+        (20.0, PlayerDiceDisplayLayer::Rim, BOARD_Z_LAYER + 1.26),
+        (17.2, PlayerDiceDisplayLayer::Face, BOARD_Z_LAYER + 1.27),
     ] {
         commands.spawn((
             Mesh2d(meshes.add(Circle::new(radius))),
-            MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+            MeshMaterial2d(
+                materials.add(ColorMaterial::from(player_dice_display_color(layer, true))),
+            ),
             Transform::from_xyz(center.x, center.y, z),
             Visibility::Hidden,
-            PlayerDiceDisplay { player_id },
+            PlayerDiceDisplay { player_id, layer },
             Name::new(format!("PlayerDiceDisplay_P{player_id}")),
             BoardSceneEntity,
         ));
@@ -659,7 +728,7 @@ fn spawn_player_dice_display(
     ] {
         commands.spawn((
             Mesh2d(meshes.add(Circle::new(2.7))),
-            MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.08, 0.11, 0.16)))),
+            MeshMaterial2d(materials.add(ColorMaterial::from(player_dice_pip_color(true)))),
             Transform::from_xyz(
                 center.x + offset.x,
                 center.y + offset.y,
@@ -2098,7 +2167,7 @@ mod tests {
     }
 
     #[test]
-    fn dice_display_only_uses_current_turn_roll() {
+    fn dice_display_grays_past_rolls_when_no_current_roll() {
         let mut turn_state = TurnState::opening_turn();
         turn_state.current_player = 2;
         turn_state.current_roll = None;
@@ -2106,19 +2175,44 @@ mod tests {
         turn_state.last_roll_player = Some(1);
         turn_state.player_last_rolls = [Some(6), Some(3), None, None];
 
-        assert_eq!(visible_player_roll(&turn_state, 1, false), None);
-        assert_eq!(visible_player_roll(&turn_state, 2, false), None);
-        assert_eq!(visible_player_roll(&turn_state, 1, true), Some(6));
-        assert_eq!(visible_player_roll(&turn_state, 2, true), None);
+        assert_eq!(
+            player_dice_display_state(&turn_state, 1, false),
+            PlayerDiceDisplayState::Disabled(6)
+        );
+        assert_eq!(
+            player_dice_display_state(&turn_state, 2, false),
+            PlayerDiceDisplayState::Disabled(3)
+        );
+        assert_eq!(
+            player_dice_display_state(&turn_state, 3, false),
+            PlayerDiceDisplayState::Hidden
+        );
+        assert_eq!(
+            player_dice_display_state(&turn_state, 1, true),
+            PlayerDiceDisplayState::Active(6)
+        );
+        assert_eq!(
+            player_dice_display_state(&turn_state, 2, true),
+            PlayerDiceDisplayState::Disabled(3)
+        );
 
         turn_state.hold_last_roll_display = true;
-        assert_eq!(visible_player_roll(&turn_state, 1, false), Some(6));
+        assert_eq!(
+            player_dice_display_state(&turn_state, 1, false),
+            PlayerDiceDisplayState::Active(6)
+        );
         turn_state.hold_last_roll_display = false;
 
         turn_state.current_roll = Some(4);
 
-        assert_eq!(visible_player_roll(&turn_state, 1, true), None);
-        assert_eq!(visible_player_roll(&turn_state, 2, true), Some(4));
+        assert_eq!(
+            player_dice_display_state(&turn_state, 1, true),
+            PlayerDiceDisplayState::Disabled(6)
+        );
+        assert_eq!(
+            player_dice_display_state(&turn_state, 2, true),
+            PlayerDiceDisplayState::Active(4)
+        );
     }
 
     #[test]

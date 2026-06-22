@@ -15,6 +15,9 @@ pub const STARTING_SKILL_CHARGE_POINTS: u8 = 1;
 pub struct SkillRoster {
     pub players: Vec<PlayerSkillState>,
     pub last_skill_action: Option<String>,
+    pub last_skill_action_player_id: Option<u8>,
+    pub last_skill_action_turn_index: u32,
+    pub last_skill_action_serial: u64,
     pub active_turn_player: Option<u8>,
     pub skill_used_this_turn: bool,
 }
@@ -61,9 +64,25 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
             })
             .collect(),
         last_skill_action: None,
+        last_skill_action_player_id: None,
+        last_skill_action_turn_index: 0,
+        last_skill_action_serial: 0,
         active_turn_player: None,
         skill_used_this_turn: false,
     }
+}
+
+/// 记录一次技能日志事件，并分配稳定序号避免 UI 按帧重复消费旧消息。
+pub fn record_skill_action(
+    skill_roster: &mut SkillRoster,
+    turn_index: u32,
+    player_id: u8,
+    action: impl Into<String>,
+) {
+    skill_roster.last_skill_action = Some(action.into());
+    skill_roster.last_skill_action_player_id = Some(player_id);
+    skill_roster.last_skill_action_turn_index = turn_index;
+    skill_roster.last_skill_action_serial = skill_roster.last_skill_action_serial.saturating_add(1);
 }
 
 /// 读取指定玩家的技能状态快照。
@@ -261,6 +280,15 @@ pub fn is_legal_snipe_target(
 /// 判断棋子是否为当前玩家可操作的 Active 棋子。
 pub fn is_current_player_active_piece(current_player: u8, piece_state: &PieceState) -> bool {
     piece_state.owner_player_id == current_player && piece_state.status == PieceStatus::Active
+}
+
+/// 判断棋子是否为当前玩家可通过 Dash 增幅的移动棋子。
+pub fn is_current_player_dash_move_piece(current_player: u8, piece_state: &PieceState) -> bool {
+    piece_state.owner_player_id == current_player
+        && matches!(
+            piece_state.status,
+            PieceStatus::AtLaunch | PieceStatus::Active
+        )
 }
 
 /// 判断棋子是否为当前玩家同队队友的 Active 棋子。
@@ -536,6 +564,18 @@ mod tests {
         player.double_dice_charges = double_dice;
     }
 
+    fn piece_state(owner_player_id: u8, status: PieceStatus) -> PieceState {
+        PieceState {
+            owner_player_id,
+            team_id: owner_player_id,
+            status,
+            progress: 0,
+            shield: 0,
+            stack_shield: 0,
+            motion_serial: 0,
+        }
+    }
+
     #[test]
     fn build_skill_roster_initializes_one_starting_charge_point() {
         let skill_roster = build_skill_roster(&sample_roster());
@@ -566,6 +606,26 @@ mod tests {
 
         clear_dash_arm(&mut skill_roster, 1);
         assert_eq!(dash_bonus(&skill_roster, 1), 0);
+    }
+
+    #[test]
+    fn dash_move_piece_includes_launch_and_active_only_for_current_player() {
+        assert!(is_current_player_dash_move_piece(
+            1,
+            &piece_state(1, PieceStatus::AtLaunch)
+        ));
+        assert!(is_current_player_dash_move_piece(
+            1,
+            &piece_state(1, PieceStatus::Active)
+        ));
+        assert!(!is_current_player_dash_move_piece(
+            1,
+            &piece_state(1, PieceStatus::InHangar)
+        ));
+        assert!(!is_current_player_dash_move_piece(
+            1,
+            &piece_state(2, PieceStatus::AtLaunch)
+        ));
     }
 
     #[test]
