@@ -203,18 +203,24 @@ impl PieceMotionEffects {
     }
 
     pub(crate) fn take_for_piece(&mut self, piece_id: u8) -> PieceMotionEffect {
+        let effect = self.peek_for_piece(piece_id);
+        self.start_delays.retain(|delay| delay.piece_id != piece_id);
+        self.advance_two_cues.retain(|cue| cue.piece_id != piece_id);
+        effect
+    }
+
+    pub(crate) fn peek_for_piece(&self, piece_id: u8) -> PieceMotionEffect {
         let start_delay_secs = self
             .start_delays
             .iter()
-            .position(|delay| delay.piece_id == piece_id)
-            .map(|index| self.start_delays.remove(index).remaining_ms)
+            .find(|delay| delay.piece_id == piece_id)
+            .map(|delay| delay.remaining_ms)
             .map(millis_to_seconds)
             .unwrap_or_default();
         let advance_two = self
             .advance_two_cues
             .iter()
-            .position(|cue| cue.piece_id == piece_id)
-            .map(|index| self.advance_two_cues.remove(index))
+            .find(|cue| cue.piece_id == piece_id)
             .map(|cue| AdvanceTwoPause {
                 event_progress: cue.event_progress,
                 pause_secs: millis_to_seconds(cue.pause_ms),
@@ -1040,6 +1046,8 @@ mod tests {
         effects.delay_piece_motion(7, 0.25);
         effects.delay_piece_motion(7, 0.5);
         effects.cue_advance_two(7, 12, 0.75);
+
+        assert_eq!(effects.peek_for_piece(7).start_delay_secs, 0.5);
 
         let effect = effects.take_for_piece(7);
         assert_eq!(effect.start_delay_secs, 0.5);

@@ -5,7 +5,9 @@ use crate::gameplay::match_flow::{BoardLayout, MatchConfig, PlayerRoster};
 use crate::gameplay::turn_flow::{
     FINISH_DISTANCE, TurnState, movement_steps_between_progresses, world_position_for_piece,
 };
-use crate::plugins::effects_plugin::{AdvanceTwoPause, PieceMotionEffects, VisualEffectQueue};
+use crate::plugins::effects_plugin::{
+    AdvanceTwoPause, PieceMotionEffect, PieceMotionEffects, VisualEffectQueue,
+};
 use crate::plugins::piece_plugin::PieceId;
 use crate::states::AppState;
 
@@ -63,6 +65,12 @@ struct PieceMovePauseCue {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct CollisionArrival {
+    target: Vec2,
+    delay_secs: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct PieceAnimationSnapshot {
     owner_player_id: u8,
     status: PieceStatus,
@@ -110,6 +118,14 @@ fn capture_piece_motion(
     mut motion_effects: ResMut<PieceMotionEffects>,
     mut query: ChangedPieceAnimationQuery,
 ) {
+    let collision_arrivals = collect_collision_arrivals(
+        match_config.fast_mode,
+        &board_layout,
+        &player_roster,
+        &motion_effects,
+        &mut query,
+    );
+
     for (entity, piece_id, piece_state, mut transform, mut animation_state) in &mut query {
         let from = animation_state.logical_translation;
         let to = transform.translation;
@@ -136,6 +152,12 @@ fn capture_piece_motion(
         }
 
         let motion_effect = motion_effects.take_for_piece(piece_id.0);
+        let start_delay = motion_effect.start_delay_secs.max(collision_return_delay(
+            previous_piece,
+            current_piece,
+            from,
+            &collision_arrivals,
+        ));
         let pause_cue = motion_effect.advance_two.and_then(|cue| {
             advance_two_pause_cue(
                 cue,
@@ -161,10 +183,111 @@ fn capture_piece_motion(
                 current_piece,
                 match_config.fast_mode,
             ),
-            start_delay: motion_effect.start_delay_secs,
+            start_delay,
             pause_cue,
         });
     }
+}
+
+fn collect_collision_arrivals(
+    fast_mode: bool,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+    motion_effects: &PieceMotionEffects,
+    query: &mut ChangedPieceAnimationQuery<'_, '_>,
+) -> Vec<CollisionArrival> {
+    let mut arrivals = Vec::new();
+    for (_, piece_id, piece_state, transform, animation_state) in query.iter_mut() {
+        let from = animation_state.logical_translation;
+        let to = transform.translation;
+        let previous_piece = animation_state.logical_piece;
+        let current_piece = PieceAnimationSnapshot::from_piece_state(*piece_state);
+        if is_stale_transform_change(previous_piece, current_piece, from, to)
+            || is_returning_to_hangar(previous_piece, current_piece)
+            || previous_piece.owner_player_id != current_piece.owner_player_id
+            || !matches!(
+                current_piece.status,
+                PieceStatus::Active | PieceStatus::Finished
+            )
+        {
+            continue;
+        }
+
+        let waypoints = build_motion_waypoints(
+            previous_piece,
+            current_piece,
+            from,
+            to,
+            board_layout,
+            player_roster,
+        );
+        if waypoints.len() < 2 {
+            continue;
+        }
+
+        let motion_effect = motion_effects.peek_for_piece(piece_id.0);
+        arrivals.push(CollisionArrival {
+            target: to.truncate(),
+            delay_secs: arrival_animation_duration(
+                previous_piece,
+                current_piece,
+                fast_mode,
+                motion_effect,
+                &waypoints,
+                board_layout,
+                player_roster,
+            ),
+        });
+    }
+    arrivals
+}
+
+fn arrival_animation_duration(
+    previous_piece: PieceAnimationSnapshot,
+    current_piece: PieceAnimationSnapshot,
+    fast_mode: bool,
+    motion_effect: PieceMotionEffect,
+    waypoints: &[Vec3],
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> f32 {
+    let base_duration = waypoints.len().saturating_sub(1) as f32
+        * animation_segment_duration(previous_piece, current_piece, fast_mode);
+    let pause_duration = motion_effect
+        .advance_two
+        .and_then(|cue| {
+            advance_two_pause_cue(
+                cue,
+                current_piece.owner_player_id,
+                waypoints
+                    .last()
+                    .map(|waypoint| waypoint.z)
+                    .unwrap_or_default(),
+                waypoints,
+                board_layout,
+                player_roster,
+            )
+        })
+        .map(|cue| cue.duration)
+        .unwrap_or_default();
+    base_duration + motion_effect.start_delay_secs + pause_duration
+}
+
+fn collision_return_delay(
+    previous_piece: PieceAnimationSnapshot,
+    current_piece: PieceAnimationSnapshot,
+    from: Vec3,
+    arrivals: &[CollisionArrival],
+) -> f32 {
+    if !is_returning_to_hangar(previous_piece, current_piece) {
+        return 0.0;
+    }
+
+    arrivals
+        .iter()
+        .filter(|arrival| arrival.target.distance_squared(from.truncate()) < 0.25)
+        .map(|arrival| arrival.delay_secs)
+        .fold(0.0, f32::max)
 }
 
 fn animate_piece_motion(
@@ -697,6 +820,113 @@ mod tests {
             animation_segment_duration(previous_piece, current_piece, true),
             hangar_return_segment_duration(true)
         );
+    }
+
+    #[test]
+    fn collision_return_delay_waits_for_attacker_arrival() {
+        let previous_piece = PieceAnimationSnapshot {
+            owner_player_id: 2,
+            status: PieceStatus::Active,
+            progress: 12,
+            motion_serial: 0,
+        };
+        let current_piece = PieceAnimationSnapshot {
+            status: PieceStatus::InHangar,
+            progress: 0,
+            ..previous_piece
+        };
+        let defender_position = Vec3::new(80.0, 40.0, 1.0);
+        let arrivals = [CollisionArrival {
+            target: defender_position.truncate(),
+            delay_secs: 0.52,
+        }];
+
+        assert_eq!(
+            collision_return_delay(previous_piece, current_piece, defender_position, &arrivals),
+            0.52
+        );
+    }
+
+    #[test]
+    fn collision_return_delay_ignores_unrelated_returns() {
+        let previous_piece = PieceAnimationSnapshot {
+            owner_player_id: 2,
+            status: PieceStatus::Active,
+            progress: 12,
+            motion_serial: 0,
+        };
+        let current_piece = PieceAnimationSnapshot {
+            status: PieceStatus::InHangar,
+            progress: 0,
+            ..previous_piece
+        };
+        let arrivals = [CollisionArrival {
+            target: Vec2::new(-80.0, 40.0),
+            delay_secs: 0.52,
+        }];
+
+        assert_eq!(
+            collision_return_delay(
+                previous_piece,
+                current_piece,
+                Vec3::new(80.0, 40.0, 1.0),
+                &arrivals
+            ),
+            0.0
+        );
+    }
+
+    #[test]
+    fn collision_arrival_duration_includes_event_pause() {
+        let (board_layout, player_roster) = test_roster();
+        let previous_piece = PieceAnimationSnapshot {
+            owner_player_id: 1,
+            status: PieceStatus::Active,
+            progress: 4,
+            motion_serial: 0,
+        };
+        let current_piece = PieceAnimationSnapshot {
+            progress: 8,
+            ..previous_piece
+        };
+        let from =
+            world_position_for_piece(1, 4, PieceStatus::Active, &board_layout, &player_roster)
+                .unwrap()
+                .extend(1.0);
+        let to = world_position_for_piece(1, 8, PieceStatus::Active, &board_layout, &player_roster)
+            .unwrap()
+            .extend(1.0);
+        let waypoints = build_motion_waypoints(
+            previous_piece,
+            current_piece,
+            from,
+            to,
+            &board_layout,
+            &player_roster,
+        );
+        let motion_effect = PieceMotionEffect {
+            start_delay_secs: 0.20,
+            advance_two: Some(AdvanceTwoPause {
+                event_progress: 6,
+                pause_secs: 0.62,
+            }),
+        };
+
+        let duration = arrival_animation_duration(
+            previous_piece,
+            current_piece,
+            false,
+            motion_effect,
+            &waypoints,
+            &board_layout,
+            &player_roster,
+        );
+        let expected = waypoints.len().saturating_sub(1) as f32
+            * animation_segment_duration(previous_piece, current_piece, false)
+            + 0.20
+            + 0.62;
+
+        assert!((duration - expected).abs() < 0.001);
     }
 
     #[test]
