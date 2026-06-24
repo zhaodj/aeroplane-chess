@@ -99,6 +99,8 @@ name = "aeroplane-chess"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_ecs",
+ "bevy_state",
  "console_error_panic_hook",
  "getrandom 0.3.4",
  "rand 0.9.2",

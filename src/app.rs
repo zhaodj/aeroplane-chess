@@ -11,8 +11,6 @@ pub fn run() {
         primary_window: Some(platform::primary_window()),
         ..default()
     });
-    #[cfg(target_arch = "wasm32")]
-    let default_plugins = default_plugins.disable::<bevy::audio::AudioPlugin>();
 
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.92, 0.95, 1.0)))
