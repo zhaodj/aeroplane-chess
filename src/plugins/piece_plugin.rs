@@ -59,6 +59,24 @@ struct PieceVisual {
 }
 
 #[derive(Component)]
+/// 当前可点击棋子的高亮外环。
+struct PieceSelectableHalo {
+    piece_id: u8,
+}
+
+#[derive(Component)]
+/// 当前不可点击棋子的灰色遮罩。
+struct PieceDisabledOverlay {
+    piece_id: u8,
+}
+
+#[derive(Component)]
+/// 当前不可点击棋子的禁止斜杠。
+struct PieceDisabledSlash {
+    piece_id: u8,
+}
+
+#[derive(Component)]
 /// 同一逻辑格上多枚棋子的数量徽标。
 struct PieceStackCountBadge {
     piece_id: u8,
@@ -96,6 +114,9 @@ struct PieceEffectBadgeText {
 
 const PIECE_HITBOX_SIZE: f32 = 32.0;
 const PIECE_TOKEN_RADIUS: f32 = 14.0;
+const SELECTABLE_HALO_RADIUS: f32 = PIECE_TOKEN_RADIUS + 5.0;
+const DISABLED_OVERLAY_RADIUS: f32 = PIECE_TOKEN_RADIUS + 1.6;
+const DISABLED_SLASH_SIZE: Vec2 = Vec2::new(31.0, 3.8);
 const STACK_BADGE_SIZE: Vec2 = Vec2::new(25.0, 15.0);
 const STACK_BADGE_OFFSET: Vec2 = Vec2::new(-18.0, 20.0);
 const SHIELD_BADGE_MIN_SIZE: Vec2 = Vec2::new(28.0, 16.0);
@@ -191,6 +212,13 @@ struct PieceVisualInfo {
     stack_badge_translation: Vec3,
     stack_count: usize,
     is_stack_leader: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PieceInteractionVisualState {
+    Neutral,
+    Selectable,
+    Disabled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -306,7 +334,13 @@ fn spawn_pieces(
                             PieceEntity,
                         ))
                         .with_children(|visual| {
-                            spawn_piece_token(visual, &mut meshes, &mut materials, player.color);
+                            spawn_piece_token(
+                                visual,
+                                &mut meshes,
+                                &mut materials,
+                                player.color,
+                                current_piece_id,
+                            );
                         });
                 });
             commands.spawn((
@@ -509,7 +543,17 @@ fn spawn_piece_token(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
     color: Color,
+    piece_id: u8,
 ) {
+    parent.spawn((
+        Mesh2d(meshes.add(Circle::new(SELECTABLE_HALO_RADIUS))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgba(1.0, 0.86, 0.18, 0.58)))),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        Visibility::Hidden,
+        PieceSelectableHalo { piece_id },
+        Name::new("PieceSelectableHalo"),
+        PieceEntity,
+    ));
     parent.spawn((
         Mesh2d(meshes.add(Circle::new(PIECE_TOKEN_RADIUS + 1.0))),
         MeshMaterial2d(materials.add(ColorMaterial::from(Color::BLACK))),
@@ -536,6 +580,28 @@ fn spawn_piece_token(
             format!("PiecePlane_{index}"),
         );
     }
+
+    parent.spawn((
+        Mesh2d(meshes.add(Circle::new(DISABLED_OVERLAY_RADIUS))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgba(0.82, 0.84, 0.86, 0.62)))),
+        Transform::from_xyz(0.0, 0.0, 0.095),
+        Visibility::Hidden,
+        PieceDisabledOverlay { piece_id },
+        Name::new("PieceDisabledOverlay"),
+        PieceEntity,
+    ));
+    parent.spawn((
+        Sprite::from_color(Color::srgba(0.78, 0.05, 0.04, 0.92), DISABLED_SLASH_SIZE),
+        Transform {
+            translation: Vec3::new(0.0, 0.0, 0.105),
+            rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+            ..default()
+        },
+        Visibility::Hidden,
+        PieceDisabledSlash { piece_id },
+        Name::new("PieceDisabledSlash"),
+        PieceEntity,
+    ));
 }
 
 fn spawn_piece_line(
@@ -648,28 +714,35 @@ fn piece_visual_infos(
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
 ) -> Vec<PieceVisualInfo> {
-    let mut entries = piece_query
-        .iter()
-        .map(|(piece_id, piece_state, transform)| {
-            let logical_center = stack_logical_center(
-                *piece_state,
+    let mut visual_infos = Vec::new();
+    let mut entries = Vec::new();
+
+    for (piece_id, piece_state, transform) in piece_query.iter() {
+        if matches!(piece_state.status, PieceStatus::InHangar) {
+            visual_infos.push(unstacked_piece_visual_info(
+                piece_id.0,
                 transform.translation,
-                board_layout,
-                player_roster,
-            );
-            StackEntry {
-                piece_id: piece_id.0,
-                key: stack_key(logical_center),
-                current_translation: transform.translation,
-                current_rotation: transform.rotation,
-                current_scale: transform.scale,
-            }
-        })
-        .collect::<Vec<_>>();
+            ));
+            continue;
+        }
+
+        let logical_center = stack_logical_center(
+            *piece_state,
+            transform.translation,
+            board_layout,
+            player_roster,
+        );
+        entries.push(StackEntry {
+            piece_id: piece_id.0,
+            key: stack_key(logical_center),
+            current_translation: transform.translation,
+            current_rotation: transform.rotation,
+            current_scale: transform.scale,
+        });
+    }
 
     entries.sort_by_key(|entry| (entry.key, entry.piece_id));
 
-    let mut visual_infos = Vec::with_capacity(entries.len());
     let mut group_start = 0;
     while group_start < entries.len() {
         let group_key = entries[group_start].key;
@@ -708,6 +781,18 @@ fn piece_visual_infos(
     }
 
     visual_infos
+}
+
+fn unstacked_piece_visual_info(piece_id: u8, current_translation: Vec3) -> PieceVisualInfo {
+    PieceVisualInfo {
+        piece_id,
+        visual_local_translation: Vec3::ZERO,
+        visual_scale: 1.0,
+        visual_translation: current_translation,
+        stack_badge_translation: current_translation,
+        stack_count: 1,
+        is_stack_leader: true,
+    }
 }
 
 fn stack_logical_center(
@@ -1065,6 +1150,18 @@ fn update_piece_highlight(
         ),
         With<PieceEntity>,
     >,
+    mut halo_query: Query<
+        (&PieceSelectableHalo, &mut Visibility),
+        (Without<PieceDisabledOverlay>, Without<PieceDisabledSlash>),
+    >,
+    mut disabled_overlay_query: Query<
+        (&PieceDisabledOverlay, &mut Visibility),
+        (Without<PieceSelectableHalo>, Without<PieceDisabledSlash>),
+    >,
+    mut disabled_slash_query: Query<
+        (&PieceDisabledSlash, &mut Visibility),
+        (Without<PieceSelectableHalo>, Without<PieceDisabledOverlay>),
+    >,
 ) {
     // 根据阶段与候选列表更新高亮：可行动作 > 技能选目标 > 当前玩家可选提示。
     let selectable = matches!(game_phase.get(), GamePhase::AwaitPieceSelect);
@@ -1074,6 +1171,9 @@ fn update_piece_highlight(
         .iter()
         .find(|player| player.state.player_id == turn_state.current_player)
         .map(|player| player.state.control);
+    let action_candidates = input_state.candidate_piece_ids();
+    let skill_candidates = skill_target_state.candidate_piece_ids();
+    let mut visual_states = Vec::new();
 
     for (piece_id, piece_state, _base_color, mut sprite, mut transform) in &mut query {
         sprite.color = Color::srgba(1.0, 1.0, 1.0, 0.0);
@@ -1086,24 +1186,107 @@ fn update_piece_highlight(
             transform.rotation = rotation;
         }
 
-        let action_selectable =
-            selectable && input_state.candidate_piece_ids().contains(&piece_id.0);
-        let skill_target_selectable = skill_selectable
-            && skill_target_state
-                .candidate_piece_ids()
-                .contains(&piece_id.0);
+        let visual_state = piece_interaction_visual_state(
+            piece_id.0,
+            piece_state,
+            turn_state.current_player,
+            current_player_control,
+            selectable,
+            action_candidates,
+            skill_selectable,
+            skill_candidates,
+            skill_target_state.is_active(),
+        );
+        visual_states.push((piece_id.0, visual_state));
 
-        if action_selectable || skill_target_selectable {
+        if visual_state == PieceInteractionVisualState::Selectable {
             transform.scale = Vec3::splat(1.18);
         } else if matches!(current_player_control, Some(PlayerControl::Human))
-            && input_state.candidate_piece_ids().is_empty()
-            && skill_target_state.candidate_piece_ids().is_empty()
+            && action_candidates.is_empty()
+            && skill_candidates.is_empty()
             && piece_state.owner_player_id == turn_state.current_player
         {
             transform.scale = Vec3::splat(1.08);
+        } else if visual_state == PieceInteractionVisualState::Disabled {
+            transform.scale = Vec3::splat(0.96);
         } else {
             transform.scale = Vec3::ONE;
         }
+    }
+
+    for (halo, mut visibility) in &mut halo_query {
+        *visibility = visibility_for_piece_state(
+            &visual_states,
+            halo.piece_id,
+            PieceInteractionVisualState::Selectable,
+        );
+    }
+
+    for (overlay, mut visibility) in &mut disabled_overlay_query {
+        *visibility = visibility_for_piece_state(
+            &visual_states,
+            overlay.piece_id,
+            PieceInteractionVisualState::Disabled,
+        );
+    }
+
+    for (slash, mut visibility) in &mut disabled_slash_query {
+        *visibility = visibility_for_piece_state(
+            &visual_states,
+            slash.piece_id,
+            PieceInteractionVisualState::Disabled,
+        );
+    }
+}
+
+fn piece_interaction_visual_state(
+    piece_id: u8,
+    piece_state: &PieceState,
+    current_player: u8,
+    current_player_control: Option<PlayerControl>,
+    action_selection_active: bool,
+    action_candidates: &[u8],
+    skill_selection_active: bool,
+    skill_candidates: &[u8],
+    skill_target_state_active: bool,
+) -> PieceInteractionVisualState {
+    if action_selection_active && !action_candidates.is_empty() {
+        if action_candidates.contains(&piece_id) {
+            return PieceInteractionVisualState::Selectable;
+        }
+
+        if matches!(current_player_control, Some(PlayerControl::Human))
+            && piece_state.owner_player_id == current_player
+        {
+            return PieceInteractionVisualState::Disabled;
+        }
+    }
+
+    if skill_selection_active && skill_target_state_active && !skill_candidates.is_empty() {
+        if skill_candidates.contains(&piece_id) {
+            return PieceInteractionVisualState::Selectable;
+        }
+
+        if !matches!(piece_state.status, PieceStatus::Finished) {
+            return PieceInteractionVisualState::Disabled;
+        }
+    }
+
+    PieceInteractionVisualState::Neutral
+}
+
+fn visibility_for_piece_state(
+    visual_states: &[(u8, PieceInteractionVisualState)],
+    piece_id: u8,
+    target_state: PieceInteractionVisualState,
+) -> Visibility {
+    if visual_states
+        .iter()
+        .any(|(candidate_id, state)| *candidate_id == piece_id && *state == target_state)
+    {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
     }
 }
 
@@ -1115,6 +1298,7 @@ mod tests {
     use crate::domain::rules::LaunchRule;
     use crate::gameplay::ai::AiDifficulty;
     use crate::gameplay::match_flow::{MatchSetup, PlayerRoster, PlayerSeat, build_match_rosters};
+    use bevy::ecs::system::SystemState;
 
     fn test_roster() -> (BoardLayout, PlayerRoster) {
         let setup = MatchSetup {
@@ -1191,11 +1375,147 @@ mod tests {
         assert_eq!(piece_effect_label(PieceEffectKind::Defense), "SHD");
     }
 
+    #[test]
+    fn piece_highlight_system_initializes_without_query_conflicts() {
+        let (board_layout, player_roster) = test_roster();
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin)
+            .init_state::<GamePhase>()
+            .insert_resource(board_layout)
+            .insert_resource(player_roster)
+            .insert_resource(TurnState::opening_turn())
+            .insert_resource(TurnInputState::default())
+            .insert_resource(SkillTargetState::default())
+            .add_systems(Update, update_piece_highlight);
+
+        app.update();
+    }
+
+    #[test]
+    fn action_selection_marks_candidate_selectable_and_own_inactive_piece_disabled() {
+        let selectable = piece_interaction_visual_state(
+            1,
+            &piece_state(1, PieceStatus::Active, 0),
+            1,
+            Some(PlayerControl::Human),
+            true,
+            &[1],
+            false,
+            &[],
+            false,
+        );
+        let disabled = piece_interaction_visual_state(
+            2,
+            &piece_state(1, PieceStatus::InHangar, 0),
+            1,
+            Some(PlayerControl::Human),
+            true,
+            &[1],
+            false,
+            &[],
+            false,
+        );
+        let opponent = piece_interaction_visual_state(
+            3,
+            &piece_state(2, PieceStatus::Active, 0),
+            1,
+            Some(PlayerControl::Human),
+            true,
+            &[1],
+            false,
+            &[],
+            false,
+        );
+
+        assert_eq!(selectable, PieceInteractionVisualState::Selectable);
+        assert_eq!(disabled, PieceInteractionVisualState::Disabled);
+        assert_eq!(opponent, PieceInteractionVisualState::Neutral);
+    }
+
+    #[test]
+    fn skill_target_selection_disables_non_candidates_temporarily() {
+        let target = piece_interaction_visual_state(
+            4,
+            &piece_state(2, PieceStatus::Active, 0),
+            1,
+            Some(PlayerControl::Human),
+            false,
+            &[],
+            true,
+            &[4],
+            true,
+        );
+        let non_target = piece_interaction_visual_state(
+            1,
+            &piece_state(1, PieceStatus::Active, 0),
+            1,
+            Some(PlayerControl::Human),
+            false,
+            &[],
+            true,
+            &[4],
+            true,
+        );
+
+        assert_eq!(target, PieceInteractionVisualState::Selectable);
+        assert_eq!(non_target, PieceInteractionVisualState::Disabled);
+    }
+
+    #[test]
+    fn inactive_selection_context_keeps_pieces_neutral() {
+        let state = piece_interaction_visual_state(
+            1,
+            &piece_state(1, PieceStatus::Active, 0),
+            1,
+            Some(PlayerControl::Human),
+            false,
+            &[1],
+            false,
+            &[1],
+            false,
+        );
+
+        assert_eq!(state, PieceInteractionVisualState::Neutral);
+        assert_eq!(
+            visibility_for_piece_state(
+                &[(1, PieceInteractionVisualState::Selectable)],
+                1,
+                PieceInteractionVisualState::Selectable,
+            ),
+            Visibility::Visible
+        );
+    }
+
     fn assert_vec2_close(actual: Vec2, expected: Vec2) {
         assert!(
             (actual - expected).length() < 0.001,
             "expected {expected:?}, got {actual:?}"
         );
+    }
+
+    fn assert_vec3_close(actual: Vec3, expected: Vec3) {
+        assert!(
+            (actual - expected).length() < 0.001,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    fn piece_visual_infos_from_world(
+        world: &mut World,
+        board_layout: &BoardLayout,
+        player_roster: &PlayerRoster,
+    ) -> Vec<PieceVisualInfo> {
+        let mut system_state: SystemState<Query<(&PieceId, &PieceState, &Transform)>> =
+            SystemState::new(world);
+        let query = system_state.get_mut(world).unwrap();
+        piece_visual_infos(&query, board_layout, player_roster)
+    }
+
+    fn visual_info_for(infos: &[PieceVisualInfo], piece_id: u8) -> PieceVisualInfo {
+        *infos
+            .iter()
+            .find(|info| info.piece_id == piece_id)
+            .expect("piece visual info exists")
     }
 
     #[test]
@@ -1222,6 +1542,90 @@ mod tests {
         assert_eq!(stack_visual_scale(1), 1.0);
         assert!(stack_visual_scale(2) < stack_visual_scale(1));
         assert!(stack_visual_scale(5) < stack_visual_scale(4));
+    }
+
+    #[test]
+    fn in_hangar_pieces_do_not_share_stack_visuals_when_overlapped() {
+        let (board_layout, player_roster) = test_roster();
+        let mut world = World::new();
+        let overlap = Vec3::new(42.0, 24.0, BOARD_Z_LAYER + 1.0);
+
+        for piece_id in [1, 2] {
+            world.spawn((
+                PieceId(piece_id),
+                piece_state(1, PieceStatus::InHangar, 0),
+                Transform::from_translation(overlap),
+            ));
+        }
+
+        let infos = piece_visual_infos_from_world(&mut world, &board_layout, &player_roster);
+        for piece_id in [1, 2] {
+            let info = visual_info_for(&infos, piece_id);
+            assert_vec3_close(info.visual_local_translation, Vec3::ZERO);
+            assert_vec3_close(info.visual_translation, overlap);
+            assert_eq!(info.visual_scale, 1.0);
+            assert_eq!(info.stack_count, 1);
+            assert!(info.is_stack_leader);
+        }
+    }
+
+    #[test]
+    fn returning_hangar_piece_does_not_stack_with_overlapped_board_piece() {
+        let (board_layout, player_roster) = test_roster();
+        let mut world = World::new();
+        let overlap =
+            world_position_for_piece(1, 0, PieceStatus::Active, &board_layout, &player_roster)
+                .expect("active start exists")
+                .extend(BOARD_Z_LAYER + 1.0);
+
+        world.spawn((
+            PieceId(1),
+            piece_state(1, PieceStatus::InHangar, 0),
+            Transform::from_translation(overlap),
+        ));
+        world.spawn((
+            PieceId(2),
+            piece_state(1, PieceStatus::Active, 0),
+            Transform::from_translation(overlap),
+        ));
+
+        let infos = piece_visual_infos_from_world(&mut world, &board_layout, &player_roster);
+        let hangar_info = visual_info_for(&infos, 1);
+        let board_info = visual_info_for(&infos, 2);
+
+        assert_vec3_close(hangar_info.visual_local_translation, Vec3::ZERO);
+        assert_eq!(hangar_info.visual_scale, 1.0);
+        assert_eq!(hangar_info.stack_count, 1);
+        assert_vec3_close(board_info.visual_local_translation, Vec3::ZERO);
+        assert_eq!(board_info.visual_scale, 1.0);
+        assert_eq!(board_info.stack_count, 1);
+    }
+
+    #[test]
+    fn active_overlapped_pieces_keep_stack_visuals() {
+        let (board_layout, player_roster) = test_roster();
+        let mut world = World::new();
+
+        for piece_id in [1, 2] {
+            world.spawn((
+                PieceId(piece_id),
+                piece_state(1, PieceStatus::Active, 0),
+                Transform::from_xyz(0.0, 0.0, BOARD_Z_LAYER + 1.0),
+            ));
+        }
+
+        let infos = piece_visual_infos_from_world(&mut world, &board_layout, &player_roster);
+        let first = visual_info_for(&infos, 1);
+        let second = visual_info_for(&infos, 2);
+
+        assert_eq!(first.stack_count, 2);
+        assert_eq!(second.stack_count, 2);
+        assert!(first.is_stack_leader);
+        assert!(!second.is_stack_leader);
+        assert_eq!(first.visual_scale, stack_visual_scale(2));
+        assert_eq!(second.visual_scale, stack_visual_scale(2));
+        assert!(first.visual_local_translation.truncate().length() > 0.0);
+        assert!(second.visual_local_translation.truncate().length() > 0.0);
     }
 
     #[test]

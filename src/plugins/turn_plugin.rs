@@ -20,7 +20,7 @@ use crate::gameplay::turn_flow::{
     ActionResources, ActionState, PlannedAction, TurnInputState, TurnState, choose_action,
     collect_actions, current_player_control, execute_action, find_pending_action_by_piece_id,
     finish_turn_without_action, get_pending_action, pressed_selection_key, record_turn_action,
-    set_pending_actions, set_roll,
+    set_pending_actions, set_roll_with_faces,
 };
 use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::boot_plugin::AutoplayMatch;
@@ -57,6 +57,16 @@ impl Plugin for TurnPlugin {
 /// AI 自动执行节拍器（用于模拟思考间隔）。
 struct TurnAutomation {
     timer: Timer,
+}
+
+fn double_dice_resolution_note(player_id: u8, dice: [u8; 2]) -> String {
+    format!(
+        "P{} resolved DoubleDice: rolled {}/{} -> {}",
+        player_id,
+        dice[0],
+        dice[1],
+        dice[0].max(dice[1])
+    )
 }
 
 #[derive(Resource, Default)]
@@ -204,16 +214,13 @@ fn drive_ai_turn_loop(
         resolve_roll_value(&mut params.skill_roster, params.turn_state.current_player);
     let roll_value = roll_resolution.value;
     let roll = DiceRoll(roll_value);
-    set_roll(&mut params.turn_state, roll_value);
+    set_roll_with_faces(&mut params.turn_state, roll_value, roll_resolution.dice);
     if roll_resolution.used_double_dice {
         record_skill_action(
             &mut params.skill_roster,
             params.turn_state.turn_index,
             params.turn_state.current_player,
-            format!(
-                "P{} resolved DoubleDice into {}",
-                params.turn_state.current_player, roll_value
-            ),
+            double_dice_resolution_note(params.turn_state.current_player, roll_resolution.dice),
         );
     }
 
@@ -799,16 +806,13 @@ fn handle_human_roll_input(
         resolve_roll_value(&mut params.skill_roster, params.turn_state.current_player);
     let roll_value = roll_resolution.value;
     let roll = DiceRoll(roll_value);
-    set_roll(&mut params.turn_state, roll_value);
+    set_roll_with_faces(&mut params.turn_state, roll_value, roll_resolution.dice);
     if roll_resolution.used_double_dice {
         record_skill_action(
             &mut params.skill_roster,
             params.turn_state.turn_index,
             params.turn_state.current_player,
-            format!(
-                "P{} resolved DoubleDice into {}",
-                params.turn_state.current_player, roll_value
-            ),
+            double_dice_resolution_note(params.turn_state.current_player, roll_resolution.dice),
         );
     }
 

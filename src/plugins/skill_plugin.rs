@@ -905,7 +905,7 @@ fn execute_swap(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
+    use crate::gameplay::turn_flow::HOME_ENTRY_PROGRESS;
     use bevy::ecs::system::SystemState;
 
     #[test]
@@ -1147,7 +1147,7 @@ mod tests {
                 owner_player_id: 2,
                 team_id: 2,
                 status: crate::domain::piece::PieceStatus::Active,
-                progress: MAIN_ROUTE_STEPS + 1,
+                progress: HOME_ENTRY_PROGRESS + 1,
                 shield: 0,
                 stack_shield: 0,
                 motion_serial: 0,

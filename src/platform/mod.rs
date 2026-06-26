@@ -4,7 +4,7 @@ mod input;
 use bevy::prelude::*;
 
 pub use device::{DeviceProfile, primary_window};
-pub use input::PointerInputState;
+pub use input::{PointerInputState, PointerSource};
 
 pub struct PlatformPlugin;
 

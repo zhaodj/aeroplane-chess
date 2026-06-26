@@ -15,7 +15,7 @@ use crate::gameplay::skill_flow::{
     is_legal_snipe_target, player_skill_state,
 };
 use crate::gameplay::turn_flow::TurnState;
-use crate::platform::{DeviceProfile, PointerInputState};
+use crate::platform::{DeviceProfile, PointerInputState, PointerSource};
 use crate::plugins::effects_plugin::EffectRevealDelays;
 use crate::plugins::menu_plugin::{SoundSettingsOverlayState, global_settings_entry_screen_rect};
 use crate::plugins::piece_plugin::PieceId;
@@ -29,14 +29,17 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerHudState>()
             .init_resource::<EventLogState>()
+            .init_resource::<SkillTipState>()
             .add_systems(OnEnter(AppState::InGame), spawn_hud)
             .add_systems(
                 Update,
                 (
                     handle_player_hud_click,
+                    handle_skill_tip_input,
                     handle_event_log_scroll,
                     update_player_hud_layout,
                     update_hud_content,
+                    update_skill_tip_content,
                     update_event_log_content,
                     update_event_notice_content,
                 )
@@ -113,6 +116,18 @@ struct SharedSkillButtonText {
 }
 
 #[derive(Component)]
+struct SkillTipPanel;
+
+#[derive(Component)]
+struct SkillTipTitle;
+
+#[derive(Component)]
+struct SkillTipBody;
+
+#[derive(Component)]
+struct SkillTipClose;
+
+#[derive(Component)]
 struct BoardRollButton;
 
 #[derive(Component)]
@@ -145,6 +160,7 @@ struct EventLogText;
 #[derive(Resource, Default)]
 pub struct PlayerHudState {
     event_log_expanded: bool,
+    skill_tip_action: Option<SkillUiAction>,
 }
 
 #[derive(Resource, Default)]
@@ -154,6 +170,19 @@ struct EventLogState {
     entries: Vec<String>,
     last_turn_action_key: Option<u64>,
     last_skill_action_key: Option<u64>,
+}
+
+#[derive(Resource, Default)]
+struct SkillTipState {
+    visible_action: Option<SkillUiAction>,
+    visible_from_hover: bool,
+    pressed_action: Option<SkillUiAction>,
+    pressed_source: Option<PointerSource>,
+    pressed_started_at: f32,
+    pressed_started_position: Vec2,
+    hover_action: Option<SkillUiAction>,
+    hover_started_at: f32,
+    hover_left_at: Option<f32>,
 }
 
 type HudPieceQuery<'w, 's> = Query<'w, 's, (&'static PieceId, &'static PieceState)>;
@@ -310,6 +339,13 @@ const SKILL_ICON_SIZE: f32 = 42.0;
 const SKILL_BADGE_W: f32 = 20.0;
 const SKILL_BADGE_H: f32 = 20.0;
 const SKILL_BUTTON_GAP: f32 = 8.0;
+const SKILL_TIP_W: f32 = 326.0;
+const SKILL_TIP_H: f32 = 118.0;
+const SKILL_TIP_GAP: f32 = 10.0;
+const SKILL_TIP_LONG_PRESS_SECS: f32 = 0.52;
+const SKILL_TIP_HOVER_SECS: f32 = 0.55;
+const SKILL_TIP_HOVER_HIDE_SECS: f32 = 0.36;
+const SKILL_TIP_PRESS_CANCEL_DISTANCE: f32 = 18.0;
 const BOARD_ROLL_BUTTON_W: f32 = 64.0;
 const BOARD_ROLL_BUTTON_H: f32 = 64.0;
 const EVENT_LOG_TOGGLE_W: f32 = 92.0;
@@ -413,10 +449,13 @@ fn spawn_hud(
     mut commands: Commands,
     mut hud_state: ResMut<PlayerHudState>,
     mut event_log: ResMut<EventLogState>,
+    mut skill_tip: ResMut<SkillTipState>,
     player_roster: Res<PlayerRoster>,
     asset_server: Res<AssetServer>,
 ) {
     hud_state.event_log_expanded = false;
+    hud_state.skill_tip_action = None;
+    *skill_tip = SkillTipState::default();
     event_log.expanded = false;
     event_log.scroll_to_bottom_requested = false;
     event_log.entries.clear();
@@ -536,6 +575,73 @@ fn spawn_hud(
                     });
             });
     }
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(SKILL_TIP_W),
+                height: Val::Px(SKILL_TIP_H),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(5.0),
+                padding: UiRect {
+                    left: Val::Px(13.0),
+                    right: Val::Px(34.0),
+                    top: Val::Px(10.0),
+                    bottom: Val::Px(10.0),
+                },
+                ..default()
+            },
+            BackgroundColor(skill_tip_panel_color()),
+            BorderColor::all(skill_tip_border_color()),
+            Visibility::Hidden,
+            ZIndex(58),
+            Name::new("SkillTipPanel"),
+            SkillTipPanel,
+            HudEntity,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(15.5),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.05, 0.08, 0.12)),
+                TextLayout::justify(Justify::Left),
+                Name::new("SkillTipTitle"),
+                SkillTipTitle,
+            ));
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(12.5),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.15, 0.20, 0.28)),
+                TextLayout::justify(Justify::Left),
+                Name::new("SkillTipBody"),
+                SkillTipBody,
+            ));
+            panel.spawn((
+                Text::new("x"),
+                TextFont {
+                    font_size: FontSize::Px(16.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.08, 0.12, 0.18)),
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(11.0),
+                    top: Val::Px(8.0),
+                    ..default()
+                },
+                Name::new("SkillTipClose"),
+                SkillTipClose,
+            ));
+        });
 
     commands
         .spawn((
@@ -1048,6 +1154,53 @@ fn update_hud_content(
     }
 }
 
+fn update_skill_tip_content(
+    skill_tip: Res<SkillTipState>,
+    windows: Query<&Window>,
+    device_profile: Res<DeviceProfile>,
+    mut panel_query: Query<(&mut Node, &mut Visibility), With<SkillTipPanel>>,
+    mut text_query: Query<
+        (
+            &mut Text,
+            Option<&SkillTipTitle>,
+            Option<&SkillTipBody>,
+            Option<&SkillTipClose>,
+        ),
+        Or<(With<SkillTipTitle>, With<SkillTipBody>, With<SkillTipClose>)>,
+    >,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let visible_action = skill_tip.visible_action;
+
+    for (mut node, mut visibility) in &mut panel_query {
+        if let Some(action) = visible_action {
+            apply_rect_to_node(
+                &mut node,
+                skill_tip_rect(window.width(), window.height(), *device_profile, action),
+            );
+            *visibility = Visibility::Visible;
+        } else {
+            *visibility = Visibility::Hidden;
+        }
+    }
+
+    for (mut text, title, body, close) in &mut text_query {
+        if let Some(action) = visible_action {
+            if title.is_some() {
+                *text = Text::new(skill_action_name(action));
+            } else if body.is_some() {
+                *text = Text::new(skill_tip_body(action));
+            } else if close.is_some() {
+                *text = Text::new("x");
+            }
+        } else {
+            *text = Text::new("");
+        }
+    }
+}
+
 fn update_event_log_content(
     mut event_log: ResMut<EventLogState>,
     turn_state: Res<TurnState>,
@@ -1157,7 +1310,7 @@ fn handle_event_log_scroll(
     }
 }
 
-fn handle_player_hud_click(
+fn handle_skill_tip_input(
     pointer: Res<PointerInputState>,
     windows: Query<&Window>,
     device_profile: Res<DeviceProfile>,
@@ -1168,7 +1321,109 @@ fn handle_player_hud_click(
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
     turn_state: Res<TurnState>,
+    time: Res<Time>,
     piece_query: HudPieceQuery,
+    mut hud_state: ResMut<PlayerHudState>,
+    mut skill_tip: ResMut<SkillTipState>,
+    mut skill_ui_request: ResMut<SkillUiRequest>,
+) {
+    if overlay_state.open || overlay_state.input_captured || match_result.finished {
+        clear_skill_tip_interaction(&mut skill_tip);
+        hud_state.skill_tip_action = skill_tip.visible_action;
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let now = time.elapsed_secs();
+    let window_width = window.width();
+    let window_height = window.height();
+    let profile = *device_profile;
+
+    if let Some(cursor) = pointer.just_pressed_position() {
+        if let Some(action) = skill_tip.visible_action
+            && skill_tip_rect(window_width, window_height, profile, action).contains(cursor)
+        {
+            hide_skill_tip(&mut skill_tip);
+            hud_state.skill_tip_action = skill_tip.visible_action;
+            return;
+        }
+
+        if let Some(action) = skill_action_at_point(cursor, window_width, window_height, profile) {
+            skill_tip.pressed_action = Some(action);
+            skill_tip.pressed_source = pointer.source();
+            skill_tip.pressed_started_at = now;
+            skill_tip.pressed_started_position = cursor;
+            skill_tip.hover_left_at = None;
+            hud_state.skill_tip_action = skill_tip.visible_action;
+            return;
+        }
+    }
+
+    if pointer.is_pressed() {
+        update_pressed_skill_tip(
+            &mut skill_tip,
+            &pointer,
+            window_width,
+            window_height,
+            profile,
+            now,
+        );
+        hud_state.skill_tip_action = skill_tip.visible_action;
+        return;
+    }
+
+    if let Some(release_position) = pointer.just_released_position() {
+        if let Some(action) = skill_tip.pressed_action {
+            let release_inside =
+                shared_skill_button_rect(window_width, window_height, profile, action)
+                    .expanded(4.0)
+                    .contains(release_position);
+            let press_opened_tip =
+                skill_tip.visible_action == Some(action) && !skill_tip.visible_from_hover;
+            let skill_ready = skill_ready_for_current_context(
+                action,
+                &match_config,
+                &player_roster,
+                &skill_roster,
+                game_phase.get(),
+                &match_result,
+                &turn_state,
+                &piece_query,
+            );
+            if should_queue_skill_from_release(release_inside, press_opened_tip, skill_ready) {
+                skill_ui_request.queue(action);
+            }
+        }
+        skill_tip.pressed_action = None;
+        skill_tip.pressed_source = None;
+        hud_state.skill_tip_action = skill_tip.visible_action;
+        return;
+    }
+
+    update_hover_skill_tip(&mut skill_tip, &pointer, window, profile, now);
+    hud_state.skill_tip_action = skill_tip.visible_action;
+}
+
+fn should_queue_skill_from_release(
+    release_inside: bool,
+    press_opened_tip: bool,
+    skill_ready: bool,
+) -> bool {
+    release_inside && !press_opened_tip && skill_ready
+}
+
+fn handle_player_hud_click(
+    pointer: Res<PointerInputState>,
+    windows: Query<&Window>,
+    device_profile: Res<DeviceProfile>,
+    overlay_state: Res<SoundSettingsOverlayState>,
+    player_roster: Res<PlayerRoster>,
+    game_phase: Res<State<GamePhase>>,
+    match_result: Res<MatchResult>,
+    turn_state: Res<TurnState>,
+    skill_tip: Res<SkillTipState>,
     mut hud_state: ResMut<PlayerHudState>,
     mut event_log: ResMut<EventLogState>,
     mut skill_ui_request: ResMut<SkillUiRequest>,
@@ -1183,6 +1438,12 @@ fn handle_player_hud_click(
     let Ok(window) = windows.single() else {
         return;
     };
+
+    if let Some(action) = skill_tip.visible_action
+        && skill_tip_rect(window.width(), window.height(), *device_profile, action).contains(cursor)
+    {
+        return;
+    }
 
     let log_toggle = event_log_toggle_rect(window.width(), window.height(), *device_profile);
     if log_toggle.contains(cursor) {
@@ -1213,44 +1474,12 @@ fn handle_player_hud_click(
         return;
     }
 
-    let current_profile = player_profile(&player_roster, turn_state.current_player);
-    let current_human_turn = current_profile.is_some_and(|player| {
-        player.state.control == PlayerControl::Human && !match_result.finished
-    });
-    let can_use_skill =
-        current_human_turn && can_use_skill_this_turn(&skill_roster, turn_state.current_player);
-    let board_availability = current_profile
-        .map(|player| {
-            SkillBoardAvailability::from_query(
-                player.state.player_id,
-                player.state.team_id,
-                &piece_query,
-            )
-        })
-        .unwrap_or_default();
-    let current_skills = player_skill_state(&skill_roster, turn_state.current_player);
     for action in HUD_SKILL_ACTIONS {
         let rect =
             shared_skill_button_rect(window.width(), window.height(), *device_profile, action);
-        if !rect.contains(cursor) {
-            continue;
+        if rect.contains(cursor) {
+            return;
         }
-        if current_skills
-            .map(|skills| {
-                is_skill_button_ready(
-                    action,
-                    skills,
-                    can_use_skill,
-                    game_phase.get(),
-                    match_config.mode,
-                    board_availability,
-                )
-            })
-            .unwrap_or(false)
-        {
-            skill_ui_request.queue(action);
-        }
-        return;
     }
 
     for player in &player_roster.players {
@@ -1264,6 +1493,157 @@ fn handle_player_hud_click(
             return;
         }
     }
+}
+
+fn update_pressed_skill_tip(
+    skill_tip: &mut SkillTipState,
+    pointer: &PointerInputState,
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+    now: f32,
+) {
+    let Some(action) = skill_tip.pressed_action else {
+        return;
+    };
+    let Some(current_position) = pointer.current_position() else {
+        return;
+    };
+    let button_rect =
+        shared_skill_button_rect(window_width, window_height, device_profile, action).expanded(8.0);
+    let moved_too_far = current_position.distance(skill_tip.pressed_started_position)
+        > SKILL_TIP_PRESS_CANCEL_DISTANCE
+        && !button_rect.contains(current_position);
+    if moved_too_far {
+        skill_tip.pressed_action = None;
+        skill_tip.pressed_source = None;
+        return;
+    }
+
+    let long_press_secs = match skill_tip.pressed_source {
+        Some(PointerSource::Touch) | Some(PointerSource::Mouse) | None => SKILL_TIP_LONG_PRESS_SECS,
+    };
+    if now - skill_tip.pressed_started_at >= long_press_secs {
+        show_skill_tip(skill_tip, action, false);
+    }
+}
+
+fn update_hover_skill_tip(
+    skill_tip: &mut SkillTipState,
+    pointer: &PointerInputState,
+    window: &Window,
+    device_profile: DeviceProfile,
+    now: f32,
+) {
+    if pointer.current_source() == Some(PointerSource::Touch) {
+        return;
+    }
+
+    let Some(cursor) = pointer
+        .current_position()
+        .or_else(|| window.cursor_position())
+    else {
+        return;
+    };
+    let window_width = window.width();
+    let window_height = window.height();
+
+    if let Some(action) = skill_action_at_point(cursor, window_width, window_height, device_profile)
+    {
+        if skill_tip.hover_action != Some(action) {
+            skill_tip.hover_action = Some(action);
+            skill_tip.hover_started_at = now;
+        }
+        skill_tip.hover_left_at = None;
+        if now - skill_tip.hover_started_at >= SKILL_TIP_HOVER_SECS {
+            show_skill_tip(skill_tip, action, true);
+        }
+        return;
+    }
+
+    if skill_tip.visible_from_hover
+        && let Some(action) = skill_tip.visible_action
+        && skill_tip_rect(window_width, window_height, device_profile, action).contains(cursor)
+    {
+        skill_tip.hover_left_at = None;
+        return;
+    }
+
+    skill_tip.hover_action = None;
+    if skill_tip.visible_from_hover && skill_tip.visible_action.is_some() {
+        let left_at = *skill_tip.hover_left_at.get_or_insert(now);
+        if now - left_at >= SKILL_TIP_HOVER_HIDE_SECS {
+            hide_skill_tip(skill_tip);
+        }
+    } else {
+        skill_tip.hover_left_at = None;
+    }
+}
+
+fn show_skill_tip(skill_tip: &mut SkillTipState, action: SkillUiAction, from_hover: bool) {
+    skill_tip.visible_action = Some(action);
+    skill_tip.visible_from_hover = from_hover;
+}
+
+fn hide_skill_tip(skill_tip: &mut SkillTipState) {
+    skill_tip.visible_action = None;
+    skill_tip.visible_from_hover = false;
+    skill_tip.hover_action = None;
+    skill_tip.hover_left_at = None;
+}
+
+fn clear_skill_tip_interaction(skill_tip: &mut SkillTipState) {
+    hide_skill_tip(skill_tip);
+    skill_tip.pressed_action = None;
+    skill_tip.pressed_source = None;
+}
+
+fn skill_action_at_point(
+    point: Vec2,
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> Option<SkillUiAction> {
+    HUD_SKILL_ACTIONS.iter().copied().find(|action| {
+        shared_skill_button_rect(window_width, window_height, device_profile, *action)
+            .contains(point)
+    })
+}
+
+fn skill_ready_for_current_context(
+    action: SkillUiAction,
+    match_config: &MatchConfig,
+    player_roster: &PlayerRoster,
+    skill_roster: &SkillRoster,
+    game_phase: &GamePhase,
+    match_result: &MatchResult,
+    turn_state: &TurnState,
+    piece_query: &HudPieceQuery<'_, '_>,
+) -> bool {
+    let Some(current_profile) = player_profile(player_roster, turn_state.current_player) else {
+        return false;
+    };
+    let current_human_turn =
+        current_profile.state.control == PlayerControl::Human && !match_result.finished;
+    let can_use_skill =
+        current_human_turn && can_use_skill_this_turn(skill_roster, turn_state.current_player);
+    let board_availability = SkillBoardAvailability::from_query(
+        current_profile.state.player_id,
+        current_profile.state.team_id,
+        piece_query,
+    );
+    player_skill_state(skill_roster, turn_state.current_player)
+        .map(|skills| {
+            is_skill_button_ready(
+                action,
+                skills,
+                can_use_skill,
+                game_phase,
+                match_config.mode,
+                board_availability,
+            )
+        })
+        .unwrap_or(false)
 }
 
 pub fn player_hud_point_is_interactive(
@@ -1282,6 +1662,12 @@ pub fn player_hud_point_is_interactive(
 
     if hud_state.event_log_expanded
         && event_log_panel_rect(window.width(), window.height(), device_profile).contains(point)
+    {
+        return true;
+    }
+
+    if let Some(action) = hud_state.skill_tip_action
+        && skill_tip_rect(window.width(), window.height(), device_profile, action).contains(point)
     {
         return true;
     }
@@ -1486,6 +1872,38 @@ fn event_notice_panel_rect(
     }
 }
 
+fn skill_tip_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+    action: SkillUiAction,
+) -> ScreenRect {
+    let button = shared_skill_button_rect(window_width, window_height, device_profile, action);
+    let width = SKILL_TIP_W.min((window_width - HUD_EDGE_MARGIN * 2.0).max(0.0));
+    let height = SKILL_TIP_H.min((window_height - HUD_EDGE_MARGIN * 2.0).max(0.0));
+    let x = (button.x + button.w * 0.5 - width * 0.5).clamp(
+        HUD_EDGE_MARGIN,
+        (window_width - width - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+    );
+    let y_above = button.y - height - SKILL_TIP_GAP;
+    let y = if y_above >= HUD_EDGE_MARGIN {
+        y_above
+    } else {
+        button.y + button.h + SKILL_TIP_GAP
+    }
+    .clamp(
+        HUD_EDGE_MARGIN,
+        (window_height - height - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+    );
+
+    ScreenRect {
+        x,
+        y,
+        w: width,
+        h: height,
+    }
+}
+
 fn event_log_toggle_rect(
     window_width: f32,
     window_height: f32,
@@ -1545,6 +1963,22 @@ fn skill_icon_asset_path(action: SkillUiAction) -> &'static str {
         SkillUiAction::Swap => "ui/skills/swap.png",
         SkillUiAction::Shield => "ui/skills/shield.png",
         SkillUiAction::DoubleDice => "ui/skills/double_dice.png",
+    }
+}
+
+fn skill_tip_body(action: SkillUiAction) -> &'static str {
+    match action {
+        SkillUiAction::Dash => {
+            "After rolling, add +3 movement before choosing one movable aircraft."
+        }
+        SkillUiAction::Snipe => {
+            "Target an enemy aircraft on the public route. Shields absorb the hit first."
+        }
+        SkillUiAction::Swap => "In 2v2, swap positions with one active teammate aircraft.",
+        SkillUiAction::Shield => {
+            "Give one active friendly aircraft a shield, up to 2 layers. Shields block hits."
+        }
+        SkillUiAction::DoubleDice => "Arm the next roll with two dice; the higher die is used.",
     }
 }
 
@@ -1930,6 +2364,14 @@ fn skill_button_color(ready: bool, available_context: bool) -> Color {
     } else {
         Color::srgba(0.73, 0.77, 0.84, 0.34)
     }
+}
+
+fn skill_tip_panel_color() -> Color {
+    Color::srgba(0.97, 0.98, 1.0, 0.96)
+}
+
+fn skill_tip_border_color() -> Color {
+    Color::srgba(0.08, 0.12, 0.18, 0.52)
 }
 
 fn event_notice_panel_color(active: bool) -> Color {
@@ -2545,6 +2987,60 @@ mod tests {
     }
 
     #[test]
+    fn skill_tip_rect_stays_inside_window_and_near_skill_button() {
+        let width = 720.0;
+        let height = 1280.0;
+        let profile = test_profile(width, height);
+
+        for action in HUD_SKILL_ACTIONS {
+            let button = shared_skill_button_rect(width, height, profile, action);
+            let tip = skill_tip_rect(width, height, profile, action);
+
+            assert!(tip.x >= HUD_EDGE_MARGIN);
+            assert!(tip.y >= HUD_EDGE_MARGIN);
+            assert!(tip.x + tip.w <= width - HUD_EDGE_MARGIN + f32::EPSILON);
+            assert!(tip.y + tip.h <= height - HUD_EDGE_MARGIN + f32::EPSILON);
+            assert!((tip.x + tip.w * 0.5 - (button.x + button.w * 0.5)).abs() <= tip.w * 0.5);
+        }
+    }
+
+    #[test]
+    fn skill_tip_text_covers_every_skill() {
+        for action in HUD_SKILL_ACTIONS {
+            assert!(!skill_action_name(action).is_empty());
+            assert!(skill_tip_body(action).len() > 24);
+        }
+    }
+
+    #[test]
+    fn skill_button_hit_testing_maps_points_to_actions() {
+        let width = 1280.0;
+        let height = 720.0;
+        let profile = test_profile(width, height);
+
+        for action in HUD_SKILL_ACTIONS {
+            let rect = shared_skill_button_rect(width, height, profile, action);
+            assert_eq!(
+                skill_action_at_point(
+                    Vec2::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5),
+                    width,
+                    height,
+                    profile
+                ),
+                Some(action)
+            );
+        }
+    }
+
+    #[test]
+    fn long_press_tip_release_does_not_queue_skill() {
+        assert!(should_queue_skill_from_release(true, false, true));
+        assert!(!should_queue_skill_from_release(true, true, true));
+        assert!(!should_queue_skill_from_release(false, false, true));
+        assert!(!should_queue_skill_from_release(true, false, false));
+    }
+
+    #[test]
     fn shared_roll_and_settings_entries_are_treated_as_interactive() {
         let window = Window {
             resolution: (1280, 720).into(),
@@ -2556,6 +3052,12 @@ mod tests {
         let roll = board_roll_button_rect(window.width(), window.height(), profile);
         let settings = top_right_controls_rect(window.width());
         let skill = shared_skill_button_rect(
+            window.width(),
+            window.height(),
+            profile,
+            SkillUiAction::Shield,
+        );
+        let tip = skill_tip_rect(
             window.width(),
             window.height(),
             profile,
@@ -2585,6 +3087,22 @@ mod tests {
             &roster,
             &hud_state
         ));
+        assert!(!player_hud_point_is_interactive(
+            Vec2::new(tip.x + 2.0, tip.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+        hud_state.skill_tip_action = Some(SkillUiAction::Shield);
+        assert!(player_hud_point_is_interactive(
+            Vec2::new(tip.x + 2.0, tip.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+        hud_state.skill_tip_action = None;
         assert!(player_hud_point_is_interactive(
             Vec2::new(log.x + 2.0, log.y + 2.0),
             &window,

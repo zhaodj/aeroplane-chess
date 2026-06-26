@@ -1024,9 +1024,9 @@ mod tests {
     #[test]
     fn shortcut_waypoints_fly_directly_between_dashed_nodes() {
         let (board_layout, player_roster) = test_roster();
-        let start_progress = 15;
-        let source_progress = 16;
-        let target_progress = 27;
+        let start_progress = 16;
+        let source_progress = 17;
+        let target_progress = 29;
         let from = world_position_for_piece(
             1,
             start_progress,

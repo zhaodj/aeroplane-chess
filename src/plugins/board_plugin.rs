@@ -35,14 +35,18 @@ struct BoardSceneEntity;
 /// 玩家停机坪中心的骰面底板。
 struct PlayerDiceDisplay {
     player_id: u8,
+    die_index: u8,
     layer: PlayerDiceDisplayLayer,
+    base_center: Vec2,
 }
 
-#[derive(Clone, Copy, Component, Eq, PartialEq)]
+#[derive(Clone, Copy, Component, PartialEq)]
 /// 骰面点位，用于按 1~6 点动态显示。
 struct PlayerDicePip {
     player_id: u8,
+    die_index: u8,
     slot: DicePipSlot,
+    base_center: Vec2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,22 +58,29 @@ enum PlayerDiceDisplayLayer {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PlayerDiceDisplayState {
     Hidden,
-    Active(u8),
-    Disabled(u8),
+    Active([u8; 2]),
+    Disabled([u8; 2]),
 }
 
 impl PlayerDiceDisplayState {
-    fn roll(self) -> Option<u8> {
+    fn faces(self) -> Option<[u8; 2]> {
         match self {
             Self::Hidden => None,
-            Self::Active(roll) | Self::Disabled(roll) => Some(roll),
+            Self::Active(faces) | Self::Disabled(faces) => Some(faces),
         }
+    }
+
+    fn roll(self, die_index: u8) -> Option<u8> {
+        self.faces()
+            .and_then(|faces| dice_face_for_index(faces, die_index))
     }
 
     fn active(self) -> bool {
         matches!(self, Self::Active(_))
     }
 }
+
+const PLAYER_DICE_DOUBLE_OFFSET: f32 = 20.5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DicePipSlot {
@@ -524,34 +535,41 @@ fn update_player_dice_displays(
     mut display_query: Query<(
         &PlayerDiceDisplay,
         &mut Visibility,
+        &mut Transform,
         &MeshMaterial2d<ColorMaterial>,
     )>,
     mut pip_query: Query<
         (
             &PlayerDicePip,
             &mut Visibility,
+            &mut Transform,
             &MeshMaterial2d<ColorMaterial>,
         ),
         Without<PlayerDiceDisplay>,
     >,
 ) {
     let animation_active = !animation_query.is_empty();
-    for (display, mut visibility, material_handle) in &mut display_query {
+    for (display, mut visibility, mut transform, material_handle) in &mut display_query {
         let display_state =
             player_dice_display_state(&turn_state, display.player_id, animation_active);
-        *visibility = if display_state.roll().is_some() {
+        *visibility = if display_state.roll(display.die_index).is_some() {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
+        if let Some(faces) = display_state.faces() {
+            let center = dice_center_for_index(display.base_center, faces, display.die_index);
+            transform.translation.x = center.x;
+            transform.translation.y = center.y;
+        }
         if let Some(mut material) = materials.get_mut(&material_handle.0) {
             material.color = player_dice_display_color(display.layer, display_state.active());
         }
     }
 
-    for (pip, mut visibility, material_handle) in &mut pip_query {
+    for (pip, mut visibility, mut transform, material_handle) in &mut pip_query {
         let display_state = player_dice_display_state(&turn_state, pip.player_id, animation_active);
-        let Some(roll) = display_state.roll() else {
+        let Some(roll) = display_state.roll(pip.die_index) else {
             *visibility = Visibility::Hidden;
             continue;
         };
@@ -560,6 +578,12 @@ fn update_player_dice_displays(
         } else {
             Visibility::Hidden
         };
+        if let Some(faces) = display_state.faces() {
+            let center = dice_center_for_index(pip.base_center, faces, pip.die_index)
+                + dice_pip_offset(pip.slot);
+            transform.translation.x = center.x;
+            transform.translation.y = center.y;
+        }
         if let Some(mut material) = materials.get_mut(&material_handle.0) {
             material.color = player_dice_pip_color(display_state.active());
         }
@@ -573,7 +597,10 @@ fn player_dice_display_state(
 ) -> PlayerDiceDisplayState {
     if let Some(roll) = turn_state.current_roll {
         if turn_state.current_player == player_id {
-            return PlayerDiceDisplayState::Active(roll);
+            return PlayerDiceDisplayState::Active(display_faces_for_roll(
+                roll,
+                turn_state.current_roll_faces,
+            ));
         }
         return disabled_player_roll_state(turn_state, player_id);
     }
@@ -582,7 +609,10 @@ fn player_dice_display_state(
         && turn_state.last_roll_player == Some(player_id)
         && let Some(roll) = turn_state.last_roll
     {
-        return PlayerDiceDisplayState::Active(roll);
+        return PlayerDiceDisplayState::Active(display_faces_for_roll(
+            roll,
+            turn_state.last_roll_faces,
+        ));
     }
 
     disabled_player_roll_state(turn_state, player_id)
@@ -591,8 +621,42 @@ fn player_dice_display_state(
 fn disabled_player_roll_state(turn_state: &TurnState, player_id: u8) -> PlayerDiceDisplayState {
     turn_state
         .player_last_roll(player_id)
-        .map(PlayerDiceDisplayState::Disabled)
-        .unwrap_or(PlayerDiceDisplayState::Hidden)
+        .map_or(PlayerDiceDisplayState::Hidden, |roll| {
+            PlayerDiceDisplayState::Disabled(display_faces_for_roll(
+                roll,
+                turn_state.player_last_roll_faces(player_id),
+            ))
+        })
+}
+
+fn display_faces_for_roll(roll: u8, faces: Option<[u8; 2]>) -> [u8; 2] {
+    let faces = faces.unwrap_or([roll, 0]);
+    if dice_face_for_index(faces, 0).is_some() {
+        faces
+    } else {
+        [roll, 0]
+    }
+}
+
+fn dice_face_for_index(faces: [u8; 2], die_index: u8) -> Option<u8> {
+    match die_index {
+        0 if (1..=6).contains(&faces[0]) => Some(faces[0]),
+        1 if (1..=6).contains(&faces[1]) => Some(faces[1]),
+        _ => None,
+    }
+}
+
+fn dice_center_for_index(base_center: Vec2, faces: [u8; 2], die_index: u8) -> Vec2 {
+    if dice_face_for_index(faces, 1).is_none() {
+        return base_center;
+    }
+
+    let offset = if die_index == 0 {
+        -PLAYER_DICE_DOUBLE_OFFSET
+    } else {
+        PLAYER_DICE_DOUBLE_OFFSET
+    };
+    base_center + Vec2::new(offset, 0.0)
 }
 
 fn board_surface_color() -> Color {
@@ -676,6 +740,18 @@ fn pip_visible_for_roll(roll: u8, slot: DicePipSlot) -> bool {
     }
 }
 
+fn dice_pip_offset(slot: DicePipSlot) -> Vec2 {
+    match slot {
+        DicePipSlot::Center => Vec2::ZERO,
+        DicePipSlot::TopLeft => Vec2::new(-6.0, 6.0),
+        DicePipSlot::TopRight => Vec2::new(6.0, 6.0),
+        DicePipSlot::MiddleLeft => Vec2::new(-6.0, 0.0),
+        DicePipSlot::MiddleRight => Vec2::new(6.0, 0.0),
+        DicePipSlot::BottomLeft => Vec2::new(-6.0, -6.0),
+        DicePipSlot::BottomRight => Vec2::new(6.0, -6.0),
+    }
+}
+
 fn player_dice_display_color(layer: PlayerDiceDisplayLayer, active: bool) -> Color {
     match (layer, active) {
         (PlayerDiceDisplayLayer::Rim, true) => Color::srgba(0.08, 0.11, 0.16, 0.82),
@@ -700,45 +776,58 @@ fn spawn_player_dice_display(
     player_id: u8,
     center: Vec2,
 ) {
-    for (radius, layer, z) in [
-        (20.0, PlayerDiceDisplayLayer::Rim, BOARD_Z_LAYER + 1.26),
-        (17.2, PlayerDiceDisplayLayer::Face, BOARD_Z_LAYER + 1.27),
-    ] {
-        commands.spawn((
-            Mesh2d(meshes.add(Circle::new(radius))),
-            MeshMaterial2d(
-                materials.add(ColorMaterial::from(player_dice_display_color(layer, true))),
-            ),
-            Transform::from_xyz(center.x, center.y, z),
-            Visibility::Hidden,
-            PlayerDiceDisplay { player_id, layer },
-            Name::new(format!("PlayerDiceDisplay_P{player_id}")),
-            BoardSceneEntity,
-        ));
-    }
+    for die_index in 0..2 {
+        for (radius, layer, z) in [
+            (20.0, PlayerDiceDisplayLayer::Rim, BOARD_Z_LAYER + 1.26),
+            (17.2, PlayerDiceDisplayLayer::Face, BOARD_Z_LAYER + 1.27),
+        ] {
+            commands.spawn((
+                Mesh2d(meshes.add(Circle::new(radius))),
+                MeshMaterial2d(
+                    materials.add(ColorMaterial::from(player_dice_display_color(layer, true))),
+                ),
+                Transform::from_xyz(center.x, center.y, z),
+                Visibility::Hidden,
+                PlayerDiceDisplay {
+                    player_id,
+                    die_index,
+                    layer,
+                    base_center: center,
+                },
+                Name::new(format!("PlayerDiceDisplay_P{player_id}_D{die_index}")),
+                BoardSceneEntity,
+            ));
+        }
 
-    for (slot, offset) in [
-        (DicePipSlot::Center, Vec2::ZERO),
-        (DicePipSlot::TopLeft, Vec2::new(-6.0, 6.0)),
-        (DicePipSlot::TopRight, Vec2::new(6.0, 6.0)),
-        (DicePipSlot::MiddleLeft, Vec2::new(-6.0, 0.0)),
-        (DicePipSlot::MiddleRight, Vec2::new(6.0, 0.0)),
-        (DicePipSlot::BottomLeft, Vec2::new(-6.0, -6.0)),
-        (DicePipSlot::BottomRight, Vec2::new(6.0, -6.0)),
-    ] {
-        commands.spawn((
-            Mesh2d(meshes.add(Circle::new(2.7))),
-            MeshMaterial2d(materials.add(ColorMaterial::from(player_dice_pip_color(true)))),
-            Transform::from_xyz(
-                center.x + offset.x,
-                center.y + offset.y,
-                BOARD_Z_LAYER + 1.29,
-            ),
-            Visibility::Hidden,
-            PlayerDicePip { player_id, slot },
-            Name::new(format!("PlayerDicePip_P{player_id}_{slot:?}")),
-            BoardSceneEntity,
-        ));
+        for slot in [
+            DicePipSlot::Center,
+            DicePipSlot::TopLeft,
+            DicePipSlot::TopRight,
+            DicePipSlot::MiddleLeft,
+            DicePipSlot::MiddleRight,
+            DicePipSlot::BottomLeft,
+            DicePipSlot::BottomRight,
+        ] {
+            let offset = dice_pip_offset(slot);
+            commands.spawn((
+                Mesh2d(meshes.add(Circle::new(2.7))),
+                MeshMaterial2d(materials.add(ColorMaterial::from(player_dice_pip_color(true)))),
+                Transform::from_xyz(
+                    center.x + offset.x,
+                    center.y + offset.y,
+                    BOARD_Z_LAYER + 1.29,
+                ),
+                Visibility::Hidden,
+                PlayerDicePip {
+                    player_id,
+                    die_index,
+                    slot,
+                    base_center: center,
+                },
+                Name::new(format!("PlayerDicePip_P{player_id}_D{die_index}_{slot:?}")),
+                BoardSceneEntity,
+            ));
+        }
     }
 }
 
@@ -2172,16 +2261,18 @@ mod tests {
         turn_state.current_player = 2;
         turn_state.current_roll = None;
         turn_state.last_roll = Some(6);
+        turn_state.last_roll_faces = Some([6, 0]);
         turn_state.last_roll_player = Some(1);
         turn_state.player_last_rolls = [Some(6), Some(3), None, None];
+        turn_state.player_last_roll_faces = [Some([6, 0]), Some([3, 0]), None, None];
 
         assert_eq!(
             player_dice_display_state(&turn_state, 1, false),
-            PlayerDiceDisplayState::Disabled(6)
+            PlayerDiceDisplayState::Disabled([6, 0])
         );
         assert_eq!(
             player_dice_display_state(&turn_state, 2, false),
-            PlayerDiceDisplayState::Disabled(3)
+            PlayerDiceDisplayState::Disabled([3, 0])
         );
         assert_eq!(
             player_dice_display_state(&turn_state, 3, false),
@@ -2189,30 +2280,52 @@ mod tests {
         );
         assert_eq!(
             player_dice_display_state(&turn_state, 1, true),
-            PlayerDiceDisplayState::Active(6)
+            PlayerDiceDisplayState::Active([6, 0])
         );
         assert_eq!(
             player_dice_display_state(&turn_state, 2, true),
-            PlayerDiceDisplayState::Disabled(3)
+            PlayerDiceDisplayState::Disabled([3, 0])
         );
 
         turn_state.hold_last_roll_display = true;
         assert_eq!(
             player_dice_display_state(&turn_state, 1, false),
-            PlayerDiceDisplayState::Active(6)
+            PlayerDiceDisplayState::Active([6, 0])
         );
         turn_state.hold_last_roll_display = false;
 
         turn_state.current_roll = Some(4);
+        turn_state.current_roll_faces = Some([4, 0]);
 
         assert_eq!(
             player_dice_display_state(&turn_state, 1, true),
-            PlayerDiceDisplayState::Disabled(6)
+            PlayerDiceDisplayState::Disabled([6, 0])
         );
         assert_eq!(
             player_dice_display_state(&turn_state, 2, true),
-            PlayerDiceDisplayState::Active(4)
+            PlayerDiceDisplayState::Active([4, 0])
         );
+    }
+
+    #[test]
+    fn dice_display_preserves_double_dice_faces() {
+        let mut turn_state = TurnState::opening_turn();
+        turn_state.current_player = 1;
+        turn_state.current_roll = Some(5);
+        turn_state.current_roll_faces = Some([2, 5]);
+
+        let display_state = player_dice_display_state(&turn_state, 1, false);
+        assert_eq!(display_state, PlayerDiceDisplayState::Active([2, 5]));
+        assert_eq!(display_state.roll(0), Some(2));
+        assert_eq!(display_state.roll(1), Some(5));
+
+        let base_center = Vec2::new(10.0, 20.0);
+        let first_center = dice_center_for_index(base_center, [2, 5], 0);
+        let second_center = dice_center_for_index(base_center, [2, 5], 1);
+        assert!(first_center.x < base_center.x);
+        assert!(second_center.x > base_center.x);
+        assert_eq!(dice_center_for_index(base_center, [4, 0], 0), base_center);
+        assert_eq!(dice_center_for_index(base_center, [4, 0], 1), base_center);
     }
 
     #[test]

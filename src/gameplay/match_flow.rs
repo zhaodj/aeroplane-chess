@@ -323,6 +323,15 @@ pub fn hangar_center_for_seat(seat: PlayerSeat) -> Vec2 {
     }
 }
 
+pub fn turn_marker_position_for_seat(seat: PlayerSeat) -> Vec2 {
+    match seat {
+        PlayerSeat::Blue => Vec2::new(-300.104, -0.104),
+        PlayerSeat::Red => Vec2::new(-0.104, 300.104),
+        PlayerSeat::Green => Vec2::new(0.104, -300.104),
+        PlayerSeat::Yellow => Vec2::new(300.317, 0.104),
+    }
+}
+
 pub fn player_for_seat<'a>(
     player_roster: &'a PlayerRoster,
     seat: PlayerSeat,

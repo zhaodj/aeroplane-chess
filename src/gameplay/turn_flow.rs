@@ -9,8 +9,8 @@ use crate::domain::player::PlayerControl;
 use crate::domain::rules::{LaunchRule, can_launch};
 use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{
-    BoardLayout, MatchConfig, MatchResult, PlayerProfile, PlayerRoster, TeamRoster,
-    evaluate_match_result,
+    BoardLayout, MatchConfig, MatchResult, PlayerProfile, PlayerRoster, PlayerSeat, TeamRoster,
+    evaluate_match_result, turn_marker_position_for_seat,
 };
 use crate::gameplay::skill_flow::{
     SkillRoster, disable_next_skill_turn, grant_random_skill_charge,
@@ -18,9 +18,10 @@ use crate::gameplay::skill_flow::{
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::GamePhase;
 
-pub const MAIN_ROUTE_STEPS: u8 = 48;
+pub const BOARD_ROUTE_TILES: u8 = 48;
+pub const MAIN_ROUTE_STEPS: u8 = 52;
 pub const HOME_LANE_STEPS: u8 = 6;
-pub const HOME_ENTRY_PROGRESS: u8 = MAIN_ROUTE_STEPS - 2;
+pub const HOME_ENTRY_PROGRESS: u8 = MAIN_ROUTE_STEPS - 3;
 pub const FINISH_DISTANCE: u8 = HOME_ENTRY_PROGRESS + HOME_LANE_STEPS;
 pub const MAX_CHAIN_EXTRA_ROLLS: u8 = 3;
 pub const MAX_PIECE_SHIELD: u8 = 2;
@@ -33,11 +34,14 @@ pub struct TurnState {
     pub consecutive_sixes: u8,
     pub turn_index: u32,
     pub current_roll: Option<u8>,
+    pub current_roll_faces: Option<[u8; 2]>,
     pub last_roll: Option<u8>,
+    pub last_roll_faces: Option<[u8; 2]>,
     pub last_roll_player: Option<u8>,
     pub hold_last_roll_display: bool,
     pub roll_display_animation_started: bool,
     pub player_last_rolls: [Option<u8>; 4],
+    pub player_last_roll_faces: [Option<[u8; 2]>; 4],
     pub last_piece_effect: Option<PieceEffectNotice>,
     pub last_action: Option<String>,
     pub last_action_player_id: Option<u8>,
@@ -54,11 +58,14 @@ impl TurnState {
             consecutive_sixes: 0,
             turn_index: 1,
             current_roll: None,
+            current_roll_faces: None,
             last_roll: None,
+            last_roll_faces: None,
             last_roll_player: None,
             hold_last_roll_display: false,
             roll_display_animation_started: false,
             player_last_rolls: [None; 4],
+            player_last_roll_faces: [None; 4],
             last_piece_effect: None,
             last_action: None,
             last_action_player_id: None,
@@ -70,6 +77,13 @@ impl TurnState {
     /// 查询指定玩家最近一次掷骰结果，用于棋盘停机坪骰面显示。
     pub fn player_last_roll(&self, player_id: u8) -> Option<u8> {
         self.player_last_rolls
+            .get(player_id.saturating_sub(1) as usize)
+            .copied()
+            .flatten()
+    }
+
+    pub fn player_last_roll_faces(&self, player_id: u8) -> Option<[u8; 2]> {
+        self.player_last_roll_faces
             .get(player_id.saturating_sub(1) as usize)
             .copied()
             .flatten()
@@ -138,6 +152,7 @@ impl PlannedAction {
 pub enum BoardPosition {
     Launch,
     Main(u8),
+    TurnMarker(PlayerSeat),
     Home(u8),
     Goal,
 }
@@ -250,8 +265,15 @@ pub fn pressed_selection_key(keyboard: &ButtonInput<KeyCode>, max_actions: usize
 
 /// 写入本回合掷骰结果，并同步处理“连续 6 点额外回合”计数。
 pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
+    set_roll_with_faces(turn_state, roll_value, [roll_value, 0]);
+}
+
+pub fn set_roll_with_faces(turn_state: &mut TurnState, roll_value: u8, roll_faces: [u8; 2]) {
+    let roll_faces = normalized_roll_faces(roll_value, roll_faces);
     turn_state.current_roll = Some(roll_value);
+    turn_state.current_roll_faces = Some(roll_faces);
     turn_state.last_roll = Some(roll_value);
+    turn_state.last_roll_faces = Some(roll_faces);
     turn_state.last_roll_player = Some(turn_state.current_player);
     turn_state.hold_last_roll_display = false;
     turn_state.roll_display_animation_started = false;
@@ -262,6 +284,12 @@ pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
     {
         *player_roll = Some(roll_value);
     }
+    if let Some(player_roll_faces) = turn_state
+        .player_last_roll_faces
+        .get_mut(turn_state.current_player.saturating_sub(1) as usize)
+    {
+        *player_roll_faces = Some(roll_faces);
+    }
 
     if roll_value == 6 {
         if turn_state.consecutive_sixes < MAX_CHAIN_EXTRA_ROLLS {
@@ -270,6 +298,14 @@ pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
         turn_state.consecutive_sixes = turn_state.consecutive_sixes.saturating_add(1);
     } else {
         turn_state.consecutive_sixes = 0;
+    }
+}
+
+fn normalized_roll_faces(roll_value: u8, roll_faces: [u8; 2]) -> [u8; 2] {
+    if roll_faces[0] == 0 {
+        [roll_value, 0]
+    } else {
+        roll_faces
     }
 }
 
@@ -895,9 +931,15 @@ pub fn board_position_for_distance(
         PieceStatus::InHangar => None,
         PieceStatus::AtLaunch => Some(BoardPosition::Launch),
         PieceStatus::Finished => Some(BoardPosition::Goal),
-        PieceStatus::Active if distance < HOME_ENTRY_PROGRESS => Some(BoardPosition::Main(
-            (player_profile.launch_tile_index + distance) % MAIN_ROUTE_STEPS,
-        )),
+        PieceStatus::Active if distance < HOME_ENTRY_PROGRESS => {
+            let public_index = (public_index_for_route_index(player_profile.launch_tile_index)?
+                + distance)
+                % MAIN_ROUTE_STEPS;
+            board_position_for_public_index(public_index)
+        }
+        PieceStatus::Active if distance == HOME_ENTRY_PROGRESS => {
+            Some(BoardPosition::TurnMarker(player_profile.seat))
+        }
         PieceStatus::Active if distance < FINISH_DISTANCE => {
             Some(BoardPosition::Home(distance - HOME_ENTRY_PROGRESS))
         }
@@ -922,6 +964,7 @@ pub fn world_position_for_piece(
     match board_position_for_distance(player_profile, distance, status)? {
         BoardPosition::Launch => Some(player_profile.launch_position),
         BoardPosition::Main(tile_index) => board_layout.world_pos_for_route_index(tile_index),
+        BoardPosition::TurnMarker(seat) => Some(turn_marker_position_for_seat(seat)),
         BoardPosition::Home(home_index) => player_profile
             .home_lane_positions
             .get(home_index as usize)
@@ -1096,9 +1139,7 @@ fn attacker_has_enemy_on_current_tile(
     player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> bool {
-    let Some(BoardPosition::Main(target_tile_index)) =
-        attacker_position(action, player_roster, piece_query)
-    else {
+    let Some(target_position) = attacker_position(action, player_roster, piece_query) else {
         return false;
     };
 
@@ -1115,8 +1156,7 @@ fn attacker_has_enemy_on_current_tile(
         piece_id.0 != attacker_piece_id
             && piece_state.status == PieceStatus::Active
             && piece_state.team_id != attacker_team
-            && piece_board_position(*piece_state, player_roster)
-                == Some(BoardPosition::Main(target_tile_index))
+            && piece_board_position(*piece_state, player_roster) == Some(target_position)
     })
 }
 
@@ -1232,10 +1272,14 @@ fn progress_for_main_route_index(
         .players
         .iter()
         .find(|player| player.state.player_id == player_id)?;
-    Some(route_index_for_launch(
-        player_profile.launch_tile_index,
-        route_index,
-    ))
+    let launch_index = public_index_for_route_index(player_profile.launch_tile_index)?;
+    let route_index = public_index_for_route_index(route_index)?;
+    let progress = if route_index >= launch_index {
+        route_index - launch_index
+    } else {
+        MAIN_ROUTE_STEPS - (launch_index - route_index)
+    };
+    (progress < HOME_ENTRY_PROGRESS).then_some(progress)
 }
 
 fn route_index_for_progress(
@@ -1247,14 +1291,57 @@ fn route_index_for_progress(
         .players
         .iter()
         .find(|player| player.state.player_id == player_id)?;
-    Some((player_profile.launch_tile_index + progress) % MAIN_ROUTE_STEPS)
+    if progress >= HOME_ENTRY_PROGRESS {
+        return None;
+    }
+    let public_index = (public_index_for_route_index(player_profile.launch_tile_index)? + progress)
+        % MAIN_ROUTE_STEPS;
+    route_index_for_public_index(public_index)
 }
 
-fn route_index_for_launch(launch_tile_index: u8, route_index: u8) -> u8 {
-    if route_index >= launch_tile_index {
-        route_index - launch_tile_index
-    } else {
-        MAIN_ROUTE_STEPS - (launch_tile_index - route_index)
+fn board_position_for_public_index(public_index: u8) -> Option<BoardPosition> {
+    match public_node_for_index(public_index)? {
+        PublicRouteNode::Route(route_index) => Some(BoardPosition::Main(route_index)),
+        PublicRouteNode::TurnMarker(seat) => Some(BoardPosition::TurnMarker(seat)),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicRouteNode {
+    Route(u8),
+    TurnMarker(PlayerSeat),
+}
+
+fn public_node_for_index(public_index: u8) -> Option<PublicRouteNode> {
+    match public_index {
+        0 => Some(PublicRouteNode::Route(0)),
+        1 => Some(PublicRouteNode::TurnMarker(PlayerSeat::Red)),
+        2..=13 => Some(PublicRouteNode::Route(public_index - 1)),
+        14 => Some(PublicRouteNode::TurnMarker(PlayerSeat::Yellow)),
+        15..=26 => Some(PublicRouteNode::Route(public_index - 2)),
+        27 => Some(PublicRouteNode::TurnMarker(PlayerSeat::Green)),
+        28..=39 => Some(PublicRouteNode::Route(public_index - 3)),
+        40 => Some(PublicRouteNode::TurnMarker(PlayerSeat::Blue)),
+        41..=51 => Some(PublicRouteNode::Route(public_index - 4)),
+        _ => None,
+    }
+}
+
+fn public_index_for_route_index(route_index: u8) -> Option<u8> {
+    (route_index < BOARD_ROUTE_TILES).then(|| match route_index {
+        0 => 0,
+        1..=12 => route_index + 1,
+        13..=24 => route_index + 2,
+        25..=36 => route_index + 3,
+        37..=47 => route_index + 4,
+        _ => unreachable!(),
+    })
+}
+
+fn route_index_for_public_index(public_index: u8) -> Option<u8> {
+    match public_node_for_index(public_index)? {
+        PublicRouteNode::Route(route_index) => Some(route_index),
+        PublicRouteNode::TurnMarker(_) => None,
     }
 }
 
@@ -1395,8 +1482,10 @@ fn resolve_collision(
     else {
         return true;
     };
-    let BoardPosition::Main(target_tile_index) = attacker_board_position else {
-        return true;
+    let target_tile_index = match attacker_board_position {
+        BoardPosition::Main(tile_index) => Some(tile_index),
+        BoardPosition::TurnMarker(_) => None,
+        BoardPosition::Launch | BoardPosition::Home(_) | BoardPosition::Goal => return true,
     };
 
     let attacker_piece_id = action.piece_id();
@@ -1419,12 +1508,15 @@ fn resolve_collision(
                 && piece_state.status == PieceStatus::Active
                 && piece_state.team_id != attacker_team
                 && piece_board_position(*piece_state, player_roster)
-                    == Some(BoardPosition::Main(target_tile_index)))
+                    == Some(attacker_board_position))
             .then_some(piece_id.0)
         })
         .collect::<Vec<_>>();
 
-    if is_attack_route_tile(board_layout, target_tile_index) && !defender_piece_ids.is_empty() {
+    if target_tile_index.is_some_and(|tile_index| is_attack_route_tile(board_layout, tile_index))
+        && !defender_piece_ids.is_empty()
+    {
+        let target_tile_index = target_tile_index.expect("attack tile has a route index");
         clear_attack_tile_defenders(
             attacker_piece_id,
             attacker_team,
@@ -1437,7 +1529,9 @@ fn resolve_collision(
         return true;
     }
 
-    if is_plain_route_tile(board_layout, target_tile_index) && defender_piece_ids.len() >= 2 {
+    if is_plain_board_position(board_layout, attacker_board_position)
+        && defender_piece_ids.len() >= 2
+    {
         send_attacker_to_hangar(action, piece_query);
         notes.push("stacked defenders bounced attacker back to hangar".to_string());
         return false;
@@ -1451,8 +1545,7 @@ fn resolve_collision(
 
         if piece_state.status != PieceStatus::Active
             || piece_state.team_id == attacker_team
-            || piece_board_position(*piece_state, player_roster)
-                != Some(BoardPosition::Main(target_tile_index))
+            || piece_board_position(*piece_state, player_roster) != Some(attacker_board_position)
         {
             continue;
         }
@@ -1466,7 +1559,9 @@ fn resolve_collision(
         consume_stack_shield(&defenders_with_stack, piece_query);
         notes.push("shared stack shield blocked collision".to_string());
         restore_attacker_origin(action, action_origin, piece_query);
-        append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        if let Some(target_tile_index) = target_tile_index {
+            append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        }
         return false;
     }
 
@@ -1478,8 +1573,7 @@ fn resolve_collision(
 
         if piece_state.status != PieceStatus::Active
             || piece_state.team_id == attacker_team
-            || piece_board_position(*piece_state, player_roster)
-                != Some(BoardPosition::Main(target_tile_index))
+            || piece_board_position(*piece_state, player_roster) != Some(attacker_board_position)
         {
             continue;
         }
@@ -1506,15 +1600,27 @@ fn resolve_collision(
     if collision_blocked {
         restore_attacker_origin(action, action_origin, piece_query);
         notes.push("attacker bounced back after shield block".to_string());
-        append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        if let Some(target_tile_index) = target_tile_index {
+            append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        }
         return false;
     } else if notes
         .iter()
         .any(|note| note.contains("sent piece #") && note.contains("back to hangar"))
     {
-        append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        if let Some(target_tile_index) = target_tile_index {
+            append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        }
     }
     true
+}
+
+fn is_plain_board_position(board_layout: &BoardLayout, target_position: BoardPosition) -> bool {
+    match target_position {
+        BoardPosition::Main(tile_index) => is_plain_route_tile(board_layout, tile_index),
+        BoardPosition::TurnMarker(_) => true,
+        BoardPosition::Launch | BoardPosition::Home(_) | BoardPosition::Goal => false,
+    }
 }
 
 /// 普通主环道格：不含攻击、防御、随机、飞跃等特殊效果。
@@ -2057,6 +2163,7 @@ pub fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
     }
 
     turn_state.current_roll = None;
+    turn_state.current_roll_faces = None;
 }
 
 #[cfg(test)]
@@ -2301,16 +2408,8 @@ mod tests {
     }
 
     fn progress_for_main_tile(player_roster: &PlayerRoster, player_id: u8, route_index: u8) -> u8 {
-        let player = player_roster
-            .players
-            .iter()
-            .find(|player| player.state.player_id == player_id)
-            .expect("player exists in test roster");
-        if route_index >= player.launch_tile_index {
-            route_index - player.launch_tile_index
-        } else {
-            MAIN_ROUTE_STEPS - (player.launch_tile_index - route_index)
-        }
+        progress_for_main_route_index(player_roster, player_id, route_index)
+            .expect("route tile is reachable before this player's home lane")
     }
 
     fn seat_layouts_for_simulation() -> Vec<[PlayerSeat; 4]> {
@@ -2556,7 +2655,11 @@ mod tests {
         );
         assert_eq!(
             board_position_for_distance(player_one, HOME_ENTRY_PROGRESS, PieceStatus::Active),
-            Some(BoardPosition::Home(0))
+            Some(BoardPosition::TurnMarker(PlayerSeat::Blue))
+        );
+        assert_eq!(
+            board_position_for_distance(player_one, HOME_ENTRY_PROGRESS + 1, PieceStatus::Active),
+            Some(BoardPosition::Home(1))
         );
         assert_eq!(
             board_position_for_distance(player_one, FINISH_DISTANCE, PieceStatus::Finished),
@@ -2582,7 +2685,7 @@ mod tests {
             );
             assert_eq!(
                 board_position_for_distance(player, HOME_ENTRY_PROGRESS, PieceStatus::Active),
-                Some(BoardPosition::Home(0))
+                Some(BoardPosition::TurnMarker(player.seat))
             );
             assert_eq!(
                 player
@@ -2613,11 +2716,14 @@ mod tests {
             consecutive_sixes: 1,
             turn_index: 3,
             current_roll: Some(6),
+            current_roll_faces: Some([6, 0]),
             last_roll: Some(6),
+            last_roll_faces: Some([6, 0]),
             last_roll_player: Some(1),
             hold_last_roll_display: false,
             roll_display_animation_started: false,
             player_last_rolls: [Some(6), None, None, None],
+            player_last_roll_faces: [Some([6, 0]), None, None, None],
             last_piece_effect: None,
             last_action: None,
             last_action_player_id: None,
@@ -2649,6 +2755,8 @@ mod tests {
         assert_eq!(turn_state.extra_rolls_remaining, 1);
         assert_eq!(turn_state.consecutive_sixes, 1);
         assert_eq!(turn_state.player_last_roll(1), Some(6));
+        assert_eq!(turn_state.current_roll_faces, Some([6, 0]));
+        assert_eq!(turn_state.player_last_roll_faces(1), Some([6, 0]));
         assert_eq!(turn_state.last_piece_effect, None);
 
         set_roll(&mut turn_state, 6);
@@ -2968,7 +3076,7 @@ mod tests {
         assert_eq!(piece_state.progress, HOME_ENTRY_PROGRESS);
         assert_eq!(
             piece_board_position(piece_state, &player_roster),
-            Some(BoardPosition::Home(0))
+            Some(BoardPosition::TurnMarker(PlayerSeat::Blue))
         );
         assert!(
             notes

@@ -4,7 +4,7 @@ use rand::random_range;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::PlayerRoster;
-use crate::gameplay::turn_flow::MAIN_ROUTE_STEPS;
+use crate::gameplay::turn_flow::HOME_ENTRY_PROGRESS;
 use crate::plugins::piece_plugin::PieceId;
 
 pub const MAX_PIECE_SHIELD: u8 = 2;
@@ -41,6 +41,7 @@ pub struct PlayerSkillState {
 /// 掷骰解析结果（是否消耗了 DoubleDice）。
 pub struct RollResolution {
     pub value: u8,
+    pub dice: [u8; 2],
     pub used_double_dice: bool,
 }
 
@@ -274,7 +275,7 @@ pub fn is_legal_snipe_target(
     piece_state.owner_player_id != current_player
         && piece_state.team_id != current_team
         && piece_state.status == PieceStatus::Active
-        && piece_state.progress < MAIN_ROUTE_STEPS
+        && piece_state.progress <= HOME_ENTRY_PROGRESS
 }
 
 /// 判断棋子是否为当前玩家可操作的 Active 棋子。
@@ -395,8 +396,10 @@ pub fn resolve_roll_value(skill_roster: &mut SkillRoster, player_id: u8) -> Roll
         .iter_mut()
         .find(|player| player.player_id == player_id)
     else {
+        let value = random_range(1..=6);
         return RollResolution {
-            value: random_range(1..=6),
+            value,
+            dice: [value, 0],
             used_double_dice: false,
         };
     };
@@ -414,11 +417,13 @@ pub fn resolve_roll_from_values(first: u8, second: u8, use_double_dice: bool) ->
     if use_double_dice {
         RollResolution {
             value: first.max(second),
+            dice: [first, second],
             used_double_dice: true,
         }
     } else {
         RollResolution {
             value: first,
+            dice: [first, 0],
             used_double_dice: false,
         }
     }
@@ -709,6 +714,7 @@ mod tests {
             resolve_roll_from_values(2, 5, true),
             RollResolution {
                 value: 5,
+                dice: [2, 5],
                 used_double_dice: true,
             }
         );
@@ -716,6 +722,7 @@ mod tests {
             resolve_roll_from_values(4, 0, false),
             RollResolution {
                 value: 4,
+                dice: [4, 0],
                 used_double_dice: false,
             }
         );
@@ -878,7 +885,7 @@ mod tests {
                 owner_player_id: 3,
                 team_id: 2,
                 status: PieceStatus::Active,
-                progress: MAIN_ROUTE_STEPS + 1,
+                progress: HOME_ENTRY_PROGRESS + 1,
                 shield: 0,
                 stack_shield: 0,
                 motion_serial: 0,
