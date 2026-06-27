@@ -51,10 +51,12 @@ impl Plugin for AudioPlugin {
 pub struct AudioSettings {
     pub music_volume: f32,
     pub effects_volume: f32,
+    pub muted: bool,
 }
 
 impl AudioSettings {
-    pub const STEP: f32 = 0.1;
+    pub const MUSIC_STEP: f32 = 0.05;
+    pub const EFFECTS_STEP: f32 = 0.05;
 
     pub fn adjust_music(&mut self, delta: f32) {
         self.music_volume = clamp_audio_volume(self.music_volume + delta);
@@ -63,6 +65,18 @@ impl AudioSettings {
     pub fn adjust_effects(&mut self, delta: f32) {
         self.effects_volume = clamp_audio_volume(self.effects_volume + delta);
     }
+
+    pub fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+    }
+
+    pub fn effective_music_volume(self) -> f32 {
+        effective_audio_volume(self.music_volume, self.muted)
+    }
+
+    pub fn effective_effects_volume(self) -> f32 {
+        effective_audio_volume(self.effects_volume, self.muted)
+    }
 }
 
 impl Default for AudioSettings {
@@ -70,6 +84,7 @@ impl Default for AudioSettings {
         Self {
             music_volume: 0.35,
             effects_volume: 0.60,
+            muted: false,
         }
     }
 }
@@ -118,6 +133,7 @@ impl Default for GameAudioAssets {
 
 #[derive(Resource, Default)]
 struct AudioFeedbackState {
+    last_roll_serial: u32,
     last_action: Option<String>,
     last_skill_action: Option<String>,
     victory_played: bool,
@@ -174,6 +190,14 @@ pub fn clamp_audio_volume(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
 
+fn effective_audio_volume(volume: f32, muted: bool) -> f32 {
+    if muted {
+        0.0
+    } else {
+        clamp_audio_volume(volume)
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn load_audio_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(GameAudioAssets {
@@ -200,7 +224,7 @@ fn ensure_background_music(
     if !should_spawn_background_music(
         audio_interaction.unlocked,
         audio_focus.foreground,
-        audio_settings.music_volume,
+        audio_settings.effective_music_volume(),
         !music_query.is_empty(),
     ) {
         return;
@@ -208,7 +232,7 @@ fn ensure_background_music(
 
     commands.spawn((
         AudioPlayer::new(audio_assets.bgm.clone()),
-        PlaybackSettings::LOOP.with_volume(Volume::Linear(audio_settings.music_volume)),
+        PlaybackSettings::LOOP.with_volume(Volume::Linear(audio_settings.effective_music_volume())),
         BackgroundMusic,
         Name::new("BackgroundMusic"),
     ));
@@ -225,13 +249,14 @@ fn ensure_background_music(
     if !should_spawn_background_music(
         audio_interaction.unlocked,
         audio_focus.foreground,
-        audio_settings.music_volume,
+        audio_settings.effective_music_volume(),
         music_state.started,
     ) {
         return;
     }
 
-    music_state.started = play_web_background_music(audio_assets.bgm, audio_settings.music_volume);
+    music_state.started =
+        play_web_background_music(audio_assets.bgm, audio_settings.effective_music_volume());
 }
 
 fn capture_audio_interaction(
@@ -356,7 +381,7 @@ fn sync_background_music_volume(
     }
 
     for mut sink in &mut music_query {
-        sink.set_volume(Volume::Linear(audio_settings.music_volume));
+        sink.set_volume(Volume::Linear(audio_settings.effective_music_volume()));
     }
 }
 
@@ -368,7 +393,7 @@ fn sync_background_music_volume(audio_settings: Res<AudioSettings>) {
 
     WEB_BACKGROUND_MUSIC.with(|music| {
         if let Some(audio) = music.borrow().as_ref() {
-            audio.set_volume(audio_settings.music_volume as f64);
+            audio.set_volume(audio_settings.effective_music_volume() as f64);
         }
     });
 }
@@ -399,6 +424,19 @@ fn play_audio_feedback(mut commands: Commands, mut params: AudioFeedbackParams) 
             SoundEffect::Victory,
         );
         params.feedback_state.victory_played = true;
+        return;
+    }
+
+    if should_play_dice_roll_sound(
+        &mut params.feedback_state.last_roll_serial,
+        params.turn_state.roll_serial,
+    ) {
+        spawn_sound_effect(
+            &mut commands,
+            &params.audio_assets,
+            &params.audio_settings,
+            SoundEffect::Dice,
+        );
         return;
     }
 
@@ -436,6 +474,19 @@ fn play_audio_feedback(mut commands: Commands, mut params: AudioFeedbackParams) 
             );
         }
     }
+}
+
+fn should_play_dice_roll_sound(last_roll_serial: &mut u32, current_roll_serial: u32) -> bool {
+    if current_roll_serial == 0 {
+        *last_roll_serial = 0;
+        return false;
+    }
+    if *last_roll_serial == current_roll_serial {
+        return false;
+    }
+
+    *last_roll_serial = current_roll_serial;
+    true
 }
 
 fn classify_feedback_note(note: &str) -> Option<SoundEffect> {
@@ -479,13 +530,14 @@ fn spawn_sound_effect(
     audio_settings: &AudioSettings,
     effect: SoundEffect,
 ) {
-    if audio_settings.effects_volume <= f32::EPSILON {
+    let volume = audio_settings.effective_effects_volume();
+    if volume <= f32::EPSILON {
         return;
     }
 
     commands.spawn((
         AudioPlayer::new(sound_effect_handle(audio_assets, effect).clone()),
-        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(audio_settings.effects_volume)),
+        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)),
         Name::new(format!("{effect:?}SoundEffect")),
     ));
 }
@@ -497,14 +549,12 @@ fn spawn_sound_effect(
     audio_settings: &AudioSettings,
     effect: SoundEffect,
 ) {
-    if audio_settings.effects_volume <= f32::EPSILON {
+    let volume = audio_settings.effective_effects_volume();
+    if volume <= f32::EPSILON {
         return;
     }
 
-    play_web_sound_effect(
-        sound_effect_handle(audio_assets, effect),
-        audio_settings.effects_volume,
-    );
+    play_web_sound_effect(sound_effect_handle(audio_assets, effect), volume);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -599,17 +649,54 @@ mod tests {
     }
 
     #[test]
+    fn dice_sound_plays_once_per_roll_serial_and_resets_between_matches() {
+        let mut last_roll_serial = 0;
+
+        assert!(!should_play_dice_roll_sound(&mut last_roll_serial, 0));
+        assert!(should_play_dice_roll_sound(&mut last_roll_serial, 1));
+        assert!(!should_play_dice_roll_sound(&mut last_roll_serial, 1));
+        assert!(should_play_dice_roll_sound(&mut last_roll_serial, 2));
+        assert!(!should_play_dice_roll_sound(&mut last_roll_serial, 0));
+        assert_eq!(last_roll_serial, 0);
+        assert!(should_play_dice_roll_sound(&mut last_roll_serial, 1));
+    }
+
+    #[test]
     fn audio_volume_adjustments_are_clamped() {
         let mut settings = AudioSettings {
             music_volume: 0.95,
             effects_volume: 0.05,
+            muted: false,
         };
 
-        settings.adjust_music(AudioSettings::STEP);
-        settings.adjust_effects(-AudioSettings::STEP);
+        settings.adjust_music(AudioSettings::MUSIC_STEP);
+        settings.adjust_effects(-AudioSettings::EFFECTS_STEP);
 
         assert_eq!(settings.music_volume, 1.0);
         assert_eq!(settings.effects_volume, 0.0);
+    }
+
+    #[test]
+    fn mute_zeroes_effective_volume_without_changing_saved_levels() {
+        let mut settings = AudioSettings {
+            music_volume: 0.35,
+            effects_volume: 0.60,
+            muted: false,
+        };
+
+        assert_eq!(settings.effective_music_volume(), 0.35);
+        assert_eq!(settings.effective_effects_volume(), 0.60);
+
+        settings.toggle_mute();
+        assert!(settings.muted);
+        assert_eq!(settings.music_volume, 0.35);
+        assert_eq!(settings.effects_volume, 0.60);
+        assert_eq!(settings.effective_music_volume(), 0.0);
+        assert_eq!(settings.effective_effects_volume(), 0.0);
+
+        settings.toggle_mute();
+        assert_eq!(settings.effective_music_volume(), 0.35);
+        assert_eq!(settings.effective_effects_volume(), 0.60);
     }
 
     #[test]

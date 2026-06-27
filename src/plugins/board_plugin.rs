@@ -104,15 +104,17 @@ const CENTER_DICE_PROMPT_ALPHA: f32 = 1.0;
 const CENTER_DICE_PROMPT_BASE_ROTATION: f32 = -0.12;
 const CENTER_DICE_PROMPT_BOB: f32 = 4.0;
 const CENTER_DICE_PROMPT_SCALE_PULSE: f32 = 0.035;
-const DICE_ROLL_ANIMATION_DURATION: f32 = 1.32;
-const DICE_ROLL_SETTLE_START: f32 = 1.02;
-const DICE_ROLL_FACE_INTERVAL: f32 = 0.055;
+const DICE_ROLL_ANIMATION_DURATION: f32 = 0.88;
+const DICE_ROLL_SETTLE_START: f32 = 0.66;
+const DICE_ROLL_FACE_INTERVAL: f32 = 0.045;
 const DICE_ROLL_FRAME_COUNT: usize = 16;
 const DICE_ROLL_MAX_FRAME_STEP: f32 = 1.0 / 30.0;
-const DICE_ROLL_MAX_SHAKE: f32 = 9.0;
-const DICE_ROLL_MAX_HOP: f32 = 17.5;
-const DICE_ROLL_MAX_ROTATION: f32 = 0.82;
-const DICE_ROLL_MAX_SCALE_BUMP: f32 = 0.18;
+const DICE_ROLL_MAX_SHAKE: f32 = 7.0;
+const DICE_ROLL_MAX_HOP: f32 = 14.0;
+const DICE_ROLL_MAX_ROTATION: f32 = 0.36;
+const DICE_ROLL_MAX_SCALE_BUMP: f32 = 0.11;
+const DICE_ROLL_SPIN_TURNS: f32 = 2.0;
+const DICE_ROLL_TRAVEL_DISTANCE: f32 = 26.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DiceRollVisualKey {
@@ -876,17 +878,18 @@ fn dice_roll_visual_transform(
     }
 
     let roll_progress = (animation.elapsed / DICE_ROLL_SETTLE_START).clamp(0.0, 1.0);
-    let intensity = (1.0 - roll_progress).powf(0.85);
+    let intensity = (1.0 - roll_progress).powf(1.15);
+    let travel = 1.0 - ease_out_cubic(roll_progress);
     let frame = dice_roll_animation_frame(animation.elapsed);
     let seed = dice_roll_animation_seed(animation.key);
     let phase = (dice_roll_hash(seed, 0, die_index, 8) % 628) as f32 / 100.0;
     let lane = if die_index == 0 { -1.0 } else { 1.0 };
-    let approach = lane * (1.0 - roll_progress).powf(1.35) * 18.0;
+    let approach = lane * travel * DICE_ROLL_TRAVEL_DISTANCE;
     let horizontal_sway =
-        (roll_progress * PI * 5.2 + phase).sin() * DICE_ROLL_MAX_SHAKE * intensity;
+        (roll_progress * PI * 3.8 + phase).sin() * DICE_ROLL_MAX_SHAKE * intensity;
     let vertical_sway =
-        (roll_progress * PI * 6.1 + phase * 0.6).cos() * DICE_ROLL_MAX_SHAKE * 0.36 * intensity;
-    let hop = (roll_progress * PI * 5.0 + die_index as f32 * 0.7)
+        (roll_progress * PI * 4.2 + phase * 0.6).cos() * DICE_ROLL_MAX_SHAKE * 0.24 * intensity;
+    let hop = (roll_progress * PI * 2.65 + die_index as f32 * 0.55)
         .sin()
         .abs()
         * DICE_ROLL_MAX_HOP
@@ -899,7 +902,7 @@ fn dice_roll_visual_transform(
     } else {
         0.0
     };
-    let scale_bump = (animation.elapsed * 30.0 + die_index as f32).sin().abs()
+    let scale_bump = (animation.elapsed * 24.0 + die_index as f32).sin().abs()
         * DICE_ROLL_MAX_SCALE_BUMP
         * intensity;
     let squash = settle_bounce * 0.12;
@@ -908,14 +911,16 @@ fn dice_roll_visual_transform(
     } else {
         -1.0
     };
-    let rolling_rotation = spin_direction
-        * (roll_progress * PI * 7.4 + phase).sin()
-        * DICE_ROLL_MAX_ROTATION
-        * intensity;
-    let settle_rotation = dice_roll_noise(seed, frame, die_index, 2)
-        * DICE_ROLL_MAX_ROTATION
-        * 0.16
-        * (1.0 - settle_progress);
+    let landing_rotation = dice_roll_noise(seed, 0, die_index, 2) * DICE_ROLL_MAX_ROTATION * 0.48;
+    let spin_turns = DICE_ROLL_SPIN_TURNS + (dice_roll_hash(seed, 0, die_index, 5) % 2) as f32;
+    let rolling_rotation = landing_rotation
+        + spin_direction * ease_out_cubic(roll_progress) * PI * 2.0 * spin_turns
+        + (roll_progress * PI * 6.0 + phase).sin() * DICE_ROLL_MAX_ROTATION * intensity;
+    let settle_rotation = landing_rotation * (1.0 - settle_progress)
+        + dice_roll_noise(seed, frame, die_index, 2)
+            * DICE_ROLL_MAX_ROTATION
+            * 0.08
+            * (1.0 - settle_progress);
 
     DiceRollVisualTransform {
         offset: Vec2::new(
@@ -929,6 +934,10 @@ fn dice_roll_visual_transform(
             settle_rotation
         },
     }
+}
+
+fn ease_out_cubic(progress: f32) -> f32 {
+    1.0 - (1.0 - progress).powi(3)
 }
 
 fn center_dice_prompt_visible(
@@ -1004,10 +1013,7 @@ fn player_dice_display_state(
     let roll_display_pending = roll_display_is_pending_for_player(turn_state, player_id);
     if let Some(roll) = turn_state.current_roll {
         if turn_state.current_player == player_id && !roll_display_pending {
-            return PlayerDiceDisplayState::Active(display_faces_for_roll(
-                roll,
-                turn_state.current_roll_faces,
-            ));
+            return PlayerDiceDisplayState::Active(player_display_faces_for_roll(roll));
         }
         return disabled_player_roll_state(turn_state, player_id);
     }
@@ -1017,10 +1023,7 @@ fn player_dice_display_state(
         && !roll_display_pending
         && let Some(roll) = turn_state.last_roll
     {
-        return PlayerDiceDisplayState::Active(display_faces_for_roll(
-            roll,
-            turn_state.last_roll_faces,
-        ));
+        return PlayerDiceDisplayState::Active(player_display_faces_for_roll(roll));
     }
 
     disabled_player_roll_state(turn_state, player_id)
@@ -1036,11 +1039,12 @@ fn disabled_player_roll_state(turn_state: &TurnState, player_id: u8) -> PlayerDi
     turn_state
         .player_last_roll(player_id)
         .map_or(PlayerDiceDisplayState::Hidden, |roll| {
-            PlayerDiceDisplayState::Disabled(display_faces_for_roll(
-                roll,
-                turn_state.player_last_roll_faces(player_id),
-            ))
+            PlayerDiceDisplayState::Disabled(player_display_faces_for_roll(roll))
         })
+}
+
+fn player_display_faces_for_roll(roll: u8) -> [u8; 2] {
+    [roll, 0]
 }
 
 fn display_faces_for_roll(roll: u8, faces: Option<[u8; 2]>) -> [u8; 2] {
@@ -2814,24 +2818,28 @@ mod tests {
     }
 
     #[test]
-    fn dice_display_preserves_double_dice_faces() {
+    fn dice_display_collapses_double_dice_faces_to_final_roll() {
         let mut turn_state = TurnState::opening_turn();
         turn_state.current_player = 1;
         turn_state.current_roll = Some(5);
         turn_state.current_roll_faces = Some([2, 5]);
 
         let display_state = player_dice_display_state(&turn_state, 1, false);
-        assert_eq!(display_state, PlayerDiceDisplayState::Active([2, 5]));
-        assert_eq!(display_state.roll(0), Some(2));
-        assert_eq!(display_state.roll(1), Some(5));
+        assert_eq!(display_state, PlayerDiceDisplayState::Active([5, 0]));
+        assert_eq!(display_state.roll(0), Some(5));
+        assert_eq!(display_state.roll(1), None);
 
         let base_center = Vec2::new(10.0, 20.0);
-        let first_center = dice_center_for_index(base_center, [2, 5], 0);
-        let second_center = dice_center_for_index(base_center, [2, 5], 1);
-        assert!(first_center.x < base_center.x);
-        assert!(second_center.x > base_center.x);
-        assert_eq!(dice_center_for_index(base_center, [4, 0], 0), base_center);
-        assert_eq!(dice_center_for_index(base_center, [4, 0], 1), base_center);
+        assert_eq!(dice_center_for_index(base_center, [5, 0], 0), base_center);
+        assert_eq!(dice_center_for_index(base_center, [5, 0], 1), base_center);
+
+        turn_state.current_roll = None;
+        turn_state.player_last_rolls = [Some(5), None, None, None];
+        turn_state.player_last_roll_faces = [Some([2, 5]), None, None, None];
+        assert_eq!(
+            player_dice_display_state(&turn_state, 1, false),
+            PlayerDiceDisplayState::Disabled([5, 0])
+        );
     }
 
     #[test]
@@ -2850,7 +2858,7 @@ mod tests {
         ));
         assert_eq!(
             player_dice_display_state(&turn_state, 1, false),
-            PlayerDiceDisplayState::Active([2, 5])
+            PlayerDiceDisplayState::Active([5, 0])
         );
     }
 
@@ -2937,6 +2945,7 @@ mod tests {
         let rolling_transform = dice_roll_visual_transform(animation, 0);
         assert!(rolling_transform.offset.length() > 0.0);
         assert!(rolling_transform.scale.x > 1.0 || rolling_transform.scale.y > 1.0);
+        assert!(rolling_transform.rotation.abs() > DICE_ROLL_MAX_ROTATION);
         assert!(center_dice_center_for_index(Vec2::ZERO, [2, 5], 0).x < 0.0);
         assert!(center_dice_center_for_index(Vec2::ZERO, [2, 5], 1).x > 0.0);
 
@@ -2952,9 +2961,9 @@ mod tests {
 
     #[test]
     fn dice_roll_animation_timing_is_readable() {
-        assert!(DICE_ROLL_ANIMATION_DURATION >= 1.2);
-        assert!(DICE_ROLL_SETTLE_START >= 0.9);
-        assert!((DICE_ROLL_ANIMATION_DURATION - DICE_ROLL_SETTLE_START) >= 0.25);
+        assert!((0.75..=0.95).contains(&DICE_ROLL_ANIMATION_DURATION));
+        assert!((0.55..=0.75).contains(&DICE_ROLL_SETTLE_START));
+        assert!((0.16..=0.28).contains(&(DICE_ROLL_ANIMATION_DURATION - DICE_ROLL_SETTLE_START)));
     }
 
     #[test]

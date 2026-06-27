@@ -153,8 +153,21 @@ def transform_point(
     )
 
 
-def pip_layout(face: int) -> list[tuple[float, float]]:
-    d = 16.5
+def rect_corners(
+    center: tuple[float, float], width: float, height: float, rotation: float
+) -> list[tuple[float, float]]:
+    half_w = width * 0.5
+    half_h = height * 0.5
+    return [
+        transform_point(center, -half_w, -half_h, rotation),
+        transform_point(center, half_w, -half_h, rotation),
+        transform_point(center, half_w, half_h, rotation),
+        transform_point(center, -half_w, half_h, rotation),
+    ]
+
+
+def pip_layout(face: int, spacing: float = 16.5) -> list[tuple[float, float]]:
+    d = spacing
     return {
         1: [(0.0, 0.0)],
         2: [(-d, -d), (d, d)],
@@ -165,67 +178,150 @@ def pip_layout(face: int) -> list[tuple[float, float]]:
     }[face]
 
 
-def draw_pips(canvas: Canvas, face: int, center: tuple[float, float], rotation: float) -> None:
+def draw_pips(
+    canvas: Canvas,
+    face: int,
+    center: tuple[float, float],
+    rotation: float,
+    face_scale: float,
+) -> None:
     shadow_color = (0, 0, 0, 46)
     pip_color = (31, 38, 48, 238)
     shine_color = (255, 255, 255, 42)
-    for local_x, local_y in pip_layout(face):
+    pip_radius = 5.0 * face_scale
+    for local_x, local_y in pip_layout(face, 16.5 * face_scale):
         x, y = transform_point(center, local_x, local_y, rotation)
-        canvas.ellipse(x + 0.7, y + 1.1, 5.4, 5.4, shadow_color)
-        canvas.ellipse(x, y, 5.0, 5.0, pip_color)
-        canvas.ellipse(x - 1.3, y - 1.6, 1.3, 1.1, shine_color)
+        canvas.ellipse(x + 0.7, y + 1.1, pip_radius + 0.4, pip_radius + 0.4, shadow_color)
+        canvas.ellipse(x, y, pip_radius, pip_radius, pip_color)
+        canvas.ellipse(x - 1.3, y - 1.6, 1.3 * face_scale, 1.1 * face_scale, shine_color)
 
 
-def draw_die(canvas: Canvas, face: int, rotation_degrees: float = 0.0) -> None:
-    rotation = math.radians(rotation_degrees)
-    cx, cy = FACE_CENTER
-    canvas.ellipse(cx + 5.0, cy + 42.0, 34.0, 10.5, (0, 0, 0, 34))
+def draw_side_pips(
+    canvas: Canvas,
+    center: tuple[float, float],
+    rotation: float,
+    face_size: float,
+    depth_x: float,
+    depth_y: float,
+) -> None:
+    right_edge_offsets = [-face_size * 0.21, face_size * 0.07, face_size * 0.35]
+    for local_y in right_edge_offsets:
+        edge_x, edge_y = transform_point(center, face_size * 0.5, local_y, rotation)
+        canvas.ellipse(
+            edge_x + depth_x * 0.52,
+            edge_y + depth_y * 0.52,
+            2.6,
+            3.2,
+            (45, 53, 64, 116),
+        )
 
+
+def draw_rounded_depth(
+    canvas: Canvas,
+    center: tuple[float, float],
+    rotation: float,
+    face_size: float,
+    face_radius: float,
+    depth_x: float,
+    depth_y: float,
+) -> None:
+    cx, cy = center
     for step in range(EDGE_STEPS, 0, -1):
         t = step / EDGE_STEPS
-        edge = round(154 + 34 * (1.0 - t))
+        shade = round(122 + 42 * (1.0 - t))
         canvas.rounded_rect(
-            cx + step * 0.8,
-            cy + step * 0.95,
-            FACE_SIZE,
-            FACE_SIZE,
-            FACE_RADIUS,
+            cx + depth_x * t,
+            cy + depth_y * t,
+            face_size,
+            face_size,
+            face_radius,
             rotation,
-            (edge, edge + 3, edge + 8, 242),
+            (shade, shade + 8, shade + 20, 232),
         )
+
+
+def draw_die(
+    canvas: Canvas,
+    face: int,
+    rotation_degrees: float = 0.0,
+    depth_scale: float = 0.82,
+    face_scale: float = 1.0,
+) -> None:
+    rotation = math.radians(rotation_degrees)
+    cx, cy = FACE_CENTER
+    face_size = FACE_SIZE * face_scale
+    face_radius = FACE_RADIUS * face_scale
+    depth_x = 8.2 * depth_scale
+    depth_y = 9.6 * depth_scale
+    canvas.ellipse(
+        cx + depth_x * 0.7,
+        cy + depth_y + 34.0,
+        33.0 + depth_scale * 3.0,
+        10.0 + depth_scale,
+        (0, 0, 0, 38),
+    )
+
+    corners = rect_corners((cx, cy), face_size, face_size, rotation)
+    _, top_right, bottom_right, bottom_left = corners
+
+    draw_rounded_depth(canvas, (cx, cy), rotation, face_size, face_radius, depth_x, depth_y)
+    draw_side_pips(canvas, (cx, cy), rotation, face_size, depth_x, depth_y)
 
     canvas.rounded_rect(
         cx + 1.2,
         cy + 1.8,
-        FACE_SIZE + 3.8,
-        FACE_SIZE + 3.8,
-        FACE_RADIUS + 1.5,
+        face_size + 4.2,
+        face_size + 4.2,
+        face_radius + 1.6,
         rotation,
-        (94, 104, 119, 182),
+        (74, 85, 100, 188),
     )
     canvas.rounded_rect(
         cx,
         cy,
-        FACE_SIZE,
-        FACE_SIZE,
-        FACE_RADIUS,
+        face_size,
+        face_size,
+        face_radius,
         rotation,
         (245, 248, 252, 255),
     )
     canvas.rounded_rect(
         cx - 3.2,
         cy - 4.0,
-        FACE_SIZE * 0.78,
-        FACE_SIZE * 0.34,
-        FACE_RADIUS * 0.68,
+        face_size * 0.78,
+        face_size * 0.34,
+        face_radius * 0.68,
         rotation,
         (255, 255, 255, 58),
     )
 
-    top_left = transform_point((cx, cy), -FACE_SIZE * 0.30, -FACE_SIZE * 0.45, rotation)
-    top_right = transform_point((cx, cy), FACE_SIZE * 0.25, -FACE_SIZE * 0.48, rotation)
-    canvas.line(top_left[0], top_left[1], top_right[0], top_right[1], 1.5, (255, 255, 255, 105))
-    draw_pips(canvas, face, (cx, cy), rotation)
+    shine_left = transform_point((cx, cy), -face_size * 0.30, -face_size * 0.45, rotation)
+    shine_right = transform_point((cx, cy), face_size * 0.25, -face_size * 0.48, rotation)
+    canvas.line(
+        shine_left[0],
+        shine_left[1],
+        shine_right[0],
+        shine_right[1],
+        1.5,
+        (255, 255, 255, 105),
+    )
+    canvas.line(
+        bottom_left[0],
+        bottom_left[1],
+        bottom_right[0],
+        bottom_right[1],
+        1.1,
+        (74, 85, 100, 78),
+    )
+    canvas.line(
+        top_right[0],
+        top_right[1],
+        bottom_right[0],
+        bottom_right[1],
+        1.1,
+        (74, 85, 100, 62),
+    )
+    draw_pips(canvas, face, (cx, cy), rotation, face_scale)
 
 
 def png_chunk(kind: bytes, payload: bytes) -> bytes:
@@ -252,9 +348,14 @@ def write_png(path: Path, width: int, height: int, rgba: bytes) -> None:
     )
 
 
-def render_sprite(face: int, rotation_degrees: float) -> bytes:
+def render_sprite(
+    face: int,
+    rotation_degrees: float,
+    depth_scale: float = 0.82,
+    face_scale: float = 1.0,
+) -> bytes:
     canvas = Canvas()
-    draw_die(canvas, face, rotation_degrees)
+    draw_die(canvas, face, rotation_degrees, depth_scale, face_scale)
     return canvas.downsample()
 
 
@@ -286,15 +387,22 @@ def main() -> None:
 
     for face in range(1, 7):
         name = f"die_{face}.png"
-        rgba = render_sprite(face, 0.0)
+        rgba = render_sprite(face, 0.0, 0.82, 1.0)
         write_png(args.out / name, SIZE, SIZE, rgba)
         generated.append((name, rgba))
 
     roll_faces = [1, 5, 2, 6, 3, 4, 1, 6, 2, 5, 3, 1, 4, 6, 2, 5]
-    roll_angles = [-14, -7, 8, 18, 11, -10, -20, -4, 13, 22, 7, -12, -18, 2, 16, 9]
+    roll_angles = [-19, -8, 13, 24, 16, -15, -25, -6, 18, 27, 10, -17, -23, 4, 21, 11]
+    roll_depths = [1.34, 1.05, 1.48, 1.18, 1.42, 1.12, 1.52, 1.22]
+    roll_scales = [0.98, 1.03, 0.96, 1.02, 0.99, 1.04, 0.97, 1.01]
     for frame, (face, angle) in enumerate(zip(roll_faces, roll_angles)):
         name = f"roll_{frame:02}.png"
-        rgba = render_sprite(face, angle)
+        rgba = render_sprite(
+            face,
+            angle,
+            roll_depths[frame % len(roll_depths)],
+            roll_scales[frame % len(roll_scales)],
+        )
         write_png(args.out / name, SIZE, SIZE, rgba)
         generated.append((name, rgba))
 

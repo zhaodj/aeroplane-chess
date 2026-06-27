@@ -8,6 +8,7 @@ PROFILE="${1:-debug}"
 ABI="${ANDROID_ABI:-arm64-v8a}"
 DEFAULT_ANDROID_SDK_ROOT="${HOME}/Library/Android/sdk"
 DEFAULT_NDK_VERSION="26.1.10909125"
+ANDROID_PLATFORM="${ANDROID_PLATFORM:-31}"
 DEFAULT_JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
 HOMEBREW_GRADLE="/opt/homebrew/opt/gradle@8/bin/gradle"
 
@@ -101,6 +102,7 @@ mkdir -p "${APP_DIR}/src/main/jniLibs"
 echo "[1/2] building Rust shared library for ${ABI}..."
 cargo ndk \
   -t "${ABI}" \
+  -P "${ANDROID_PLATFORM}" \
   -o "${APP_DIR}/src/main/jniLibs" \
   "${CARGO_BUILD_ARGS[@]}"
 

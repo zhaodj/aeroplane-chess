@@ -1,5 +1,7 @@
 package com.zhaodaojun.aeroplanechess;
 
+import android.content.pm.ActivityInfo;
+import android.os.Bundle;
 import android.view.View;
 
 import com.google.androidgamesdk.GameActivity;
@@ -7,6 +9,12 @@ import com.google.androidgamesdk.GameActivity;
 public class MainActivity extends GameActivity {
     static {
         System.loadLibrary("aeroplane_chess");
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        super.onCreate(savedInstanceState);
     }
 
     @Override

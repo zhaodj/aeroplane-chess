@@ -45,7 +45,7 @@ pub struct RollResolution {
     pub used_double_dice: bool,
 }
 
-/// 根据玩家名单初始化技能资源（每名玩家开局总计 1 点基础充能）。
+/// 根据玩家名单初始化技能资源（每名玩家每个技能开局各 1 点基础充能）。
 pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
     SkillRoster {
         players: player_roster
@@ -55,10 +55,10 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
                 player_id: player.state.player_id,
                 dash_charges: STARTING_SKILL_CHARGE_POINTS,
                 dash_armed: false,
-                snipe_charges: 0,
-                swap_charges: 0,
-                shield_charges: 0,
-                double_dice_charges: 0,
+                snipe_charges: STARTING_SKILL_CHARGE_POINTS,
+                swap_charges: STARTING_SKILL_CHARGE_POINTS,
+                shield_charges: STARTING_SKILL_CHARGE_POINTS,
+                double_dice_charges: STARTING_SKILL_CHARGE_POINTS,
                 double_dice_armed: false,
                 skip_next_skill_turn: false,
                 skill_blocked_this_turn: false,
@@ -582,17 +582,17 @@ mod tests {
     }
 
     #[test]
-    fn build_skill_roster_initializes_one_starting_charge_point() {
+    fn build_skill_roster_initializes_each_skill_with_one_starting_charge_point() {
         let skill_roster = build_skill_roster(&sample_roster());
 
         assert_eq!(skill_roster.players.len(), 2);
         for player in &skill_roster.players {
-            assert_eq!(total_charges(player), STARTING_SKILL_CHARGE_POINTS);
+            assert_eq!(total_charges(player), STARTING_SKILL_CHARGE_POINTS * 5);
             assert_eq!(player.dash_charges, STARTING_SKILL_CHARGE_POINTS);
-            assert_eq!(player.snipe_charges, 0);
-            assert_eq!(player.swap_charges, 0);
-            assert_eq!(player.shield_charges, 0);
-            assert_eq!(player.double_dice_charges, 0);
+            assert_eq!(player.snipe_charges, STARTING_SKILL_CHARGE_POINTS);
+            assert_eq!(player.swap_charges, STARTING_SKILL_CHARGE_POINTS);
+            assert_eq!(player.shield_charges, STARTING_SKILL_CHARGE_POINTS);
+            assert_eq!(player.double_dice_charges, STARTING_SKILL_CHARGE_POINTS);
             assert!(!player.dash_armed);
             assert!(!player.double_dice_armed);
         }

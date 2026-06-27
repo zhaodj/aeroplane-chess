@@ -103,6 +103,7 @@ struct SoundSettingsText;
 enum SoundSettingsValueKind {
     Music,
     Effects,
+    Mute,
 }
 
 #[derive(Component)]
@@ -165,6 +166,7 @@ enum SoundSettingsAction {
     MusicUp,
     EffectsDown,
     EffectsUp,
+    ToggleMute,
     MainMenu,
     QuitGame,
     Back,
@@ -203,14 +205,16 @@ const GLOBAL_SOUND_ENTRY_TOP: f32 = 16.0;
 const GLOBAL_SOUND_ENTRY_W: f32 = 128.0;
 const GLOBAL_SOUND_ENTRY_H: f32 = 38.0;
 const GLOBAL_SOUND_PANEL_W: f32 = 462.0;
-const GLOBAL_SOUND_PANEL_H: f32 = 360.0;
+const GLOBAL_SOUND_PANEL_H: f32 = 390.0;
 const GLOBAL_SOUND_ROW_LEFT: f32 = 34.0;
 const GLOBAL_SOUND_CONTROL_LEFT: f32 = 244.0;
 const GLOBAL_SOUND_ROW_TOP: f32 = 98.0;
 const GLOBAL_SOUND_ROW_GAP: f32 = 58.0;
+const GLOBAL_SOUND_MUTE_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 2.0;
 const GLOBAL_SOUND_BUTTON: f32 = 42.0;
 const GLOBAL_SOUND_VALUE_W: f32 = 82.0;
-const GLOBAL_SETTINGS_ACTION_TOP: f32 = 270.0;
+const GLOBAL_SOUND_TOGGLE_W: f32 = 176.0;
+const GLOBAL_SETTINGS_ACTION_TOP: f32 = 304.0;
 const GLOBAL_SETTINGS_ACTION_W: f32 = 160.0;
 const GLOBAL_SETTINGS_ACTION_H: f32 = 44.0;
 const GLOBAL_SETTINGS_ACTION_GAP: f32 = 18.0;
@@ -220,6 +224,8 @@ const SOUND_ROW_GAP: f32 = 92.0;
 const SOUND_CONTROL_LEFT: f32 = 430.0;
 const SOUND_BUTTON: f32 = 52.0;
 const SOUND_VALUE_W: f32 = 100.0;
+const SOUND_MUTE_TOP: f32 = SOUND_PANEL_TOP + SOUND_ROW_GAP * 2.0;
+const SOUND_TOGGLE_W: f32 = 184.0;
 const SOUND_BACK_TOP: f32 = 488.0;
 
 const SECTION_LABEL_X: f32 = 96.0;
@@ -365,6 +371,7 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                         SoundSettingsValueKind::Effects,
                         GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP,
                     );
+                    spawn_global_sound_toggle_row(panel, GLOBAL_SOUND_MUTE_ROW_TOP);
 
                     spawn_global_sound_panel_button(
                         panel,
@@ -379,6 +386,57 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                         18.0,
                     );
                 });
+        });
+}
+
+fn spawn_global_sound_toggle_row(panel: &mut ChildSpawnerCommands<'_>, top: f32) {
+    panel.spawn((
+        Text::new("Mute"),
+        TextFont {
+            font_size: FontSize::Px(20.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(GLOBAL_SOUND_ROW_LEFT),
+            top: Val::Px(top + 10.0),
+            ..default()
+        },
+        Name::new("GlobalSoundLabelMute"),
+    ));
+
+    panel
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(GLOBAL_SOUND_CONTROL_LEFT),
+                top: Val::Px(top),
+                width: Val::Px(GLOBAL_SOUND_TOGGLE_W),
+                height: Val::Px(GLOBAL_SOUND_BUTTON),
+                border: UiRect::all(Val::Px(1.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.55, 0.70, 0.88, 0.22)),
+            BorderColor::all(Color::srgba(0.22, 0.30, 0.42, 0.24)),
+            Name::new("GlobalSoundButtonMute"),
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("Sound On"),
+                TextFont {
+                    font_size: FontSize::Px(18.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextLayout::justify(Justify::Center),
+                SoundSettingsValueText {
+                    kind: SoundSettingsValueKind::Mute,
+                },
+                Name::new("GlobalSoundMuteValue"),
+            ));
         });
 }
 
@@ -550,6 +608,7 @@ fn update_global_sound_overlay(
         *text = Text::new(match value_text.kind {
             SoundSettingsValueKind::Music => format_volume_percent(audio_settings.music_volume),
             SoundSettingsValueKind::Effects => format_volume_percent(audio_settings.effects_volume),
+            SoundSettingsValueKind::Mute => format_mute_label(&audio_settings).to_owned(),
         });
     }
 }
@@ -610,10 +669,15 @@ fn apply_global_sound_action(
     overlay_state: &mut SoundSettingsOverlayState,
 ) -> GlobalSettingsCommand {
     match action {
-        SoundSettingsAction::MusicDown => audio_settings.adjust_music(-AudioSettings::STEP),
-        SoundSettingsAction::MusicUp => audio_settings.adjust_music(AudioSettings::STEP),
-        SoundSettingsAction::EffectsDown => audio_settings.adjust_effects(-AudioSettings::STEP),
-        SoundSettingsAction::EffectsUp => audio_settings.adjust_effects(AudioSettings::STEP),
+        SoundSettingsAction::MusicDown => audio_settings.adjust_music(-AudioSettings::MUSIC_STEP),
+        SoundSettingsAction::MusicUp => audio_settings.adjust_music(AudioSettings::MUSIC_STEP),
+        SoundSettingsAction::EffectsDown => {
+            audio_settings.adjust_effects(-AudioSettings::EFFECTS_STEP)
+        }
+        SoundSettingsAction::EffectsUp => {
+            audio_settings.adjust_effects(AudioSettings::EFFECTS_STEP)
+        }
+        SoundSettingsAction::ToggleMute => audio_settings.toggle_mute(),
         SoundSettingsAction::MainMenu => {
             overlay_state.open = false;
             return GlobalSettingsCommand::MainMenu;
@@ -716,6 +780,15 @@ fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettings
                 x: GLOBAL_SOUND_CONTROL_LEFT + GLOBAL_SOUND_BUTTON + GLOBAL_SOUND_VALUE_W + 20.0,
                 y: GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP,
                 w: GLOBAL_SOUND_BUTTON,
+                h: GLOBAL_SOUND_BUTTON,
+            },
+        ),
+        (
+            SoundSettingsAction::ToggleMute,
+            ClickRect {
+                x: GLOBAL_SOUND_CONTROL_LEFT,
+                y: GLOBAL_SOUND_MUTE_ROW_TOP,
+                w: GLOBAL_SOUND_TOGGLE_W,
                 h: GLOBAL_SOUND_BUTTON,
             },
         ),
@@ -1026,6 +1099,7 @@ fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSetting
         SOUND_PANEL_TOP + SOUND_ROW_GAP,
         audio_settings.effects_volume,
     );
+    spawn_sound_toggle(&mut commands, SOUND_MUTE_TOP, &audio_settings);
 
     spawn_sound_option(
         &mut commands,
@@ -1039,6 +1113,70 @@ fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSetting
         "Back",
         Color::srgba(0.72, 0.54, 0.44, 0.28),
     );
+}
+
+fn spawn_sound_toggle(commands: &mut Commands, top: f32, audio_settings: &AudioSettings) {
+    commands.spawn((
+        Text::new("Mute"),
+        TextFont {
+            font_size: FontSize::Px(24.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(top + 12.0),
+            left: Val::Px(MENU_LEFT),
+            ..default()
+        },
+        Name::new("SoundSettingLabelMute"),
+        MenuEntity,
+    ));
+
+    let rect = ClickRect {
+        x: SOUND_CONTROL_LEFT,
+        y: top,
+        w: SOUND_TOGGLE_W,
+        h: SOUND_BUTTON,
+    };
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(rect.x),
+                top: Val::Px(rect.y),
+                width: Val::Px(rect.w),
+                height: Val::Px(rect.h),
+                border: UiRect::all(Val::Px(fitted_box_border(rect.h))),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::horizontal(Val::Px(fitted_box_padding(rect.h))),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.53, 0.77, 0.96, 0.26)),
+            BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.20)),
+            ClickRect { ..rect },
+            SoundSettingsOption {
+                action: SoundSettingsAction::ToggleMute,
+            },
+            Name::new("SoundSettingsMuteToggle"),
+            MenuEntity,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(format_mute_label(audio_settings)),
+                TextFont {
+                    font_size: FontSize::Px(24.0),
+                    ..default()
+                },
+                TextColor(MODE_SELECT_UNSELECTED_TEXT),
+                TextLayout::justify(Justify::Center),
+                SoundSettingsValueText {
+                    kind: SoundSettingsValueKind::Mute,
+                },
+                Name::new("SoundSettingsMuteValue"),
+            ));
+        });
 }
 
 fn spawn_sound_row(
@@ -1443,10 +1581,19 @@ fn fitted_box_padding(box_height: f32) -> f32 {
 
 fn sound_settings_content(audio_settings: &AudioSettings) -> String {
     format!(
-        "Background Music {}   |   Action Effects {}",
+        "{}   |   Music {}   |   Effects {}",
+        format_mute_label(audio_settings),
         format_volume_percent(audio_settings.music_volume),
         format_volume_percent(audio_settings.effects_volume)
     )
+}
+
+fn format_mute_label(audio_settings: &AudioSettings) -> &'static str {
+    if audio_settings.muted {
+        "Muted"
+    } else {
+        "Sound On"
+    }
 }
 
 fn format_volume_percent(value: f32) -> String {
@@ -1617,6 +1764,7 @@ fn update_sound_settings_text(
         *text = Text::new(match value_text.kind {
             SoundSettingsValueKind::Music => format_volume_percent(audio_settings.music_volume),
             SoundSettingsValueKind::Effects => format_volume_percent(audio_settings.effects_volume),
+            SoundSettingsValueKind::Mute => format_mute_label(&audio_settings).to_owned(),
         });
     }
 }
@@ -1655,10 +1803,15 @@ fn apply_sound_settings_action(
     next_state: &mut NextState<AppState>,
 ) {
     match action {
-        SoundSettingsAction::MusicDown => audio_settings.adjust_music(-AudioSettings::STEP),
-        SoundSettingsAction::MusicUp => audio_settings.adjust_music(AudioSettings::STEP),
-        SoundSettingsAction::EffectsDown => audio_settings.adjust_effects(-AudioSettings::STEP),
-        SoundSettingsAction::EffectsUp => audio_settings.adjust_effects(AudioSettings::STEP),
+        SoundSettingsAction::MusicDown => audio_settings.adjust_music(-AudioSettings::MUSIC_STEP),
+        SoundSettingsAction::MusicUp => audio_settings.adjust_music(AudioSettings::MUSIC_STEP),
+        SoundSettingsAction::EffectsDown => {
+            audio_settings.adjust_effects(-AudioSettings::EFFECTS_STEP)
+        }
+        SoundSettingsAction::EffectsUp => {
+            audio_settings.adjust_effects(AudioSettings::EFFECTS_STEP)
+        }
+        SoundSettingsAction::ToggleMute => audio_settings.toggle_mute(),
         SoundSettingsAction::MainMenu | SoundSettingsAction::Back => {
             next_state.set(AppState::MainMenu)
         }
@@ -2001,6 +2154,7 @@ mod tests {
         let mut audio_settings = AudioSettings {
             music_volume: 0.5,
             effects_volume: 0.5,
+            muted: false,
         };
         let mut next_state = NextState::<AppState>::default();
 
@@ -2015,8 +2169,17 @@ mod tests {
             &mut next_state,
         );
 
-        assert!((audio_settings.music_volume - 0.6).abs() < f32::EPSILON);
-        assert!((audio_settings.effects_volume - 0.4).abs() < f32::EPSILON);
+        assert!((audio_settings.music_volume - 0.55).abs() < f32::EPSILON);
+        assert!((audio_settings.effects_volume - 0.45).abs() < f32::EPSILON);
+
+        apply_sound_settings_action(
+            SoundSettingsAction::ToggleMute,
+            &mut audio_settings,
+            &mut next_state,
+        );
+        assert!(audio_settings.muted);
+        assert!((audio_settings.music_volume - 0.55).abs() < f32::EPSILON);
+        assert!((audio_settings.effects_volume - 0.45).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -2024,6 +2187,7 @@ mod tests {
         let mut audio_settings = AudioSettings {
             music_volume: 0.5,
             effects_volume: 0.5,
+            muted: false,
         };
         let mut overlay_state = SoundSettingsOverlayState {
             open: true,
@@ -2047,8 +2211,19 @@ mod tests {
             GlobalSettingsCommand::None
         );
 
-        assert!((audio_settings.music_volume - 0.4).abs() < f32::EPSILON);
-        assert!((audio_settings.effects_volume - 0.6).abs() < f32::EPSILON);
+        assert!((audio_settings.music_volume - 0.45).abs() < f32::EPSILON);
+        assert!((audio_settings.effects_volume - 0.55).abs() < f32::EPSILON);
+        assert!(overlay_state.open);
+
+        assert_eq!(
+            apply_global_sound_action(
+                SoundSettingsAction::ToggleMute,
+                &mut audio_settings,
+                &mut overlay_state,
+            ),
+            GlobalSettingsCommand::None
+        );
+        assert!(audio_settings.muted);
         assert!(overlay_state.open);
 
         assert_eq!(
@@ -2092,6 +2267,22 @@ mod tests {
     }
 
     #[test]
+    fn sound_settings_mute_label_tracks_state() {
+        let mut audio_settings = AudioSettings {
+            music_volume: 0.5,
+            effects_volume: 0.5,
+            muted: false,
+        };
+
+        assert_eq!(format_mute_label(&audio_settings), "Sound On");
+        assert!(sound_settings_content(&audio_settings).starts_with("Sound On"));
+
+        audio_settings.toggle_mute();
+        assert_eq!(format_mute_label(&audio_settings), "Muted");
+        assert!(sound_settings_content(&audio_settings).starts_with("Muted"));
+    }
+
+    #[test]
     fn global_sound_entry_and_panel_actions_have_stable_hit_targets() {
         let window = test_window();
         let entry = global_sound_entry_rect(&window);
@@ -2115,6 +2306,15 @@ mod tests {
         assert_eq!(
             global_sound_action_at(music_up, &window),
             Some(SoundSettingsAction::MusicUp)
+        );
+
+        let mute = Vec2::new(
+            panel.x + GLOBAL_SOUND_CONTROL_LEFT + 8.0,
+            panel.y + GLOBAL_SOUND_MUTE_ROW_TOP + 8.0,
+        );
+        assert_eq!(
+            global_sound_action_at(mute, &window),
+            Some(SoundSettingsAction::ToggleMute)
         );
 
         let main_menu = Vec2::new(

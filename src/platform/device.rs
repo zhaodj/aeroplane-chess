@@ -169,3 +169,18 @@ pub fn update_device_profile(windows: Query<&Window>, mut device_profile: ResMut
         *device_profile = next_profile;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn android_activity_is_locked_to_portrait() {
+        let manifest = include_str!("../../platforms/android/app/src/main/AndroidManifest.xml");
+        let main_activity = include_str!(
+            "../../platforms/android/app/src/main/java/com/zhaodaojun/aeroplanechess/MainActivity.java"
+        );
+
+        assert!(manifest.contains(r#"android:screenOrientation="portrait""#));
+        assert!(!manifest.contains(r#"android:screenOrientation="landscape""#));
+        assert!(main_activity.contains("ActivityInfo.SCREEN_ORIENTATION_PORTRAIT"));
+    }
+}
