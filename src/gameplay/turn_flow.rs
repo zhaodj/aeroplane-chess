@@ -33,6 +33,7 @@ pub struct TurnState {
     pub extra_rolls_remaining: u8,
     pub consecutive_sixes: u8,
     pub turn_index: u32,
+    pub roll_serial: u32,
     pub current_roll: Option<u8>,
     pub current_roll_faces: Option<[u8; 2]>,
     pub last_roll: Option<u8>,
@@ -42,11 +43,20 @@ pub struct TurnState {
     pub roll_display_animation_started: bool,
     pub player_last_rolls: [Option<u8>; 4],
     pub player_last_roll_faces: [Option<[u8; 2]>; 4],
+    pub pending_roll_display: Option<PendingRollDisplay>,
     pub last_piece_effect: Option<PieceEffectNotice>,
     pub last_action: Option<String>,
     pub last_action_player_id: Option<u8>,
     pub last_action_turn_index: u32,
     pub last_action_serial: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingRollDisplay {
+    pub roll_serial: u32,
+    pub player_id: u8,
+    pub roll: u8,
+    pub faces: [u8; 2],
 }
 
 impl TurnState {
@@ -57,6 +67,7 @@ impl TurnState {
             extra_rolls_remaining: 0,
             consecutive_sixes: 0,
             turn_index: 1,
+            roll_serial: 0,
             current_roll: None,
             current_roll_faces: None,
             last_roll: None,
@@ -66,6 +77,7 @@ impl TurnState {
             roll_display_animation_started: false,
             player_last_rolls: [None; 4],
             player_last_roll_faces: [None; 4],
+            pending_roll_display: None,
             last_piece_effect: None,
             last_action: None,
             last_action_player_id: None,
@@ -270,6 +282,7 @@ pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
 
 pub fn set_roll_with_faces(turn_state: &mut TurnState, roll_value: u8, roll_faces: [u8; 2]) {
     let roll_faces = normalized_roll_faces(roll_value, roll_faces);
+    turn_state.roll_serial = turn_state.roll_serial.wrapping_add(1);
     turn_state.current_roll = Some(roll_value);
     turn_state.current_roll_faces = Some(roll_faces);
     turn_state.last_roll = Some(roll_value);
@@ -278,18 +291,12 @@ pub fn set_roll_with_faces(turn_state: &mut TurnState, roll_value: u8, roll_face
     turn_state.hold_last_roll_display = false;
     turn_state.roll_display_animation_started = false;
     turn_state.last_piece_effect = None;
-    if let Some(player_roll) = turn_state
-        .player_last_rolls
-        .get_mut(turn_state.current_player.saturating_sub(1) as usize)
-    {
-        *player_roll = Some(roll_value);
-    }
-    if let Some(player_roll_faces) = turn_state
-        .player_last_roll_faces
-        .get_mut(turn_state.current_player.saturating_sub(1) as usize)
-    {
-        *player_roll_faces = Some(roll_faces);
-    }
+    turn_state.pending_roll_display = Some(PendingRollDisplay {
+        roll_serial: turn_state.roll_serial,
+        player_id: turn_state.current_player,
+        roll: roll_value,
+        faces: roll_faces,
+    });
 
     if roll_value == 6 {
         if turn_state.consecutive_sixes < MAX_CHAIN_EXTRA_ROLLS {
@@ -299,6 +306,30 @@ pub fn set_roll_with_faces(turn_state: &mut TurnState, roll_value: u8, roll_face
     } else {
         turn_state.consecutive_sixes = 0;
     }
+}
+
+pub fn commit_pending_roll_display(turn_state: &mut TurnState, roll_serial: u32) -> bool {
+    let Some(pending) = turn_state.pending_roll_display else {
+        return false;
+    };
+    if pending.roll_serial != roll_serial {
+        return false;
+    }
+
+    if let Some(player_roll) = turn_state
+        .player_last_rolls
+        .get_mut(pending.player_id.saturating_sub(1) as usize)
+    {
+        *player_roll = Some(pending.roll);
+    }
+    if let Some(player_roll_faces) = turn_state
+        .player_last_roll_faces
+        .get_mut(pending.player_id.saturating_sub(1) as usize)
+    {
+        *player_roll_faces = Some(pending.faces);
+    }
+    turn_state.pending_roll_display = None;
+    true
 }
 
 fn normalized_roll_faces(roll_value: u8, roll_faces: [u8; 2]) -> [u8; 2] {
@@ -2715,6 +2746,7 @@ mod tests {
             extra_rolls_remaining: 1,
             consecutive_sixes: 1,
             turn_index: 3,
+            roll_serial: 1,
             current_roll: Some(6),
             current_roll_faces: Some([6, 0]),
             last_roll: Some(6),
@@ -2724,6 +2756,7 @@ mod tests {
             roll_display_animation_started: false,
             player_last_rolls: [Some(6), None, None, None],
             player_last_roll_faces: [Some([6, 0]), None, None, None],
+            pending_roll_display: None,
             last_piece_effect: None,
             last_action: None,
             last_action_player_id: None,
@@ -2754,8 +2787,20 @@ mod tests {
         set_roll(&mut turn_state, 6);
         assert_eq!(turn_state.extra_rolls_remaining, 1);
         assert_eq!(turn_state.consecutive_sixes, 1);
-        assert_eq!(turn_state.player_last_roll(1), Some(6));
+        assert_eq!(turn_state.roll_serial, 1);
         assert_eq!(turn_state.current_roll_faces, Some([6, 0]));
+        assert_eq!(turn_state.player_last_roll(1), None);
+        assert_eq!(
+            turn_state.pending_roll_display,
+            Some(PendingRollDisplay {
+                roll_serial: 1,
+                player_id: 1,
+                roll: 6,
+                faces: [6, 0],
+            })
+        );
+        assert!(commit_pending_roll_display(&mut turn_state, 1));
+        assert_eq!(turn_state.player_last_roll(1), Some(6));
         assert_eq!(turn_state.player_last_roll_faces(1), Some([6, 0]));
         assert_eq!(turn_state.last_piece_effect, None);
 

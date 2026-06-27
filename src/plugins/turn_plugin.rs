@@ -195,6 +195,15 @@ fn drive_ai_turn_loop(
         return;
     }
 
+    if roll_result_waiting_for_display(&params.turn_state) {
+        return;
+    }
+
+    if let Some(roll_value) = params.turn_state.current_roll {
+        finish_ai_roll_after_display(roll_value, &mut params);
+        return;
+    }
+
     if !automation.timer.tick(time.delta()).just_finished() {
         return;
     }
@@ -213,7 +222,6 @@ fn drive_ai_turn_loop(
     let roll_resolution =
         resolve_roll_value(&mut params.skill_roster, params.turn_state.current_player);
     let roll_value = roll_resolution.value;
-    let roll = DiceRoll(roll_value);
     set_roll_with_faces(&mut params.turn_state, roll_value, roll_resolution.dice);
     if roll_resolution.used_double_dice {
         record_skill_action(
@@ -223,8 +231,15 @@ fn drive_ai_turn_loop(
             double_dice_resolution_note(params.turn_state.current_player, roll_resolution.dice),
         );
     }
+}
 
+fn roll_result_waiting_for_display(turn_state: &TurnState) -> bool {
+    turn_state.current_roll.is_some() && turn_state.pending_roll_display.is_some()
+}
+
+fn finish_ai_roll_after_display(roll_value: u8, params: &mut TurnActionParams) {
     let current_player = params.turn_state.current_player;
+    let roll = DiceRoll(roll_value);
     maybe_arm_dash_for_ai_after_roll(
         current_player,
         params.turn_state.turn_index,
@@ -260,7 +275,7 @@ fn drive_ai_turn_loop(
         return;
     };
 
-    execute_action_from_params(action, roll_value, &mut params);
+    execute_action_from_params(action, roll_value, params);
     clear_dash_arm(&mut params.skill_roster, current_player);
 }
 
@@ -796,7 +811,16 @@ fn handle_human_roll_input(
         return;
     }
 
-    params.input_state.prompt = Some("Tap Roll to roll the dice".to_string());
+    params.input_state.prompt = None;
+
+    if roll_result_waiting_for_display(&params.turn_state) {
+        return;
+    }
+
+    if let Some(roll_value) = params.turn_state.current_roll {
+        finish_human_roll_after_display(roll_value, &mut params);
+        return;
+    }
 
     if !keyboard.just_pressed(KeyCode::Space) && !params.turn_ui_request.take_roll() {
         return;
@@ -805,7 +829,6 @@ fn handle_human_roll_input(
     let roll_resolution =
         resolve_roll_value(&mut params.skill_roster, params.turn_state.current_player);
     let roll_value = roll_resolution.value;
-    let roll = DiceRoll(roll_value);
     set_roll_with_faces(&mut params.turn_state, roll_value, roll_resolution.dice);
     if roll_resolution.used_double_dice {
         record_skill_action(
@@ -815,8 +838,11 @@ fn handle_human_roll_input(
             double_dice_resolution_note(params.turn_state.current_player, roll_resolution.dice),
         );
     }
+}
 
+fn finish_human_roll_after_display(roll_value: u8, params: &mut TurnActionParams) {
     let current_player = params.turn_state.current_player;
+    let roll = DiceRoll(roll_value);
     let actions = collect_actions(
         current_player,
         roll,
@@ -853,7 +879,7 @@ fn handle_human_roll_input(
         && actions.iter().any(PlannedAction::is_move);
 
     if should_auto_execute_human_action(&actions, can_offer_dash) {
-        execute_action_from_params(actions[0], roll_value, &mut params);
+        execute_action_from_params(actions[0], roll_value, params);
         return;
     }
 
@@ -1202,6 +1228,23 @@ mod tests {
 
         assert!(!should_auto_execute_human_action(&actions, false));
         assert!(!should_auto_execute_human_action(&actions, true));
+    }
+
+    #[test]
+    fn rolled_turn_waits_until_center_dice_display_commits() {
+        let mut turn_state = TurnState::opening_turn();
+
+        assert!(!roll_result_waiting_for_display(&turn_state));
+
+        set_roll_with_faces(&mut turn_state, 3, [3, 0]);
+        assert!(roll_result_waiting_for_display(&turn_state));
+
+        assert!(crate::gameplay::turn_flow::commit_pending_roll_display(
+            &mut turn_state,
+            1
+        ));
+        assert!(!roll_result_waiting_for_display(&turn_state));
+        assert_eq!(turn_state.current_roll, Some(3));
     }
 
     #[test]

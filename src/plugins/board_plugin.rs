@@ -4,24 +4,32 @@ use bevy::{
 use std::f32::consts::PI;
 
 use crate::constants::BOARD_Z_LAYER;
+use crate::domain::player::PlayerControl;
 use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{
-    BoardLayout, HANGAR_SLOT_OFFSETS, PlayerRoster, PlayerSeat, hangar_center_for_seat,
-    player_for_seat,
+    BoardLayout, HANGAR_SLOT_OFFSETS, MatchResult, PlayerRoster, PlayerSeat,
+    hangar_center_for_seat, player_for_seat,
 };
-use crate::gameplay::turn_flow::TurnState;
+use crate::gameplay::turn_flow::{TurnState, commit_pending_roll_display};
 use crate::plugins::animation_plugin::PieceMoveAnimation;
-use crate::states::AppState;
+use crate::states::{AppState, GamePhase};
 
 /// 棋盘渲染插件：按 SVG 的几何元素重建棋盘外观。
 pub struct BoardPlugin;
 
 impl Plugin for BoardPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::InGame), spawn_board)
+        app.init_resource::<DiceRollVisualState>()
+            .add_systems(OnEnter(AppState::InGame), spawn_board)
             .add_systems(
                 Update,
-                update_player_dice_displays.run_if(in_state(AppState::InGame)),
+                (
+                    update_dice_roll_visual_state,
+                    update_player_dice_displays,
+                    update_center_dice_roll_displays,
+                )
+                    .chain()
+                    .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnExit(AppState::InGame), cleanup_board);
     }
@@ -46,6 +54,13 @@ struct PlayerDicePip {
     player_id: u8,
     die_index: u8,
     slot: DicePipSlot,
+    base_center: Vec2,
+}
+
+#[derive(Component)]
+/// 棋盘中心的临时掷骰动画素材。
+struct CenterDiceSprite {
+    die_index: u8,
     base_center: Vec2,
 }
 
@@ -81,6 +96,100 @@ impl PlayerDiceDisplayState {
 }
 
 const PLAYER_DICE_DOUBLE_OFFSET: f32 = 20.5;
+const CENTER_DICE_DOUBLE_OFFSET: f32 = 38.0;
+const CENTER_DICE_SPRITE_SIZE: f32 = 66.0;
+const CENTER_DICE_PROMPT_SIZE: f32 = CENTER_DICE_SPRITE_SIZE;
+const CENTER_DICE_PROMPT_FRAME: usize = 0;
+const CENTER_DICE_PROMPT_ALPHA: f32 = 1.0;
+const CENTER_DICE_PROMPT_BASE_ROTATION: f32 = -0.12;
+const CENTER_DICE_PROMPT_BOB: f32 = 4.0;
+const CENTER_DICE_PROMPT_SCALE_PULSE: f32 = 0.035;
+const DICE_ROLL_ANIMATION_DURATION: f32 = 1.32;
+const DICE_ROLL_SETTLE_START: f32 = 1.02;
+const DICE_ROLL_FACE_INTERVAL: f32 = 0.055;
+const DICE_ROLL_FRAME_COUNT: usize = 16;
+const DICE_ROLL_MAX_FRAME_STEP: f32 = 1.0 / 30.0;
+const DICE_ROLL_MAX_SHAKE: f32 = 9.0;
+const DICE_ROLL_MAX_HOP: f32 = 17.5;
+const DICE_ROLL_MAX_ROTATION: f32 = 0.82;
+const DICE_ROLL_MAX_SCALE_BUMP: f32 = 0.18;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DiceRollVisualKey {
+    roll_serial: u32,
+    player_id: u8,
+    roll: u8,
+    faces: [u8; 2],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DiceRollVisualAnimation {
+    key: DiceRollVisualKey,
+    elapsed: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DiceRollVisualTransform {
+    offset: Vec2,
+    scale: Vec2,
+    rotation: f32,
+}
+
+impl Default for DiceRollVisualTransform {
+    fn default() -> Self {
+        Self {
+            offset: Vec2::ZERO,
+            scale: Vec2::ONE,
+            rotation: 0.0,
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct DiceRollVisualState {
+    observed_roll: Option<DiceRollVisualKey>,
+    animation: Option<DiceRollVisualAnimation>,
+}
+
+#[derive(Resource, Clone)]
+struct DiceSpriteAssets {
+    faces: [Handle<Image>; 6],
+    roll_frames: [Handle<Image>; DICE_ROLL_FRAME_COUNT],
+}
+
+impl DiceSpriteAssets {
+    fn load(asset_server: &AssetServer) -> Self {
+        Self {
+            faces: std::array::from_fn(|index| {
+                asset_server.load(dice_face_asset_path(index as u8 + 1))
+            }),
+            roll_frames: std::array::from_fn(|index| {
+                asset_server.load(dice_roll_frame_asset_path(index))
+            }),
+        }
+    }
+
+    fn face_handle(&self, roll: u8) -> Handle<Image> {
+        let index = roll.saturating_sub(1).min(5) as usize;
+        self.faces[index].clone()
+    }
+
+    fn roll_frame_handle(&self, frame: usize) -> Handle<Image> {
+        self.roll_frames[frame % DICE_ROLL_FRAME_COUNT].clone()
+    }
+
+    fn handle_for_animation(
+        &self,
+        animation: DiceRollVisualAnimation,
+        roll: u8,
+        die_index: u8,
+    ) -> Handle<Image> {
+        if animation.elapsed < DICE_ROLL_SETTLE_START {
+            return self.roll_frame_handle(dice_roll_sprite_frame(animation, die_index));
+        }
+        self.face_handle(roll)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DicePipSlot {
@@ -270,6 +379,7 @@ fn spawn_board(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    asset_server: Res<AssetServer>,
     board_layout: Res<BoardLayout>,
     player_roster: Res<PlayerRoster>,
 ) {
@@ -517,6 +627,10 @@ fn spawn_board(
             "BoardChevron",
         );
     }
+
+    let dice_sprite_assets = DiceSpriteAssets::load(&asset_server);
+    spawn_center_dice_roll_display(&mut commands, &dice_sprite_assets);
+    commands.insert_resource(dice_sprite_assets);
 }
 
 fn cleanup_board(
@@ -525,6 +639,31 @@ fn cleanup_board(
 ) {
     for entity in &query {
         commands.entity(entity).despawn();
+    }
+    commands.remove_resource::<DiceSpriteAssets>();
+}
+
+fn update_dice_roll_visual_state(
+    time: Res<Time>,
+    mut turn_state: ResMut<TurnState>,
+    mut visual_state: ResMut<DiceRollVisualState>,
+) {
+    let roll_key = visible_dice_roll_key(&turn_state);
+    if visual_state.observed_roll != roll_key {
+        visual_state.observed_roll = roll_key;
+        visual_state.animation = roll_key.map(|key| DiceRollVisualAnimation { key, elapsed: 0.0 });
+    }
+
+    let mut completed_roll_serial = None;
+    if let Some(animation) = visual_state.animation.as_mut() {
+        animation.elapsed += dice_roll_animation_delta(time.delta_secs());
+        if animation.elapsed >= DICE_ROLL_ANIMATION_DURATION {
+            completed_roll_serial = Some(animation.key.roll_serial);
+        }
+    }
+    if let Some(roll_serial) = completed_roll_serial {
+        visual_state.animation = None;
+        commit_pending_roll_display(&mut turn_state, roll_serial);
     }
 }
 
@@ -562,6 +701,8 @@ fn update_player_dice_displays(
             transform.translation.x = center.x;
             transform.translation.y = center.y;
         }
+        transform.rotation = Quat::IDENTITY;
+        transform.scale = Vec3::ONE;
         if let Some(mut material) = materials.get_mut(&material_handle.0) {
             material.color = player_dice_display_color(display.layer, display_state.active());
         }
@@ -571,6 +712,7 @@ fn update_player_dice_displays(
         let display_state = player_dice_display_state(&turn_state, pip.player_id, animation_active);
         let Some(roll) = display_state.roll(pip.die_index) else {
             *visibility = Visibility::Hidden;
+            transform.scale = Vec3::ONE;
             continue;
         };
         *visibility = if pip_visible_for_roll(roll, pip.slot) {
@@ -584,10 +726,274 @@ fn update_player_dice_displays(
             transform.translation.x = center.x;
             transform.translation.y = center.y;
         }
+        transform.rotation = Quat::IDENTITY;
+        transform.scale = Vec3::ONE;
         if let Some(mut material) = materials.get_mut(&material_handle.0) {
             material.color = player_dice_pip_color(display_state.active());
         }
     }
+}
+
+fn update_center_dice_roll_displays(
+    time: Res<Time>,
+    dice_visual_state: Res<DiceRollVisualState>,
+    dice_sprite_assets: Res<DiceSpriteAssets>,
+    game_phase: Res<State<GamePhase>>,
+    turn_state: Res<TurnState>,
+    player_roster: Res<PlayerRoster>,
+    match_result: Res<MatchResult>,
+    mut dice_query: Query<(
+        &CenterDiceSprite,
+        &mut Sprite,
+        &mut Visibility,
+        &mut Transform,
+    )>,
+) {
+    let Some(animation) = dice_visual_state.animation else {
+        if center_dice_prompt_visible(&turn_state, game_phase.get(), &player_roster, &match_result)
+        {
+            render_center_dice_prompt(time.elapsed_secs(), &dice_sprite_assets, &mut dice_query);
+        } else {
+            hide_center_dice_displays(&mut dice_query);
+        }
+        return;
+    };
+
+    let faces = dice_roll_animation_faces(animation);
+    for (display, mut sprite, mut visibility, mut transform) in &mut dice_query {
+        let Some(roll) = dice_face_for_index(faces, display.die_index) else {
+            *visibility = Visibility::Hidden;
+            transform.rotation = Quat::IDENTITY;
+            transform.scale = Vec3::ONE;
+            continue;
+        };
+        sprite.custom_size = Some(Vec2::splat(CENTER_DICE_SPRITE_SIZE));
+        sprite.color = Color::WHITE;
+        sprite.image = dice_sprite_assets.handle_for_animation(animation, roll, display.die_index);
+        *visibility = Visibility::Visible;
+        let visual_transform = dice_roll_visual_transform(animation, display.die_index);
+        let center = center_dice_center_for_index(display.base_center, faces, display.die_index)
+            + visual_transform.offset;
+        transform.translation.x = center.x;
+        transform.translation.y = center.y;
+        transform.rotation = Quat::from_rotation_z(visual_transform.rotation);
+        transform.scale = Vec3::new(visual_transform.scale.x, visual_transform.scale.y, 1.0);
+    }
+}
+
+fn hide_center_dice_displays(
+    dice_query: &mut Query<(
+        &CenterDiceSprite,
+        &mut Sprite,
+        &mut Visibility,
+        &mut Transform,
+    )>,
+) {
+    for (_, _, mut visibility, mut transform) in dice_query.iter_mut() {
+        *visibility = Visibility::Hidden;
+        transform.rotation = Quat::IDENTITY;
+        transform.scale = Vec3::ONE;
+    }
+}
+
+fn render_center_dice_prompt(
+    elapsed_secs: f32,
+    dice_sprite_assets: &DiceSpriteAssets,
+    dice_query: &mut Query<(
+        &CenterDiceSprite,
+        &mut Sprite,
+        &mut Visibility,
+        &mut Transform,
+    )>,
+) {
+    let visual_transform = center_dice_prompt_transform(elapsed_secs);
+    for (display, mut sprite, mut visibility, mut transform) in dice_query.iter_mut() {
+        if display.die_index != 0 {
+            *visibility = Visibility::Hidden;
+            transform.rotation = Quat::IDENTITY;
+            transform.scale = Vec3::ONE;
+            continue;
+        }
+
+        sprite.custom_size = Some(Vec2::splat(CENTER_DICE_PROMPT_SIZE));
+        sprite.color = Color::srgba(1.0, 1.0, 1.0, CENTER_DICE_PROMPT_ALPHA);
+        sprite.image = dice_sprite_assets.roll_frame_handle(CENTER_DICE_PROMPT_FRAME);
+        *visibility = Visibility::Visible;
+        transform.translation.x = display.base_center.x + visual_transform.offset.x;
+        transform.translation.y = display.base_center.y + visual_transform.offset.y;
+        transform.rotation = Quat::from_rotation_z(visual_transform.rotation);
+        transform.scale = Vec3::new(visual_transform.scale.x, visual_transform.scale.y, 1.0);
+    }
+}
+
+fn visible_dice_roll_key(turn_state: &TurnState) -> Option<DiceRollVisualKey> {
+    if turn_state.roll_serial == 0 {
+        return None;
+    }
+
+    if let Some(roll) = turn_state.current_roll {
+        return Some(DiceRollVisualKey {
+            roll_serial: turn_state.roll_serial,
+            player_id: turn_state.current_player,
+            roll,
+            faces: display_faces_for_roll(roll, turn_state.current_roll_faces),
+        });
+    }
+
+    let player_id = turn_state.last_roll_player?;
+    let roll = turn_state.last_roll?;
+    Some(DiceRollVisualKey {
+        roll_serial: turn_state.roll_serial,
+        player_id,
+        roll,
+        faces: display_faces_for_roll(roll, turn_state.last_roll_faces),
+    })
+}
+
+fn dice_roll_animation_faces(animation: DiceRollVisualAnimation) -> [u8; 2] {
+    if animation.elapsed >= DICE_ROLL_SETTLE_START {
+        return animation.key.faces;
+    }
+
+    let frame = dice_roll_animation_frame(animation.elapsed);
+    [
+        animated_die_face(animation.key, frame, 0),
+        if dice_face_for_index(animation.key.faces, 1).is_some() {
+            animated_die_face(animation.key, frame, 1)
+        } else {
+            0
+        },
+    ]
+}
+
+fn dice_roll_visual_transform(
+    animation: DiceRollVisualAnimation,
+    die_index: u8,
+) -> DiceRollVisualTransform {
+    let progress = (animation.elapsed / DICE_ROLL_ANIMATION_DURATION).clamp(0.0, 1.0);
+    if progress >= 1.0 {
+        return DiceRollVisualTransform::default();
+    }
+
+    let roll_progress = (animation.elapsed / DICE_ROLL_SETTLE_START).clamp(0.0, 1.0);
+    let intensity = (1.0 - roll_progress).powf(0.85);
+    let frame = dice_roll_animation_frame(animation.elapsed);
+    let seed = dice_roll_animation_seed(animation.key);
+    let phase = (dice_roll_hash(seed, 0, die_index, 8) % 628) as f32 / 100.0;
+    let lane = if die_index == 0 { -1.0 } else { 1.0 };
+    let approach = lane * (1.0 - roll_progress).powf(1.35) * 18.0;
+    let horizontal_sway =
+        (roll_progress * PI * 5.2 + phase).sin() * DICE_ROLL_MAX_SHAKE * intensity;
+    let vertical_sway =
+        (roll_progress * PI * 6.1 + phase * 0.6).cos() * DICE_ROLL_MAX_SHAKE * 0.36 * intensity;
+    let hop = (roll_progress * PI * 5.0 + die_index as f32 * 0.7)
+        .sin()
+        .abs()
+        * DICE_ROLL_MAX_HOP
+        * intensity;
+    let settle_progress = ((animation.elapsed - DICE_ROLL_SETTLE_START)
+        / (DICE_ROLL_ANIMATION_DURATION - DICE_ROLL_SETTLE_START))
+        .clamp(0.0, 1.0);
+    let settle_bounce = if animation.elapsed >= DICE_ROLL_SETTLE_START {
+        (1.0 - settle_progress) * (settle_progress * PI).sin()
+    } else {
+        0.0
+    };
+    let scale_bump = (animation.elapsed * 30.0 + die_index as f32).sin().abs()
+        * DICE_ROLL_MAX_SCALE_BUMP
+        * intensity;
+    let squash = settle_bounce * 0.12;
+    let spin_direction = if dice_roll_hash(seed, 0, die_index, 7) % 2 == 0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let rolling_rotation = spin_direction
+        * (roll_progress * PI * 7.4 + phase).sin()
+        * DICE_ROLL_MAX_ROTATION
+        * intensity;
+    let settle_rotation = dice_roll_noise(seed, frame, die_index, 2)
+        * DICE_ROLL_MAX_ROTATION
+        * 0.16
+        * (1.0 - settle_progress);
+
+    DiceRollVisualTransform {
+        offset: Vec2::new(
+            approach + horizontal_sway,
+            vertical_sway + hop + settle_bounce * 2.8,
+        ),
+        scale: Vec2::new(1.0 + scale_bump + squash, 1.0 + scale_bump * 0.48 - squash),
+        rotation: if animation.elapsed < DICE_ROLL_SETTLE_START {
+            rolling_rotation
+        } else {
+            settle_rotation
+        },
+    }
+}
+
+fn center_dice_prompt_visible(
+    turn_state: &TurnState,
+    game_phase: &GamePhase,
+    player_roster: &PlayerRoster,
+    match_result: &MatchResult,
+) -> bool {
+    !match_result.finished
+        && matches!(game_phase, GamePhase::AwaitDice)
+        && turn_state.current_roll.is_none()
+        && turn_state.pending_roll_display.is_none()
+        && player_roster.players.iter().any(|player| {
+            player.state.player_id == turn_state.current_player
+                && player.state.control == PlayerControl::Human
+        })
+}
+
+fn center_dice_prompt_transform(elapsed_secs: f32) -> DiceRollVisualTransform {
+    let bob = (elapsed_secs * PI * 1.6).sin() * CENTER_DICE_PROMPT_BOB;
+    let rock = (elapsed_secs * PI * 1.1).sin() * 0.055;
+    let scale = 1.0 + (elapsed_secs * PI * 1.4).sin().abs() * CENTER_DICE_PROMPT_SCALE_PULSE;
+    DiceRollVisualTransform {
+        offset: Vec2::new(0.0, bob),
+        scale: Vec2::splat(scale),
+        rotation: CENTER_DICE_PROMPT_BASE_ROTATION + rock,
+    }
+}
+
+fn dice_roll_animation_frame(elapsed: f32) -> u32 {
+    (elapsed / DICE_ROLL_FACE_INTERVAL).floor() as u32
+}
+
+fn dice_roll_animation_delta(delta_secs: f32) -> f32 {
+    delta_secs.clamp(0.0, DICE_ROLL_MAX_FRAME_STEP)
+}
+
+fn animated_die_face(key: DiceRollVisualKey, frame: u32, die_index: u8) -> u8 {
+    (dice_roll_hash(dice_roll_animation_seed(key), frame, die_index, 3) % 6 + 1) as u8
+}
+
+fn dice_roll_animation_seed(key: DiceRollVisualKey) -> u32 {
+    key.roll_serial
+        .wrapping_mul(1_103_515_245)
+        .wrapping_add((key.player_id as u32).wrapping_mul(97_531))
+        .wrapping_add((key.roll as u32).wrapping_mul(8_191))
+        .wrapping_add((key.faces[0] as u32).wrapping_mul(313))
+        .wrapping_add((key.faces[1] as u32).wrapping_mul(37))
+}
+
+fn dice_roll_noise(seed: u32, frame: u32, die_index: u8, channel: u32) -> f32 {
+    let value = dice_roll_hash(seed, frame, die_index, channel) % 2001;
+    value as f32 / 1000.0 - 1.0
+}
+
+fn dice_roll_hash(seed: u32, frame: u32, die_index: u8, channel: u32) -> u32 {
+    let mut value = seed
+        ^ frame.wrapping_mul(747_796_405)
+        ^ (die_index as u32).wrapping_mul(2_891_336_453)
+        ^ channel.wrapping_mul(277_803_737);
+    value ^= value >> 16;
+    value = value.wrapping_mul(2_246_822_519);
+    value ^= value >> 13;
+    value = value.wrapping_mul(3_266_489_917);
+    value ^ (value >> 16)
 }
 
 fn player_dice_display_state(
@@ -595,8 +1001,9 @@ fn player_dice_display_state(
     player_id: u8,
     animation_active: bool,
 ) -> PlayerDiceDisplayState {
+    let roll_display_pending = roll_display_is_pending_for_player(turn_state, player_id);
     if let Some(roll) = turn_state.current_roll {
-        if turn_state.current_player == player_id {
+        if turn_state.current_player == player_id && !roll_display_pending {
             return PlayerDiceDisplayState::Active(display_faces_for_roll(
                 roll,
                 turn_state.current_roll_faces,
@@ -607,6 +1014,7 @@ fn player_dice_display_state(
 
     if (animation_active || turn_state.hold_last_roll_display)
         && turn_state.last_roll_player == Some(player_id)
+        && !roll_display_pending
         && let Some(roll) = turn_state.last_roll
     {
         return PlayerDiceDisplayState::Active(display_faces_for_roll(
@@ -616,6 +1024,12 @@ fn player_dice_display_state(
     }
 
     disabled_player_roll_state(turn_state, player_id)
+}
+
+fn roll_display_is_pending_for_player(turn_state: &TurnState, player_id: u8) -> bool {
+    turn_state
+        .pending_roll_display
+        .is_some_and(|pending| pending.player_id == player_id)
 }
 
 fn disabled_player_roll_state(turn_state: &TurnState, player_id: u8) -> PlayerDiceDisplayState {
@@ -657,6 +1071,71 @@ fn dice_center_for_index(base_center: Vec2, faces: [u8; 2], die_index: u8) -> Ve
         PLAYER_DICE_DOUBLE_OFFSET
     };
     base_center + Vec2::new(offset, 0.0)
+}
+
+fn center_dice_center_for_index(base_center: Vec2, faces: [u8; 2], die_index: u8) -> Vec2 {
+    if dice_face_for_index(faces, 1).is_none() {
+        return base_center;
+    }
+
+    let offset = if die_index == 0 {
+        -CENTER_DICE_DOUBLE_OFFSET
+    } else {
+        CENTER_DICE_DOUBLE_OFFSET
+    };
+    base_center + Vec2::new(offset, 0.0)
+}
+
+fn dice_face_asset_path(roll: u8) -> &'static str {
+    match roll {
+        1 => "ui/dice/die_1.png",
+        2 => "ui/dice/die_2.png",
+        3 => "ui/dice/die_3.png",
+        4 => "ui/dice/die_4.png",
+        5 => "ui/dice/die_5.png",
+        6 => "ui/dice/die_6.png",
+        _ => "ui/dice/die_1.png",
+    }
+}
+
+fn dice_sprite_asset_path(
+    animation: DiceRollVisualAnimation,
+    roll: u8,
+    die_index: u8,
+) -> &'static str {
+    if animation.elapsed < DICE_ROLL_SETTLE_START {
+        return dice_roll_frame_asset_path(dice_roll_sprite_frame(animation, die_index));
+    }
+    dice_face_asset_path(roll)
+}
+
+fn dice_roll_sprite_frame(animation: DiceRollVisualAnimation, die_index: u8) -> usize {
+    let base_frame = dice_roll_animation_frame(animation.elapsed) as usize;
+    let seed_offset = (dice_roll_animation_seed(animation.key) as usize)
+        .wrapping_add(die_index as usize * 5)
+        % DICE_ROLL_FRAME_COUNT;
+    (base_frame + seed_offset) % DICE_ROLL_FRAME_COUNT
+}
+
+fn dice_roll_frame_asset_path(frame: usize) -> &'static str {
+    match frame % DICE_ROLL_FRAME_COUNT {
+        0 => "ui/dice/roll_00.png",
+        1 => "ui/dice/roll_01.png",
+        2 => "ui/dice/roll_02.png",
+        3 => "ui/dice/roll_03.png",
+        4 => "ui/dice/roll_04.png",
+        5 => "ui/dice/roll_05.png",
+        6 => "ui/dice/roll_06.png",
+        7 => "ui/dice/roll_07.png",
+        8 => "ui/dice/roll_08.png",
+        9 => "ui/dice/roll_09.png",
+        10 => "ui/dice/roll_10.png",
+        11 => "ui/dice/roll_11.png",
+        12 => "ui/dice/roll_12.png",
+        13 => "ui/dice/roll_13.png",
+        14 => "ui/dice/roll_14.png",
+        _ => "ui/dice/roll_15.png",
+    }
 }
 
 fn board_surface_color() -> Color {
@@ -828,6 +1307,25 @@ fn spawn_player_dice_display(
                 BoardSceneEntity,
             ));
         }
+    }
+}
+
+fn spawn_center_dice_roll_display(commands: &mut Commands, dice_sprite_assets: &DiceSpriteAssets) {
+    let center = Vec2::ZERO;
+    for die_index in 0..2 {
+        let mut sprite = Sprite::from_image(dice_sprite_assets.face_handle(1));
+        sprite.custom_size = Some(Vec2::splat(CENTER_DICE_SPRITE_SIZE));
+        commands.spawn((
+            sprite,
+            Transform::from_xyz(center.x, center.y, BOARD_Z_LAYER + 3.28),
+            Visibility::Hidden,
+            CenterDiceSprite {
+                die_index,
+                base_center: center,
+            },
+            Name::new(format!("CenterDiceSprite_D{die_index}")),
+            BoardSceneEntity,
+        ));
     }
 }
 
@@ -2028,6 +2526,14 @@ mod tests {
         }
     }
 
+    fn roster_with_players(players: Vec<PlayerProfile>) -> PlayerRoster {
+        let [blue, red, green, yellow] = PlayerSeat::ALL.map(PlayerSeat::to_color);
+        PlayerRoster {
+            players,
+            player_colors: [blue, red, green, yellow],
+        }
+    }
+
     #[test]
     fn route_colors_keep_full_four_color_palette_in_one_vs_one() {
         let [blue, red, green, yellow] = PlayerSeat::ALL.map(PlayerSeat::to_color);
@@ -2326,6 +2832,241 @@ mod tests {
         assert!(second_center.x > base_center.x);
         assert_eq!(dice_center_for_index(base_center, [4, 0], 0), base_center);
         assert_eq!(dice_center_for_index(base_center, [4, 0], 1), base_center);
+    }
+
+    #[test]
+    fn player_dice_display_waits_for_roll_animation_commit() {
+        let mut turn_state = TurnState::opening_turn();
+        crate::gameplay::turn_flow::set_roll_with_faces(&mut turn_state, 5, [2, 5]);
+
+        assert_eq!(
+            player_dice_display_state(&turn_state, 1, false),
+            PlayerDiceDisplayState::Hidden
+        );
+
+        assert!(crate::gameplay::turn_flow::commit_pending_roll_display(
+            &mut turn_state,
+            1
+        ));
+        assert_eq!(
+            player_dice_display_state(&turn_state, 1, false),
+            PlayerDiceDisplayState::Active([2, 5])
+        );
+    }
+
+    #[test]
+    fn dice_roll_visual_key_tracks_current_and_last_rolls() {
+        let mut turn_state = TurnState::opening_turn();
+        crate::gameplay::turn_flow::set_roll_with_faces(&mut turn_state, 5, [2, 5]);
+
+        assert_eq!(
+            visible_dice_roll_key(&turn_state),
+            Some(DiceRollVisualKey {
+                roll_serial: 1,
+                player_id: 1,
+                roll: 5,
+                faces: [2, 5],
+            })
+        );
+
+        turn_state.current_player = 2;
+        turn_state.current_roll = None;
+        turn_state.current_roll_faces = None;
+
+        assert_eq!(
+            visible_dice_roll_key(&turn_state),
+            Some(DiceRollVisualKey {
+                roll_serial: 1,
+                player_id: 1,
+                roll: 5,
+                faces: [2, 5],
+            })
+        );
+    }
+
+    #[test]
+    fn dice_roll_animation_faces_settle_on_real_result() {
+        let key = DiceRollVisualKey {
+            roll_serial: 7,
+            player_id: 2,
+            roll: 6,
+            faces: [3, 6],
+        };
+
+        let rolling_faces =
+            dice_roll_animation_faces(DiceRollVisualAnimation { key, elapsed: 0.0 });
+        assert!(dice_face_for_index(rolling_faces, 0).is_some());
+        assert!(dice_face_for_index(rolling_faces, 1).is_some());
+
+        let settled_faces = dice_roll_animation_faces(DiceRollVisualAnimation {
+            key,
+            elapsed: DICE_ROLL_SETTLE_START,
+        });
+        assert_eq!(settled_faces, [3, 6]);
+    }
+
+    #[test]
+    fn dice_roll_animation_keeps_single_die_layout_for_normal_roll() {
+        let key = DiceRollVisualKey {
+            roll_serial: 8,
+            player_id: 1,
+            roll: 4,
+            faces: [4, 0],
+        };
+
+        let rolling_faces =
+            dice_roll_animation_faces(DiceRollVisualAnimation { key, elapsed: 0.0 });
+        assert!(dice_face_for_index(rolling_faces, 0).is_some());
+        assert_eq!(dice_face_for_index(rolling_faces, 1), None);
+    }
+
+    #[test]
+    fn center_dice_roll_animation_temporarily_replaces_faces_and_transform() {
+        let key = DiceRollVisualKey {
+            roll_serial: 9,
+            player_id: 1,
+            roll: 5,
+            faces: [2, 5],
+        };
+        let animation = DiceRollVisualAnimation { key, elapsed: 0.12 };
+
+        let rolling_faces = dice_roll_animation_faces(animation);
+        assert!(dice_face_for_index(rolling_faces, 0).is_some());
+        assert!(dice_face_for_index(rolling_faces, 1).is_some());
+
+        let rolling_transform = dice_roll_visual_transform(animation, 0);
+        assert!(rolling_transform.offset.length() > 0.0);
+        assert!(rolling_transform.scale.x > 1.0 || rolling_transform.scale.y > 1.0);
+        assert!(center_dice_center_for_index(Vec2::ZERO, [2, 5], 0).x < 0.0);
+        assert!(center_dice_center_for_index(Vec2::ZERO, [2, 5], 1).x > 0.0);
+
+        let settled_transform = dice_roll_visual_transform(
+            DiceRollVisualAnimation {
+                key,
+                elapsed: DICE_ROLL_ANIMATION_DURATION,
+            },
+            0,
+        );
+        assert_eq!(settled_transform, DiceRollVisualTransform::default());
+    }
+
+    #[test]
+    fn dice_roll_animation_timing_is_readable() {
+        assert!(DICE_ROLL_ANIMATION_DURATION >= 1.2);
+        assert!(DICE_ROLL_SETTLE_START >= 0.9);
+        assert!((DICE_ROLL_ANIMATION_DURATION - DICE_ROLL_SETTLE_START) >= 0.25);
+    }
+
+    #[test]
+    fn dice_roll_animation_delta_is_clamped_for_slow_frames() {
+        assert_eq!(dice_roll_animation_delta(-1.0), 0.0);
+        assert_eq!(dice_roll_animation_delta(0.016), 0.016);
+        assert_eq!(dice_roll_animation_delta(3.0), DICE_ROLL_MAX_FRAME_STEP);
+    }
+
+    #[test]
+    fn center_dice_prompt_only_appears_when_human_can_roll() {
+        let mut turn_state = TurnState::opening_turn();
+        let roster = roster_with_players(vec![player(1, PlayerSeat::Blue)]);
+        let match_result = MatchResult::default();
+
+        assert!(center_dice_prompt_visible(
+            &turn_state,
+            &GamePhase::AwaitDice,
+            &roster,
+            &match_result,
+        ));
+
+        turn_state.current_roll = Some(3);
+        assert!(!center_dice_prompt_visible(
+            &turn_state,
+            &GamePhase::AwaitDice,
+            &roster,
+            &match_result,
+        ));
+
+        turn_state.current_roll = None;
+        let mut finished = MatchResult::default();
+        finished.finished = true;
+        assert!(!center_dice_prompt_visible(
+            &turn_state,
+            &GamePhase::AwaitDice,
+            &roster,
+            &finished,
+        ));
+    }
+
+    #[test]
+    fn center_dice_prompt_ignores_ai_turns_and_other_phases() {
+        let mut ai_player = player(1, PlayerSeat::Blue);
+        ai_player.state.control = PlayerControl::Ai;
+        let roster = roster_with_players(vec![ai_player]);
+        let turn_state = TurnState::opening_turn();
+        let match_result = MatchResult::default();
+
+        assert!(!center_dice_prompt_visible(
+            &turn_state,
+            &GamePhase::AwaitDice,
+            &roster,
+            &match_result,
+        ));
+        assert!(!center_dice_prompt_visible(
+            &turn_state,
+            &GamePhase::AwaitPieceSelect,
+            &roster,
+            &match_result,
+        ));
+    }
+
+    #[test]
+    fn center_dice_prompt_uses_distinct_angled_asset_motion() {
+        let start = center_dice_prompt_transform(0.0);
+        let later = center_dice_prompt_transform(0.5);
+
+        assert_eq!(
+            dice_roll_frame_asset_path(CENTER_DICE_PROMPT_FRAME),
+            "ui/dice/roll_00.png"
+        );
+        assert_ne!(start, later);
+        assert!(start.rotation.abs() > 0.1);
+    }
+
+    #[test]
+    fn dice_face_assets_cover_every_roll_value() {
+        assert_eq!(dice_face_asset_path(1), "ui/dice/die_1.png");
+        assert_eq!(dice_face_asset_path(2), "ui/dice/die_2.png");
+        assert_eq!(dice_face_asset_path(3), "ui/dice/die_3.png");
+        assert_eq!(dice_face_asset_path(4), "ui/dice/die_4.png");
+        assert_eq!(dice_face_asset_path(5), "ui/dice/die_5.png");
+        assert_eq!(dice_face_asset_path(6), "ui/dice/die_6.png");
+        assert_eq!(dice_roll_frame_asset_path(0), "ui/dice/roll_00.png");
+        assert_eq!(dice_roll_frame_asset_path(15), "ui/dice/roll_15.png");
+    }
+
+    #[test]
+    fn center_dice_uses_roll_frames_before_settling_on_final_face() {
+        let key = DiceRollVisualKey {
+            roll_serial: 12,
+            player_id: 1,
+            roll: 6,
+            faces: [2, 6],
+        };
+
+        assert!(
+            dice_sprite_asset_path(DiceRollVisualAnimation { key, elapsed: 0.2 }, 6, 1)
+                .starts_with("ui/dice/roll_")
+        );
+        assert_eq!(
+            dice_sprite_asset_path(
+                DiceRollVisualAnimation {
+                    key,
+                    elapsed: DICE_ROLL_SETTLE_START,
+                },
+                6,
+                1,
+            ),
+            "ui/dice/die_6.png"
+        );
     }
 
     #[test]

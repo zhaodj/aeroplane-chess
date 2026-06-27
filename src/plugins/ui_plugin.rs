@@ -116,6 +116,9 @@ struct SharedSkillButtonText {
 }
 
 #[derive(Component)]
+struct SharedSkillBlockMarker;
+
+#[derive(Component)]
 struct SkillTipPanel;
 
 #[derive(Component)]
@@ -161,6 +164,7 @@ struct EventLogText;
 pub struct PlayerHudState {
     event_log_expanded: bool,
     skill_tip_action: Option<SkillUiAction>,
+    board_roll_button_visible: bool,
 }
 
 #[derive(Resource, Default)]
@@ -279,10 +283,12 @@ type SharedSkillButtonTextQuery<'w, 's> = Query<
     ),
     (Without<PlayerHudBadgeText>, Without<BoardRollButtonText>),
 >;
+type SharedSkillBlockMarkerQuery<'w, 's> =
+    Query<'w, 's, &'static mut Visibility, With<SharedSkillBlockMarker>>;
 type BoardRollButtonQuery<'w, 's> = Query<
     'w,
     's,
-    &'static mut BackgroundColor,
+    (&'static mut BackgroundColor, &'static mut Node),
     (
         With<BoardRollButton>,
         Without<PlayerHudEntry>,
@@ -321,6 +327,7 @@ struct HudContentQueries<'w, 's> {
     skill_button_icon_query: SharedSkillButtonIconQuery<'w, 's>,
     skill_button_badge_query: SharedSkillButtonBadgeQuery<'w, 's>,
     skill_button_text_query: SharedSkillButtonTextQuery<'w, 's>,
+    skill_block_marker_query: SharedSkillBlockMarkerQuery<'w, 's>,
     board_roll_button_query: BoardRollButtonQuery<'w, 's>,
     board_roll_button_text_query: BoardRollButtonTextQuery<'w, 's>,
 }
@@ -338,6 +345,8 @@ const SKILL_BUTTON_SIZE: f32 = 54.0;
 const SKILL_ICON_SIZE: f32 = 42.0;
 const SKILL_BADGE_W: f32 = 20.0;
 const SKILL_BADGE_H: f32 = 20.0;
+const SKILL_BLOCK_MARKER_W: f32 = 31.0;
+const SKILL_BLOCK_MARKER_H: f32 = 14.0;
 const SKILL_BUTTON_GAP: f32 = 8.0;
 const SKILL_TIP_W: f32 = 326.0;
 const SKILL_TIP_H: f32 = 118.0;
@@ -467,6 +476,7 @@ fn spawn_hud(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
+                display: Display::None,
                 width: Val::Px(BOARD_ROLL_BUTTON_W),
                 height: Val::Px(BOARD_ROLL_BUTTON_H),
                 border: UiRect::all(Val::Px(1.0)),
@@ -484,7 +494,7 @@ fn spawn_hud(
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Roll"),
+                Text::new(""),
                 TextFont {
                     font_size: FontSize::Px(22.0),
                     ..default()
@@ -571,6 +581,46 @@ fn spawn_hud(
                                 skill_action_name(action)
                             )),
                             SharedSkillButtonText { action },
+                        ));
+                    });
+                button
+                    .spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(3.0),
+                            bottom: Val::Px(3.0),
+                            width: Val::Px(SKILL_BLOCK_MARKER_W),
+                            height: Val::Px(SKILL_BLOCK_MARKER_H),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(4.0)),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            padding: UiRect::horizontal(Val::Px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(skill_block_marker_color()),
+                        BorderColor::all(skill_block_marker_border_color()),
+                        Visibility::Hidden,
+                        ZIndex(3),
+                        Name::new(format!(
+                            "SharedSkillBlockMarker{}",
+                            skill_action_name(action)
+                        )),
+                        SharedSkillBlockMarker,
+                    ))
+                    .with_children(|marker| {
+                        marker.spawn((
+                            Text::new("LOCK"),
+                            TextFont {
+                                font_size: FontSize::Px(8.2),
+                                ..default()
+                            },
+                            TextColor(Color::WHITE),
+                            TextLayout::justify(Justify::Center),
+                            Name::new(format!(
+                                "SharedSkillBlockMarkerText{}",
+                                skill_action_name(action)
+                            )),
                         ));
                     });
             });
@@ -980,7 +1030,7 @@ fn update_hud_content(
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
     reveal_delays: Res<EffectRevealDelays>,
-    time: Res<Time>,
+    mut hud_state: ResMut<PlayerHudState>,
     piece_query: HudPieceQuery,
     mut queries: HudContentQueries,
 ) {
@@ -1046,6 +1096,7 @@ fn update_hud_content(
     }
 
     let current_skills = player_skill_state(&skill_roster, turn_state.current_player);
+    let show_skill_block_marker = skill_block_marker_visible(current_skills, match_result.finished);
     for (button, mut background, mut border) in &mut queries.skill_button_query {
         let ready = current_skills
             .map(|skills| {
@@ -1133,24 +1184,35 @@ fn update_hud_content(
         *text_color = TextColor(skill_badge_text_color(ready));
     }
 
+    for mut visibility in &mut queries.skill_block_marker_query {
+        *visibility = if show_skill_block_marker {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+
     let roll_ready = current_human_turn && matches!(game_phase.get(), GamePhase::AwaitDice);
     let cancel_target_ready = current_human_turn
         && matches!(game_phase.get(), GamePhase::ResolveSkillEffect)
         && skill_target_state.is_active();
+    let board_roll_hit_target_active = roll_ready || cancel_target_ready;
+    let board_roll_visual_visible = false;
+    hud_state.board_roll_button_visible = board_roll_hit_target_active;
 
-    for mut background in &mut queries.board_roll_button_query {
+    for (mut background, mut node) in &mut queries.board_roll_button_query {
+        node.display = if board_roll_visual_visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
         *background = BackgroundColor(skill_button_color(
-            roll_ready || cancel_target_ready,
+            board_roll_visual_visible,
             current_human_turn,
         ));
     }
     for mut text in &mut queries.board_roll_button_text_query {
-        *text = Text::new(roll_button_text(
-            roll_ready,
-            cancel_target_ready,
-            turn_state.current_roll,
-            time.elapsed_secs(),
-        ));
+        *text = Text::new(roll_button_text(cancel_target_ready));
     }
 }
 
@@ -1356,6 +1418,26 @@ fn handle_skill_tip_input(
             skill_tip.pressed_started_at = now;
             skill_tip.pressed_started_position = cursor;
             skill_tip.hover_left_at = None;
+            if let Some(release_position) = pointer.just_released_position() {
+                queue_skill_from_release_if_ready(
+                    action,
+                    release_position,
+                    window_width,
+                    window_height,
+                    profile,
+                    &skill_tip,
+                    &match_config,
+                    &player_roster,
+                    &skill_roster,
+                    game_phase.get(),
+                    &match_result,
+                    &turn_state,
+                    &piece_query,
+                    &mut skill_ui_request,
+                );
+                skill_tip.pressed_action = None;
+                skill_tip.pressed_source = None;
+            }
             hud_state.skill_tip_action = skill_tip.visible_action;
             return;
         }
@@ -1376,14 +1458,13 @@ fn handle_skill_tip_input(
 
     if let Some(release_position) = pointer.just_released_position() {
         if let Some(action) = skill_tip.pressed_action {
-            let release_inside =
-                shared_skill_button_rect(window_width, window_height, profile, action)
-                    .expanded(4.0)
-                    .contains(release_position);
-            let press_opened_tip =
-                skill_tip.visible_action == Some(action) && !skill_tip.visible_from_hover;
-            let skill_ready = skill_ready_for_current_context(
+            queue_skill_from_release_if_ready(
                 action,
+                release_position,
+                window_width,
+                window_height,
+                profile,
+                &skill_tip,
                 &match_config,
                 &player_roster,
                 &skill_roster,
@@ -1391,10 +1472,8 @@ fn handle_skill_tip_input(
                 &match_result,
                 &turn_state,
                 &piece_query,
+                &mut skill_ui_request,
             );
-            if should_queue_skill_from_release(release_inside, press_opened_tip, skill_ready) {
-                skill_ui_request.queue(action);
-            }
         }
         skill_tip.pressed_action = None;
         skill_tip.pressed_source = None;
@@ -1414,6 +1493,62 @@ fn should_queue_skill_from_release(
     release_inside && !press_opened_tip && skill_ready
 }
 
+fn queue_skill_from_release_if_ready(
+    action: SkillUiAction,
+    release_position: Vec2,
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+    skill_tip: &SkillTipState,
+    match_config: &MatchConfig,
+    player_roster: &PlayerRoster,
+    skill_roster: &SkillRoster,
+    game_phase: &GamePhase,
+    match_result: &MatchResult,
+    turn_state: &TurnState,
+    piece_query: &HudPieceQuery<'_, '_>,
+    skill_ui_request: &mut SkillUiRequest,
+) {
+    let release_inside = skill_release_inside_button(
+        action,
+        release_position,
+        window_width,
+        window_height,
+        device_profile,
+    );
+    let press_opened_tip = skill_press_opened_persistent_tip(skill_tip, action);
+    let skill_ready = release_inside
+        && skill_ready_for_current_context(
+            action,
+            match_config,
+            player_roster,
+            skill_roster,
+            game_phase,
+            match_result,
+            turn_state,
+            piece_query,
+        );
+    if should_queue_skill_from_release(release_inside, press_opened_tip, skill_ready) {
+        skill_ui_request.queue(action);
+    }
+}
+
+fn skill_release_inside_button(
+    action: SkillUiAction,
+    release_position: Vec2,
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> bool {
+    shared_skill_button_rect(window_width, window_height, device_profile, action)
+        .expanded(4.0)
+        .contains(release_position)
+}
+
+fn skill_press_opened_persistent_tip(skill_tip: &SkillTipState, action: SkillUiAction) -> bool {
+    skill_tip.visible_action == Some(action) && !skill_tip.visible_from_hover
+}
+
 fn handle_player_hud_click(
     pointer: Res<PointerInputState>,
     windows: Query<&Window>,
@@ -1423,6 +1558,7 @@ fn handle_player_hud_click(
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
     turn_state: Res<TurnState>,
+    skill_target_state: Res<SkillTargetState>,
     skill_tip: Res<SkillTipState>,
     mut hud_state: ResMut<PlayerHudState>,
     mut event_log: ResMut<EventLogState>,
@@ -1466,12 +1602,18 @@ fn handle_player_hud_click(
             player.state.player_id == turn_state.current_player
                 && player.state.control == PlayerControl::Human
         });
-        if current_human_turn && matches!(game_phase.get(), GamePhase::AwaitDice) {
+        let roll_ready = current_human_turn && matches!(game_phase.get(), GamePhase::AwaitDice);
+        let cancel_target_ready = current_human_turn
+            && matches!(game_phase.get(), GamePhase::ResolveSkillEffect)
+            && skill_target_state.is_active();
+        if roll_ready {
             turn_ui_request.queue_roll();
-        } else if current_human_turn && matches!(game_phase.get(), GamePhase::ResolveSkillEffect) {
-            skill_ui_request.queue_cancel_target();
+            return;
         }
-        return;
+        if cancel_target_ready {
+            skill_ui_request.queue_cancel_target();
+            return;
+        }
     }
 
     for action in HUD_SKILL_ACTIONS {
@@ -1654,8 +1796,13 @@ pub fn player_hud_point_is_interactive(
     hud_state: &PlayerHudState,
 ) -> bool {
     if top_right_controls_rect(window.width()).contains(point)
-        || board_roll_button_rect(window.width(), window.height(), device_profile).contains(point)
         || event_log_toggle_rect(window.width(), window.height(), device_profile).contains(point)
+    {
+        return true;
+    }
+
+    if hud_state.board_roll_button_visible
+        && board_roll_button_rect(window.width(), window.height(), device_profile).contains(point)
     {
         return true;
     }
@@ -2022,6 +2169,24 @@ fn skill_badge_text_color(ready: bool) -> Color {
     }
 }
 
+fn skill_block_marker_visible(
+    current_skills: Option<&PlayerSkillState>,
+    match_finished: bool,
+) -> bool {
+    !match_finished
+        && current_skills
+            .map(|skills| skills.skill_blocked_this_turn)
+            .unwrap_or(false)
+}
+
+fn skill_block_marker_color() -> Color {
+    Color::srgba(0.76, 0.08, 0.10, 0.94)
+}
+
+fn skill_block_marker_border_color() -> Color {
+    Color::srgba(0.98, 0.72, 0.72, 0.92)
+}
+
 fn skill_charge(action: SkillUiAction, skills: &PlayerSkillState) -> u8 {
     match action {
         SkillUiAction::Dash => skills.dash_charges,
@@ -2118,22 +2283,11 @@ fn player_hud_badge_text_color(kind: PlayerHudBadgeKind, is_current: bool) -> Co
     }
 }
 
-fn roll_button_text(
-    roll_ready: bool,
-    cancel_target_ready: bool,
-    current_roll: Option<u8>,
-    elapsed_secs: f32,
-) -> String {
+fn roll_button_text(cancel_target_ready: bool) -> String {
     if cancel_target_ready {
         return "X".to_string();
     }
-    if let Some(roll) = current_roll {
-        return roll.to_string();
-    }
-    if roll_ready {
-        return (((elapsed_secs * 10.0) as u8 % 6) + 1).to_string();
-    }
-    "-".to_string()
+    String::new()
 }
 
 fn event_notice_text_from_action(action: &str) -> Option<String> {
@@ -2875,6 +3029,32 @@ mod tests {
         assert!(skill_badge_text_color(false).to_srgba().alpha >= 0.70);
         assert!(skill_button_color(false, false).to_srgba().alpha >= 0.30);
         assert!(skill_button_color(false, true).to_srgba().alpha >= 0.42);
+        assert!(skill_block_marker_color().to_srgba().alpha >= 0.90);
+        assert!(skill_block_marker_border_color().to_srgba().alpha >= 0.90);
+    }
+
+    #[test]
+    fn skill_block_marker_only_appears_on_blocked_turn() {
+        let mut skills = PlayerSkillState {
+            player_id: 1,
+            dash_charges: 1,
+            dash_armed: false,
+            snipe_charges: 1,
+            swap_charges: 1,
+            shield_charges: 1,
+            double_dice_charges: 1,
+            double_dice_armed: false,
+            skip_next_skill_turn: true,
+            skill_blocked_this_turn: false,
+        };
+
+        assert!(!skill_block_marker_visible(Some(&skills), false));
+
+        skills.skip_next_skill_turn = false;
+        skills.skill_blocked_this_turn = true;
+        assert!(skill_block_marker_visible(Some(&skills), false));
+        assert!(!skill_block_marker_visible(Some(&skills), true));
+        assert!(!skill_block_marker_visible(None, false));
     }
 
     #[test]
@@ -3033,7 +3213,7 @@ mod tests {
     }
 
     #[test]
-    fn long_press_tip_release_does_not_queue_skill() {
+    fn skill_release_queue_rules_keep_tips_read_only() {
         assert!(should_queue_skill_from_release(true, false, true));
         assert!(!should_queue_skill_from_release(true, true, true));
         assert!(!should_queue_skill_from_release(false, false, true));
@@ -3041,7 +3221,23 @@ mod tests {
     }
 
     #[test]
-    fn shared_roll_and_settings_entries_are_treated_as_interactive() {
+    fn same_frame_tap_release_inside_skill_button_counts_as_click() {
+        let width = 1280.0;
+        let height = 720.0;
+        let profile = test_profile(width, height);
+        let action = SkillUiAction::Dash;
+        let rect = shared_skill_button_rect(width, height, profile, action);
+        let release_position = Vec2::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+
+        let release_inside =
+            skill_release_inside_button(action, release_position, width, height, profile);
+
+        assert!(release_inside);
+        assert!(should_queue_skill_from_release(release_inside, false, true));
+    }
+
+    #[test]
+    fn visible_shared_controls_are_treated_as_interactive() {
         let window = Window {
             resolution: (1280, 720).into(),
             ..default()
@@ -3066,6 +3262,14 @@ mod tests {
         let log = event_log_toggle_rect(window.width(), window.height(), profile);
         let log_panel = event_log_panel_rect(window.width(), window.height(), profile);
 
+        assert!(!player_hud_point_is_interactive(
+            Vec2::new(roll.x + 2.0, roll.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state
+        ));
+        hud_state.board_roll_button_visible = true;
         assert!(player_hud_point_is_interactive(
             Vec2::new(roll.x + 2.0, roll.y + 2.0),
             &window,
@@ -3073,6 +3277,7 @@ mod tests {
             &roster,
             &hud_state
         ));
+        hud_state.board_roll_button_visible = false;
         assert!(player_hud_point_is_interactive(
             Vec2::new(settings.x + 2.0, settings.y + 2.0),
             &window,
@@ -3128,11 +3333,9 @@ mod tests {
     }
 
     #[test]
-    fn roll_button_text_hides_old_roll_without_current_roll() {
-        assert_eq!(roll_button_text(false, false, None, 0.0), "-");
-        assert_eq!(roll_button_text(false, false, Some(5), 0.0), "5");
-        assert_eq!(roll_button_text(false, true, Some(5), 0.0), "X");
-        assert_ne!(roll_button_text(true, false, None, 0.0), "-");
+    fn roll_button_text_never_shows_roll_prompt_or_dice_values() {
+        assert_eq!(roll_button_text(false), "");
+        assert_eq!(roll_button_text(true), "X");
     }
 
     #[test]
