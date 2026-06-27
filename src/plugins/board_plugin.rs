@@ -104,8 +104,8 @@ const CENTER_DICE_PROMPT_ALPHA: f32 = 1.0;
 const CENTER_DICE_PROMPT_BASE_ROTATION: f32 = -0.12;
 const CENTER_DICE_PROMPT_BOB: f32 = 4.0;
 const CENTER_DICE_PROMPT_SCALE_PULSE: f32 = 0.035;
-const DICE_ROLL_ANIMATION_DURATION: f32 = 0.88;
-const DICE_ROLL_SETTLE_START: f32 = 0.66;
+const DICE_ROLL_ANIMATION_DURATION: f32 = 3.0;
+const DICE_ROLL_SETTLE_START: f32 = 2.25;
 const DICE_ROLL_FACE_INTERVAL: f32 = 0.045;
 const DICE_ROLL_FRAME_COUNT: usize = 16;
 const DICE_ROLL_MAX_FRAME_STEP: f32 = 1.0 / 30.0;
@@ -2961,9 +2961,9 @@ mod tests {
 
     #[test]
     fn dice_roll_animation_timing_is_readable() {
-        assert!((0.75..=0.95).contains(&DICE_ROLL_ANIMATION_DURATION));
-        assert!((0.55..=0.75).contains(&DICE_ROLL_SETTLE_START));
-        assert!((0.16..=0.28).contains(&(DICE_ROLL_ANIMATION_DURATION - DICE_ROLL_SETTLE_START)));
+        assert_eq!(DICE_ROLL_ANIMATION_DURATION, 3.0);
+        assert_eq!(DICE_ROLL_SETTLE_START, 2.25);
+        assert_eq!(DICE_ROLL_ANIMATION_DURATION - DICE_ROLL_SETTLE_START, 0.75);
     }
 
     #[test]
