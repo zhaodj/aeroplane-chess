@@ -7,7 +7,8 @@ use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
 use crate::gameplay::skill_flow::{SkillRoster, dash_bonus};
 use crate::gameplay::turn_flow::{
-    FINISH_DISTANCE, PieceEffectKind, TurnInputState, TurnState, world_position_for_piece,
+    FINISH_DISTANCE, PieceEffectKind, PlannedAction, TurnInputState, TurnState,
+    world_position_for_piece,
 };
 use crate::plugins::effects_plugin::EffectRevealDelays;
 use crate::plugins::skill_plugin::SkillTargetState;
@@ -25,6 +26,7 @@ impl Plugin for PiecePlugin {
                 (
                     update_piece_highlight,
                     update_piece_stack_visuals,
+                    update_move_target_guides,
                     update_piece_stack_count_badges,
                     update_piece_shield_badges,
                     update_piece_effect_badges,
@@ -62,6 +64,25 @@ struct PieceVisual {
 /// 当前可点击棋子的高亮外环。
 struct PieceSelectableHalo {
     piece_id: u8,
+}
+
+#[derive(Component)]
+/// 选棋阶段展示的目标虚影根节点。
+struct MoveTargetGuideTarget {
+    piece_id: u8,
+}
+
+#[derive(Component)]
+/// 目标虚影上的虚线飞机线段。
+struct MoveTargetGuidePlaneSegment {
+    piece_id: u8,
+}
+
+#[derive(Component)]
+/// 从当前棋子指向目标虚影的虚线连接段。
+struct MoveTargetGuideConnectorDash {
+    piece_id: u8,
+    dash_index: usize,
 }
 
 #[derive(Component)]
@@ -115,6 +136,14 @@ struct PieceEffectBadgeText {
 const PIECE_HITBOX_SIZE: f32 = 32.0;
 const PIECE_TOKEN_RADIUS: f32 = 14.0;
 const SELECTABLE_HALO_RADIUS: f32 = PIECE_TOKEN_RADIUS + 5.0;
+const MOVE_TARGET_GUIDE_Z: f32 = BOARD_Z_LAYER + 1.36;
+const MOVE_TARGET_CONNECTOR_Z: f32 = BOARD_Z_LAYER + 0.72;
+const MOVE_TARGET_CONNECTOR_DASH_COUNT: usize = 10;
+const MOVE_TARGET_CONNECTOR_THICKNESS: f32 = 2.0;
+const MOVE_TARGET_PLANE_THICKNESS: f32 = 1.75;
+const MOVE_TARGET_PLANE_SCALE: f32 = 0.82;
+const MOVE_TARGET_DASH_LENGTH: f32 = 4.2;
+const MOVE_TARGET_DASH_GAP: f32 = 3.0;
 const DISABLED_OVERLAY_RADIUS: f32 = PIECE_TOKEN_RADIUS + 1.6;
 const DISABLED_SLASH_SIZE: Vec2 = Vec2::new(31.0, 3.8);
 const STACK_BADGE_SIZE: Vec2 = Vec2::new(25.0, 15.0);
@@ -145,8 +174,16 @@ const PLANE_ICON_POINTS: &[Vec2] = &[
     Vec2::new(-9.12, -3.40),
 ];
 
-type PieceTransformQuery<'w, 's> =
-    Query<'w, 's, (&'static PieceId, &'static PieceState, &'static Transform)>;
+type PieceTransformQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static PieceId, &'static PieceState, &'static Transform),
+    (
+        Without<MoveTargetGuideTarget>,
+        Without<MoveTargetGuideConnectorDash>,
+        Without<MoveTargetGuidePlaneSegment>,
+    ),
+>;
 type ShieldBadgeQuery<'w, 's> = Query<
     'w,
     's,
@@ -284,6 +321,61 @@ type EffectBadgeTextQuery<'w, 's> = Query<
     (Without<PieceId>, Without<PieceEffectBadge>),
 >;
 
+type MoveTargetGuideTargetQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static MoveTargetGuideTarget,
+        &'static mut Transform,
+        &'static mut Visibility,
+    ),
+    (
+        Without<MoveTargetGuideConnectorDash>,
+        Without<MoveTargetGuidePlaneSegment>,
+    ),
+>;
+type MoveTargetGuidePlaneQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static MoveTargetGuidePlaneSegment, &'static mut Sprite),
+    (
+        Without<MoveTargetGuideTarget>,
+        Without<MoveTargetGuideConnectorDash>,
+    ),
+>;
+type MoveTargetGuideConnectorQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static MoveTargetGuideConnectorDash,
+        &'static mut Sprite,
+        &'static mut Transform,
+        &'static mut Visibility,
+    ),
+    (
+        Without<MoveTargetGuideTarget>,
+        Without<MoveTargetGuidePlaneSegment>,
+    ),
+>;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MoveTargetGuidePiece {
+    pub piece_id: u8,
+    pub piece_state: PieceState,
+    pub origin: Vec2,
+    pub connector_origin: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MoveTargetGuideInfo {
+    pub piece_id: u8,
+    pub origin: Vec2,
+    pub connector_origin: Vec2,
+    pub target: Vec2,
+    pub display_target: Vec2,
+    pub connector_target: Option<Vec2>,
+}
+
 fn spawn_pieces(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -343,6 +435,7 @@ fn spawn_pieces(
                             );
                         });
                 });
+            spawn_move_target_guide(&mut commands, player.color, current_piece_id);
             commands.spawn((
                 Sprite::from_color(Color::srgba(0.10, 0.12, 0.16, 0.92), STACK_BADGE_SIZE),
                 Transform::from_xyz(
@@ -452,6 +545,114 @@ fn spawn_pieces(
             piece_id += 1;
         }
     }
+}
+
+fn spawn_move_target_guide(commands: &mut Commands, color: Color, piece_id: u8) {
+    commands
+        .spawn((
+            Transform::from_xyz(0.0, 0.0, MOVE_TARGET_GUIDE_Z),
+            Visibility::Hidden,
+            MoveTargetGuideTarget { piece_id },
+            Name::new(format!("MoveTargetGuideTarget_{piece_id}")),
+            PieceEntity,
+        ))
+        .with_children(|parent| {
+            spawn_dashed_target_plane(parent, color, piece_id);
+        });
+
+    for dash_index in 0..MOVE_TARGET_CONNECTOR_DASH_COUNT {
+        commands.spawn((
+            Sprite::from_color(color.with_alpha(0.0), Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, MOVE_TARGET_CONNECTOR_Z),
+            Visibility::Hidden,
+            MoveTargetGuideConnectorDash {
+                piece_id,
+                dash_index,
+            },
+            Name::new(format!("MoveTargetGuideConnector_{piece_id}_{dash_index}")),
+            PieceEntity,
+        ));
+    }
+}
+
+fn spawn_dashed_target_plane(parent: &mut ChildSpawnerCommands, color: Color, piece_id: u8) {
+    for (segment_index, segment) in PLANE_ICON_POINTS.windows(2).enumerate() {
+        spawn_dashed_target_plane_segment(
+            parent,
+            segment[0] * MOVE_TARGET_PLANE_SCALE,
+            segment[1] * MOVE_TARGET_PLANE_SCALE,
+            color,
+            piece_id,
+            segment_index,
+        );
+    }
+}
+
+fn spawn_dashed_target_plane_segment(
+    parent: &mut ChildSpawnerCommands,
+    start: Vec2,
+    end: Vec2,
+    color: Color,
+    piece_id: u8,
+    segment_index: usize,
+) {
+    let delta = end - start;
+    let length = delta.length();
+    if length <= 0.01 {
+        return;
+    }
+
+    let direction = delta / length;
+    let mut cursor = 0.0;
+    let mut dash_index = 0;
+    while cursor < length {
+        let dash_end = (cursor + MOVE_TARGET_DASH_LENGTH).min(length);
+        if dash_end > cursor {
+            let dash_start = start + direction * cursor;
+            let dash_stop = start + direction * dash_end;
+            spawn_move_target_line(
+                parent,
+                dash_start,
+                dash_stop,
+                MOVE_TARGET_PLANE_THICKNESS,
+                color.with_alpha(0.0),
+                0.0,
+                MoveTargetGuidePlaneSegment { piece_id },
+                format!("MoveTargetGuidePlane_{piece_id}_{segment_index}_{dash_index}"),
+            );
+        }
+        cursor += MOVE_TARGET_DASH_LENGTH + MOVE_TARGET_DASH_GAP;
+        dash_index += 1;
+    }
+}
+
+fn spawn_move_target_line<T: Component>(
+    parent: &mut ChildSpawnerCommands,
+    start: Vec2,
+    end: Vec2,
+    thickness: f32,
+    color: Color,
+    z: f32,
+    marker: T,
+    name: impl Into<String>,
+) {
+    let delta = end - start;
+    let length = delta.length();
+    if length <= 0.01 {
+        return;
+    }
+    let center = (start + end) * 0.5;
+    parent.spawn((
+        Sprite::from_color(color, Vec2::new(length, thickness)),
+        Transform {
+            translation: Vec3::new(center.x, center.y, z),
+            rotation: Quat::from_rotation_z(delta.y.atan2(delta.x)),
+            ..default()
+        },
+        marker,
+        Name::new(name.into()),
+        PieceEntity,
+    ));
 }
 
 fn facing_rotation_for_piece(
@@ -883,6 +1084,335 @@ fn stack_visual_local_translation(
         rotated.y / safe_scale.y,
         rotated.z / safe_scale.z,
     )
+}
+
+fn update_move_target_guides(
+    time: Res<Time>,
+    input_state: Res<TurnInputState>,
+    game_phase: Res<State<GamePhase>>,
+    board_layout: Res<BoardLayout>,
+    player_roster: Res<PlayerRoster>,
+    piece_query: PieceTransformQuery,
+    mut target_query: MoveTargetGuideTargetQuery,
+    mut plane_query: MoveTargetGuidePlaneQuery,
+    mut connector_query: MoveTargetGuideConnectorQuery,
+) {
+    let guide_infos = if matches!(game_phase.get(), GamePhase::AwaitPieceSelect) {
+        let visual_infos = piece_visual_infos(&piece_query, &board_layout, &player_roster);
+        let pieces =
+            move_target_guide_pieces(&piece_query, &visual_infos, &board_layout, &player_roster);
+        move_target_guide_infos(
+            input_state.pending_actions(),
+            &pieces,
+            &board_layout,
+            &player_roster,
+        )
+    } else {
+        Vec::new()
+    };
+
+    let pulse = move_target_guide_pulse(time.elapsed_secs());
+    let target_alpha = 0.38 + pulse * 0.34;
+    let connector_alpha = 0.16 + pulse * 0.16;
+    let target_scale = 0.92 + pulse * 0.10;
+
+    for (target, mut transform, mut visibility) in &mut target_query {
+        let Some(info) = guide_infos
+            .iter()
+            .find(|info| info.piece_id == target.piece_id)
+        else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        transform.translation = info.display_target.extend(MOVE_TARGET_GUIDE_Z);
+        transform.rotation =
+            rotation_for_direction(info.display_target - info.origin).unwrap_or(Quat::IDENTITY);
+        transform.scale = Vec3::splat(target_scale);
+        *visibility = Visibility::Visible;
+    }
+
+    for (segment, mut sprite) in &mut plane_query {
+        if guide_infos
+            .iter()
+            .any(|info| info.piece_id == segment.piece_id)
+        {
+            sprite.color =
+                move_target_guide_piece_color(segment.piece_id, &piece_query, &player_roster)
+                    .with_alpha(target_alpha);
+        } else {
+            sprite.color = Color::WHITE.with_alpha(0.0);
+        }
+    }
+
+    for (dash, mut sprite, mut transform, mut visibility) in &mut connector_query {
+        let Some(info) = guide_infos
+            .iter()
+            .find(|info| info.piece_id == dash.piece_id)
+        else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        let Some(connector_target) = info.connector_target else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        let Some(segment) =
+            move_target_connector_segment(info.connector_origin, connector_target, dash.dash_index)
+        else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        sprite.color = move_target_guide_piece_color(dash.piece_id, &piece_query, &player_roster)
+            .mix(&Color::WHITE, 0.35)
+            .with_alpha(connector_alpha);
+        sprite.custom_size = Some(segment.size);
+        transform.translation = segment.center.extend(MOVE_TARGET_CONNECTOR_Z);
+        transform.rotation = segment.rotation;
+        *visibility = Visibility::Visible;
+    }
+}
+
+fn move_target_guide_pieces(
+    piece_query: &PieceTransformQuery,
+    visual_infos: &[PieceVisualInfo],
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Vec<MoveTargetGuidePiece> {
+    piece_query
+        .iter()
+        .map(|(piece_id, piece_state, transform)| {
+            let origin = visual_infos
+                .iter()
+                .find(|info| info.piece_id == piece_id.0)
+                .map(|info| info.visual_translation.truncate())
+                .unwrap_or_else(|| transform.translation.truncate());
+            let connector_origin = stack_logical_center(
+                *piece_state,
+                transform.translation,
+                board_layout,
+                player_roster,
+            );
+            MoveTargetGuidePiece {
+                piece_id: piece_id.0,
+                piece_state: *piece_state,
+                origin,
+                connector_origin,
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn move_target_guide_infos(
+    actions: &[PlannedAction],
+    pieces: &[MoveTargetGuidePiece],
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Vec<MoveTargetGuideInfo> {
+    let mut infos = actions
+        .iter()
+        .filter_map(|action| {
+            let piece_id = action.piece_id();
+            let piece = pieces.iter().find(|piece| piece.piece_id == piece_id)?;
+            let target =
+                move_target_for_action(action, piece.piece_state, board_layout, player_roster)?;
+            Some(MoveTargetGuideInfo {
+                piece_id,
+                origin: piece.origin,
+                connector_origin: piece.connector_origin,
+                target,
+                display_target: target,
+                connector_target: Some(target),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut indices = (0..infos.len()).collect::<Vec<_>>();
+    indices.sort_by_key(|index| (stack_key(infos[*index].target), infos[*index].piece_id));
+
+    let mut group_start = 0;
+    while group_start < indices.len() {
+        let group_key = stack_key(infos[indices[group_start]].target);
+        let mut group_end = group_start + 1;
+        while group_end < indices.len() && stack_key(infos[indices[group_end]].target) == group_key
+        {
+            group_end += 1;
+        }
+
+        let count = group_end - group_start;
+        for (offset_index, index) in indices[group_start..group_end].iter().enumerate() {
+            infos[*index].display_target =
+                infos[*index].target + move_target_overlap_offset(offset_index, count);
+        }
+
+        group_start = group_end;
+    }
+
+    assign_move_target_connector_targets(&mut infos);
+
+    infos
+}
+
+fn assign_move_target_connector_targets(infos: &mut [MoveTargetGuideInfo]) {
+    let mut indices = (0..infos.len()).collect::<Vec<_>>();
+    indices.sort_by_key(|index| {
+        (
+            stack_key(infos[*index].connector_origin),
+            stack_key(infos[*index].target),
+            infos[*index].piece_id,
+        )
+    });
+
+    let mut group_start = 0;
+    while group_start < indices.len() {
+        let origin_key = stack_key(infos[indices[group_start]].connector_origin);
+        let target_key = stack_key(infos[indices[group_start]].target);
+        let mut group_end = group_start + 1;
+        while group_end < indices.len()
+            && stack_key(infos[indices[group_end]].connector_origin) == origin_key
+            && stack_key(infos[indices[group_end]].target) == target_key
+        {
+            group_end += 1;
+        }
+
+        let group = &indices[group_start..group_end];
+        let representative = group[0];
+        let duplicate_path = group.len() > 1;
+        for index in group {
+            infos[*index].connector_target = None;
+        }
+        infos[representative].connector_target = Some(if duplicate_path {
+            infos[representative].target
+        } else {
+            infos[representative].display_target
+        });
+
+        group_start = group_end;
+    }
+}
+
+pub(crate) fn pick_move_target_guide(
+    guides: &[MoveTargetGuideInfo],
+    cursor_world: Vec2,
+    pick_radius: f32,
+) -> Option<u8> {
+    let pick_radius_sq = pick_radius * pick_radius;
+    guides
+        .iter()
+        .filter_map(|guide| {
+            let distance_sq = guide.display_target.distance_squared(cursor_world);
+            (distance_sq <= pick_radius_sq).then_some((guide.piece_id, distance_sq))
+        })
+        .min_by(|(_, left), (_, right)| {
+            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(piece_id, _)| piece_id)
+}
+
+fn move_target_for_action(
+    action: &PlannedAction,
+    piece_state: PieceState,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> Option<Vec2> {
+    match *action {
+        PlannedAction::Launch {
+            target_progress, ..
+        } => world_position_for_piece(
+            piece_state.owner_player_id,
+            target_progress,
+            PieceStatus::AtLaunch,
+            board_layout,
+            player_roster,
+        ),
+        PlannedAction::Move {
+            target_progress, ..
+        } => {
+            let target_status = if target_progress >= FINISH_DISTANCE {
+                PieceStatus::Finished
+            } else {
+                PieceStatus::Active
+            };
+            world_position_for_piece(
+                piece_state.owner_player_id,
+                target_progress,
+                target_status,
+                board_layout,
+                player_roster,
+            )
+        }
+    }
+}
+
+fn move_target_overlap_offset(index: usize, count: usize) -> Vec2 {
+    stack_visual_offset(index, count) * 0.92
+}
+
+fn move_target_guide_pulse(elapsed_secs: f32) -> f32 {
+    (elapsed_secs * std::f32::consts::PI * 1.7).sin().abs()
+}
+
+fn move_target_guide_piece_color(
+    piece_id: u8,
+    piece_query: &PieceTransformQuery,
+    player_roster: &PlayerRoster,
+) -> Color {
+    let Some((_, piece_state, _)) = piece_query
+        .iter()
+        .find(|(candidate_piece_id, _, _)| candidate_piece_id.0 == piece_id)
+    else {
+        return Color::WHITE;
+    };
+
+    player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == piece_state.owner_player_id)
+        .map(|player| player.color)
+        .unwrap_or(Color::WHITE)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MoveTargetConnectorSegment {
+    center: Vec2,
+    size: Vec2,
+    rotation: Quat,
+}
+
+fn move_target_connector_segment(
+    origin: Vec2,
+    target: Vec2,
+    dash_index: usize,
+) -> Option<MoveTargetConnectorSegment> {
+    let delta = target - origin;
+    let length = delta.length();
+    if length < 12.0 {
+        return None;
+    }
+
+    let dash_count = move_target_connector_dash_count(length);
+    if dash_index >= dash_count {
+        return None;
+    }
+
+    let direction = delta / length;
+    let step = length / dash_count as f32;
+    let dash_length = (step * 0.46).clamp(5.0, 16.0);
+    let center_distance = step * (dash_index as f32 + 0.5);
+    let center = origin + direction * center_distance;
+
+    Some(MoveTargetConnectorSegment {
+        center,
+        size: Vec2::new(dash_length, MOVE_TARGET_CONNECTOR_THICKNESS),
+        rotation: Quat::from_rotation_z(delta.y.atan2(delta.x)),
+    })
+}
+
+fn move_target_connector_dash_count(length: f32) -> usize {
+    ((length / 28.0).ceil() as usize).clamp(2, MOVE_TARGET_CONNECTOR_DASH_COUNT)
 }
 
 fn update_piece_shield_badges(data: ShieldBadgeData, mut nodes: ShieldBadgeNodes) {
@@ -1392,6 +1922,21 @@ mod tests {
     }
 
     #[test]
+    fn move_target_guide_system_initializes_without_query_conflicts() {
+        let (board_layout, player_roster) = test_roster();
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin)
+            .add_plugins(bevy::time::TimePlugin)
+            .init_state::<GamePhase>()
+            .insert_resource(board_layout)
+            .insert_resource(player_roster)
+            .insert_resource(TurnInputState::default())
+            .add_systems(Update, update_move_target_guides);
+
+        app.update();
+    }
+
+    #[test]
     fn action_selection_marks_candidate_selectable_and_own_inactive_piece_disabled() {
         let selectable = piece_interaction_visual_state(
             1,
@@ -1486,6 +2031,234 @@ mod tests {
         );
     }
 
+    fn guide_piece(
+        piece_id: u8,
+        owner_player_id: u8,
+        status: PieceStatus,
+        progress: u8,
+        origin: Vec2,
+    ) -> MoveTargetGuidePiece {
+        guide_piece_with_connector_origin(
+            piece_id,
+            owner_player_id,
+            status,
+            progress,
+            origin,
+            origin,
+        )
+    }
+
+    fn guide_piece_with_connector_origin(
+        piece_id: u8,
+        owner_player_id: u8,
+        status: PieceStatus,
+        progress: u8,
+        origin: Vec2,
+        connector_origin: Vec2,
+    ) -> MoveTargetGuidePiece {
+        MoveTargetGuidePiece {
+            piece_id,
+            piece_state: piece_state(owner_player_id, status, progress),
+            origin,
+            connector_origin,
+        }
+    }
+
+    #[test]
+    fn move_target_guides_map_launch_move_and_goal_targets() {
+        let (board_layout, player_roster) = test_roster();
+        let pieces = vec![
+            guide_piece(1, 1, PieceStatus::InHangar, 0, Vec2::new(-10.0, 0.0)),
+            guide_piece(2, 1, PieceStatus::Active, 0, Vec2::new(0.0, 0.0)),
+            guide_piece(
+                3,
+                1,
+                PieceStatus::Active,
+                FINISH_DISTANCE - 1,
+                Vec2::new(10.0, 0.0),
+            ),
+        ];
+        let actions = vec![
+            PlannedAction::Launch {
+                piece_id: 1,
+                target_progress: 0,
+            },
+            PlannedAction::Move {
+                piece_id: 2,
+                target_progress: 3,
+            },
+            PlannedAction::Move {
+                piece_id: 3,
+                target_progress: FINISH_DISTANCE,
+            },
+        ];
+
+        let infos = move_target_guide_infos(&actions, &pieces, &board_layout, &player_roster);
+
+        assert_eq!(
+            infos
+                .iter()
+                .find(|info| info.piece_id == 1)
+                .map(|info| info.target),
+            world_position_for_piece(1, 0, PieceStatus::AtLaunch, &board_layout, &player_roster)
+        );
+        assert_eq!(
+            infos
+                .iter()
+                .find(|info| info.piece_id == 2)
+                .map(|info| info.target),
+            world_position_for_piece(1, 3, PieceStatus::Active, &board_layout, &player_roster)
+        );
+        assert_eq!(
+            infos
+                .iter()
+                .find(|info| info.piece_id == 3)
+                .map(|info| info.target),
+            world_position_for_piece(
+                1,
+                FINISH_DISTANCE,
+                PieceStatus::Finished,
+                &board_layout,
+                &player_roster,
+            )
+        );
+    }
+
+    #[test]
+    fn overlapping_move_target_guides_are_visually_offset() {
+        let (board_layout, player_roster) = test_roster();
+        let pieces = vec![
+            guide_piece(1, 1, PieceStatus::Active, 0, Vec2::new(-8.0, 0.0)),
+            guide_piece(2, 1, PieceStatus::Active, 1, Vec2::new(8.0, 0.0)),
+        ];
+        let actions = vec![
+            PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 3,
+            },
+            PlannedAction::Move {
+                piece_id: 2,
+                target_progress: 3,
+            },
+        ];
+
+        let infos = move_target_guide_infos(&actions, &pieces, &board_layout, &player_roster);
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].target, infos[1].target);
+        assert_ne!(infos[0].display_target, infos[1].display_target);
+    }
+
+    #[test]
+    fn same_origin_and_target_guides_share_one_connector() {
+        let (board_layout, player_roster) = test_roster();
+        let shared_origin = Vec2::new(12.0, -4.0);
+        let pieces = vec![
+            guide_piece_with_connector_origin(
+                1,
+                1,
+                PieceStatus::Active,
+                0,
+                shared_origin + Vec2::new(-6.5, 0.0),
+                shared_origin,
+            ),
+            guide_piece_with_connector_origin(
+                2,
+                1,
+                PieceStatus::Active,
+                0,
+                shared_origin + Vec2::new(6.5, 0.0),
+                shared_origin,
+            ),
+        ];
+        let actions = vec![
+            PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 3,
+            },
+            PlannedAction::Move {
+                piece_id: 2,
+                target_progress: 3,
+            },
+        ];
+
+        let infos = move_target_guide_infos(&actions, &pieces, &board_layout, &player_roster);
+        let connector_targets = infos
+            .iter()
+            .filter_map(|info| info.connector_target)
+            .collect::<Vec<_>>();
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(connector_targets.len(), 1);
+        assert_eq!(connector_targets[0], infos[0].target);
+        assert_ne!(infos[0].display_target, infos[1].display_target);
+    }
+
+    #[test]
+    fn move_target_guide_pick_hits_nearest_visible_target() {
+        let guides = vec![
+            MoveTargetGuideInfo {
+                piece_id: 1,
+                origin: Vec2::ZERO,
+                connector_origin: Vec2::ZERO,
+                target: Vec2::new(40.0, 0.0),
+                display_target: Vec2::new(40.0, 0.0),
+                connector_target: Some(Vec2::new(40.0, 0.0)),
+            },
+            MoveTargetGuideInfo {
+                piece_id: 2,
+                origin: Vec2::ZERO,
+                connector_origin: Vec2::ZERO,
+                target: Vec2::new(48.0, 0.0),
+                display_target: Vec2::new(48.0, 0.0),
+                connector_target: Some(Vec2::new(48.0, 0.0)),
+            },
+        ];
+
+        assert_eq!(
+            pick_move_target_guide(&guides, Vec2::new(46.0, 0.0), 12.0),
+            Some(2)
+        );
+        assert_eq!(
+            pick_move_target_guide(&guides, Vec2::new(80.0, 0.0), 8.0),
+            None
+        );
+        assert_eq!(
+            pick_move_target_guide(&[], Vec2::new(40.0, 0.0), 12.0),
+            None
+        );
+    }
+
+    #[test]
+    fn move_target_guides_follow_refreshed_dash_actions() {
+        let (board_layout, player_roster) = test_roster();
+        let pieces = vec![guide_piece(
+            1,
+            1,
+            PieceStatus::Active,
+            0,
+            Vec2::new(-8.0, 0.0),
+        )];
+        let base_actions = vec![PlannedAction::Move {
+            piece_id: 1,
+            target_progress: 2,
+        }];
+        let dash_actions = vec![PlannedAction::Move {
+            piece_id: 1,
+            target_progress: 5,
+        }];
+
+        let base = move_target_guide_infos(&base_actions, &pieces, &board_layout, &player_roster);
+        let dash = move_target_guide_infos(&dash_actions, &pieces, &board_layout, &player_roster);
+
+        assert_ne!(base[0].target, dash[0].target);
+        assert_eq!(
+            dash[0].target,
+            world_position_for_piece(1, 5, PieceStatus::Active, &board_layout, &player_roster)
+                .expect("dash target exists")
+        );
+    }
+
     fn assert_vec2_close(actual: Vec2, expected: Vec2) {
         assert!(
             (actual - expected).length() < 0.001,
@@ -1505,8 +2278,7 @@ mod tests {
         board_layout: &BoardLayout,
         player_roster: &PlayerRoster,
     ) -> Vec<PieceVisualInfo> {
-        let mut system_state: SystemState<Query<(&PieceId, &PieceState, &Transform)>> =
-            SystemState::new(world);
+        let mut system_state: SystemState<PieceTransformQuery> = SystemState::new(world);
         let query = system_state.get_mut(world).unwrap();
         piece_visual_infos(&query, board_layout, player_roster)
     }

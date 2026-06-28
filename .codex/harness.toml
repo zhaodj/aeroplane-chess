@@ -1,0 +1,64 @@
+version = 1
+project = "aeroplane-chess"
+description = "Rust/Bevy aeroplane chess game with native, WebAssembly, and Android build targets."
+
+[context]
+primary_language = "rust"
+edition = "2024"
+engine = "bevy"
+engine_version = "0.19.0"
+source_roots = ["src", "assets", "web", "platforms/android", "docs", "scripts"]
+generated_roots = ["target", "dist", "platforms/android/app/build", "platforms/android/app/src/main/jniLibs"]
+
+[defaults]
+pre_edit = "git status --short"
+quick_check = "./scripts/harness-check.sh quick"
+submit_check = "./scripts/harness-check.sh standard"
+
+[[commands]]
+name = "quick"
+description = "Format check and Rust lib tests for small changes."
+run = "./scripts/harness-check.sh quick"
+
+[[commands]]
+name = "standard"
+description = "Default pre-submit gate: fmt, native check, clippy, and lib tests."
+run = "./scripts/harness-check.sh standard"
+
+[[commands]]
+name = "wasm"
+description = "WebAssembly target check and development bundle."
+run = "./scripts/harness-check.sh wasm"
+requires = ["rustup", "wasm-bindgen"]
+
+[[commands]]
+name = "android"
+description = "Android debug APK build through cargo-ndk and Gradle."
+run = "./scripts/harness-check.sh android"
+requires = ["cargo-ndk", "Android SDK", "Android NDK", "Gradle or Gradle wrapper"]
+
+[[commands]]
+name = "all"
+description = "Full local gate for release-oriented changes."
+run = "./scripts/harness-check.sh all"
+
+[[rules]]
+scope = "domain"
+paths = ["src/domain/**"]
+expect = "Keep rule logic Bevy-render independent and covered by focused tests."
+
+[[rules]]
+scope = "gameplay"
+paths = ["src/gameplay/**"]
+expect = "Preserve deterministic turn flow and add tests around new resolution branches."
+
+[[rules]]
+scope = "presentation"
+paths = ["src/plugins/**", "src/ui/**", "src/platform/**"]
+expect = "Keep ECS/UI changes consistent with existing plugin boundaries and run visual/platform checks when behavior is user-visible."
+
+[[rules]]
+scope = "platform"
+paths = ["scripts/build-wasm.sh", "scripts/build-android.sh", "web/**", "platforms/android/**"]
+expect = "Use existing build scripts as the source of truth and verify the affected target."
+

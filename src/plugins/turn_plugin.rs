@@ -28,7 +28,9 @@ use crate::plugins::effects_plugin::{
     EffectRevealDelays, PieceMotionEffects, TARGETED_MISSILE_REVEAL_DURATION, VisualEffectQueue,
 };
 use crate::plugins::menu_plugin::SoundSettingsOverlayState;
-use crate::plugins::piece_plugin::{HangarSlot, PieceId};
+use crate::plugins::piece_plugin::{
+    HangarSlot, MoveTargetGuidePiece, PieceId, move_target_guide_infos, pick_move_target_guide,
+};
 use crate::plugins::skill_plugin::SkillUiAction;
 use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
 use crate::states::{AppState, GamePhase};
@@ -997,6 +999,39 @@ fn handle_human_action_click(
     );
 
     let pick_radius = device_profile.piece_pick_radius_world();
+    let guide_pieces = params
+        .piece_query
+        .iter()
+        .map(
+            |(piece_id, _, piece_state, transform)| MoveTargetGuidePiece {
+                piece_id: piece_id.0,
+                piece_state: *piece_state,
+                origin: transform.translation.truncate(),
+                connector_origin: transform.translation.truncate(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let target_guides = move_target_guide_infos(
+        params.input_state.pending_actions(),
+        &guide_pieces,
+        &params.board_layout,
+        &params.player_roster,
+    );
+    if let Some(selected_piece_id) =
+        pick_move_target_guide(&target_guides, cursor_world, pick_radius)
+    {
+        let Some(action) = find_pending_action_by_piece_id(&params.input_state, selected_piece_id)
+        else {
+            return;
+        };
+
+        let roll_value = params.turn_state.last_roll.unwrap_or_default();
+        let current_player = params.turn_state.current_player;
+        execute_action_from_params(action, roll_value, &mut params);
+        clear_dash_arm(&mut params.skill_roster, current_player);
+        return;
+    }
+
     let mut selected_piece_id = None;
     let mut best_distance_sq = f32::MAX;
     for (piece_id, _, _, transform) in &mut params.piece_query {

@@ -136,6 +136,10 @@ impl TurnInputState {
     pub fn candidate_piece_ids(&self) -> &[u8] {
         &self.candidate_piece_ids
     }
+
+    pub fn pending_actions(&self) -> &[PlannedAction] {
+        &self.pending_actions
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2228,6 +2232,32 @@ mod tests {
                 PlayerControl::Ai,
             ],
         }
+    }
+
+    #[test]
+    fn turn_input_state_exposes_and_clears_pending_actions() {
+        let mut input_state = TurnInputState {
+            pending_actions: vec![PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 4,
+            }],
+            candidate_piece_ids: vec![1],
+            prompt: Some("choose".to_string()),
+        };
+
+        assert_eq!(
+            input_state.pending_actions(),
+            &[PlannedAction::Move {
+                piece_id: 1,
+                target_progress: 4
+            }]
+        );
+
+        clear_pending_input(&mut input_state);
+
+        assert!(input_state.pending_actions().is_empty());
+        assert!(input_state.candidate_piece_ids().is_empty());
+        assert_eq!(input_state.prompt, None);
     }
 
     fn match_config(mode: GameMode) -> MatchConfig {
