@@ -104,11 +104,10 @@ const CENTER_DICE_PROMPT_ALPHA: f32 = 1.0;
 const CENTER_DICE_PROMPT_BASE_ROTATION: f32 = -0.12;
 const CENTER_DICE_PROMPT_BOB: f32 = 4.0;
 const CENTER_DICE_PROMPT_SCALE_PULSE: f32 = 0.035;
-const DICE_ROLL_ANIMATION_DURATION: f32 = 3.0;
-const DICE_ROLL_SETTLE_START: f32 = 2.25;
+const DICE_ROLL_ANIMATION_DURATION: f32 = 1.8;
+const DICE_ROLL_SETTLE_START: f32 = 1.35;
 const DICE_ROLL_FACE_INTERVAL: f32 = 0.045;
 const DICE_ROLL_FRAME_COUNT: usize = 16;
-const DICE_ROLL_MAX_FRAME_STEP: f32 = 1.0 / 30.0;
 const DICE_ROLL_MAX_SHAKE: f32 = 7.0;
 const DICE_ROLL_MAX_HOP: f32 = 14.0;
 const DICE_ROLL_MAX_ROTATION: f32 = 0.36;
@@ -972,7 +971,7 @@ fn dice_roll_animation_frame(elapsed: f32) -> u32 {
 }
 
 fn dice_roll_animation_delta(delta_secs: f32) -> f32 {
-    delta_secs.clamp(0.0, DICE_ROLL_MAX_FRAME_STEP)
+    delta_secs.max(0.0)
 }
 
 fn animated_die_face(key: DiceRollVisualKey, frame: u32, die_index: u8) -> u8 {
@@ -2961,16 +2960,17 @@ mod tests {
 
     #[test]
     fn dice_roll_animation_timing_is_readable() {
-        assert_eq!(DICE_ROLL_ANIMATION_DURATION, 3.0);
-        assert_eq!(DICE_ROLL_SETTLE_START, 2.25);
-        assert_eq!(DICE_ROLL_ANIMATION_DURATION - DICE_ROLL_SETTLE_START, 0.75);
+        assert!(DICE_ROLL_ANIMATION_DURATION <= 2.0);
+        assert_eq!(DICE_ROLL_ANIMATION_DURATION, 1.8);
+        assert_eq!(DICE_ROLL_SETTLE_START, 1.35);
+        assert!((DICE_ROLL_ANIMATION_DURATION - DICE_ROLL_SETTLE_START - 0.45).abs() < 0.001);
     }
 
     #[test]
-    fn dice_roll_animation_delta_is_clamped_for_slow_frames() {
+    fn dice_roll_animation_delta_uses_real_elapsed_time() {
         assert_eq!(dice_roll_animation_delta(-1.0), 0.0);
         assert_eq!(dice_roll_animation_delta(0.016), 0.016);
-        assert_eq!(dice_roll_animation_delta(3.0), DICE_ROLL_MAX_FRAME_STEP);
+        assert_eq!(dice_roll_animation_delta(3.0), 3.0);
     }
 
     #[test]
