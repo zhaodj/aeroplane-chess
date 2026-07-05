@@ -44,6 +44,7 @@ pub struct TurnState {
     pub player_last_rolls: [Option<u8>; 4],
     pub player_last_roll_faces: [Option<[u8; 2]>; 4],
     pub pending_roll_display: Option<PendingRollDisplay>,
+    pub pending_double_dice_choice: Option<PendingDoubleDiceChoice>,
     pub last_piece_effect: Option<PieceEffectNotice>,
     pub last_action: Option<String>,
     pub last_action_player_id: Option<u8>,
@@ -56,6 +57,13 @@ pub struct PendingRollDisplay {
     pub roll_serial: u32,
     pub player_id: u8,
     pub roll: u8,
+    pub faces: [u8; 2],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingDoubleDiceChoice {
+    pub roll_serial: u32,
+    pub player_id: u8,
     pub faces: [u8; 2],
 }
 
@@ -78,6 +86,7 @@ impl TurnState {
             player_last_rolls: [None; 4],
             player_last_roll_faces: [None; 4],
             pending_roll_display: None,
+            pending_double_dice_choice: None,
             last_piece_effect: None,
             last_action: None,
             last_action_player_id: None,
@@ -305,6 +314,59 @@ pub fn set_roll(turn_state: &mut TurnState, roll_value: u8) {
 pub fn set_roll_with_faces(turn_state: &mut TurnState, roll_value: u8, roll_faces: [u8; 2]) {
     let roll_faces = normalized_roll_faces(roll_value, roll_faces);
     turn_state.roll_serial = turn_state.roll_serial.wrapping_add(1);
+    apply_roll_value(turn_state, roll_value, roll_faces);
+    turn_state.pending_double_dice_choice = None;
+    turn_state.pending_roll_display = Some(PendingRollDisplay {
+        roll_serial: turn_state.roll_serial,
+        player_id: turn_state.current_player,
+        roll: roll_value,
+        faces: roll_faces,
+    });
+}
+
+pub fn set_pending_double_dice_choice(turn_state: &mut TurnState, roll_faces: [u8; 2]) {
+    let roll_faces = normalized_roll_faces(roll_faces[0].max(roll_faces[1]), roll_faces);
+    turn_state.roll_serial = turn_state.roll_serial.wrapping_add(1);
+    turn_state.current_roll = None;
+    turn_state.current_roll_faces = None;
+    turn_state.last_roll = None;
+    turn_state.last_roll_faces = None;
+    turn_state.last_roll_player = None;
+    turn_state.hold_last_roll_display = false;
+    turn_state.roll_display_animation_started = false;
+    turn_state.last_piece_effect = None;
+    turn_state.pending_double_dice_choice = Some(PendingDoubleDiceChoice {
+        roll_serial: turn_state.roll_serial,
+        player_id: turn_state.current_player,
+        faces: roll_faces,
+    });
+    turn_state.pending_roll_display = Some(PendingRollDisplay {
+        roll_serial: turn_state.roll_serial,
+        player_id: turn_state.current_player,
+        roll: 0,
+        faces: roll_faces,
+    });
+}
+
+pub fn choose_pending_double_dice(turn_state: &mut TurnState, die_index: usize) -> Option<u8> {
+    let choice = turn_state.pending_double_dice_choice?;
+    if choice.player_id != turn_state.current_player || die_index >= choice.faces.len() {
+        return None;
+    }
+
+    let roll_value = choice.faces[die_index];
+    if !(1..=6).contains(&roll_value) {
+        return None;
+    }
+
+    turn_state.pending_double_dice_choice = None;
+    turn_state.pending_roll_display = None;
+    apply_roll_value(turn_state, roll_value, choice.faces);
+    update_player_roll_display_cache(turn_state, choice.player_id, roll_value, choice.faces);
+    Some(roll_value)
+}
+
+fn apply_roll_value(turn_state: &mut TurnState, roll_value: u8, roll_faces: [u8; 2]) {
     turn_state.current_roll = Some(roll_value);
     turn_state.current_roll_faces = Some(roll_faces);
     turn_state.last_roll = Some(roll_value);
@@ -313,21 +375,19 @@ pub fn set_roll_with_faces(turn_state: &mut TurnState, roll_value: u8, roll_face
     turn_state.hold_last_roll_display = false;
     turn_state.roll_display_animation_started = false;
     turn_state.last_piece_effect = None;
-    turn_state.pending_roll_display = Some(PendingRollDisplay {
-        roll_serial: turn_state.roll_serial,
-        player_id: turn_state.current_player,
-        roll: roll_value,
-        faces: roll_faces,
-    });
+    apply_roll_chain_state(turn_state, roll_value);
+}
 
-    if roll_value == 6 {
-        if turn_state.consecutive_sixes < MAX_CHAIN_EXTRA_ROLLS {
-            turn_state.extra_rolls_remaining = turn_state.extra_rolls_remaining.saturating_add(1);
-        }
-        turn_state.consecutive_sixes = turn_state.consecutive_sixes.saturating_add(1);
-    } else {
+fn apply_roll_chain_state(turn_state: &mut TurnState, roll_value: u8) {
+    if roll_value != 6 {
         turn_state.consecutive_sixes = 0;
+        return;
     }
+
+    if turn_state.consecutive_sixes < MAX_CHAIN_EXTRA_ROLLS {
+        turn_state.extra_rolls_remaining = turn_state.extra_rolls_remaining.saturating_add(1);
+    }
+    turn_state.consecutive_sixes = turn_state.consecutive_sixes.saturating_add(1);
 }
 
 pub fn commit_pending_roll_display(turn_state: &mut TurnState, roll_serial: u32) -> bool {
@@ -338,20 +398,36 @@ pub fn commit_pending_roll_display(turn_state: &mut TurnState, roll_serial: u32)
         return false;
     }
 
-    if let Some(player_roll) = turn_state
-        .player_last_rolls
-        .get_mut(pending.player_id.saturating_sub(1) as usize)
-    {
-        *player_roll = Some(pending.roll);
-    }
-    if let Some(player_roll_faces) = turn_state
-        .player_last_roll_faces
-        .get_mut(pending.player_id.saturating_sub(1) as usize)
-    {
-        *player_roll_faces = Some(pending.faces);
+    if pending.roll != 0 {
+        update_player_roll_display_cache(
+            turn_state,
+            pending.player_id,
+            pending.roll,
+            pending.faces,
+        );
     }
     turn_state.pending_roll_display = None;
     true
+}
+
+fn update_player_roll_display_cache(
+    turn_state: &mut TurnState,
+    player_id: u8,
+    roll: u8,
+    faces: [u8; 2],
+) {
+    if let Some(player_roll) = turn_state
+        .player_last_rolls
+        .get_mut(player_id.saturating_sub(1) as usize)
+    {
+        *player_roll = Some(roll);
+    }
+    if let Some(player_roll_faces) = turn_state
+        .player_last_roll_faces
+        .get_mut(player_id.saturating_sub(1) as usize)
+    {
+        *player_roll_faces = Some(faces);
+    }
 }
 
 fn normalized_roll_faces(roll_value: u8, roll_faces: [u8; 2]) -> [u8; 2] {
@@ -2255,6 +2331,7 @@ pub fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
 
     turn_state.current_roll = None;
     turn_state.current_roll_faces = None;
+    turn_state.pending_double_dice_choice = None;
 }
 
 /// 跳过当前玩家的回合：用于 2v2 中个人棋子已全部完成但队友尚未完成的等待玩家。
@@ -2263,6 +2340,7 @@ pub fn skip_current_player_turn(turn_state: &mut TurnState, player_count: u8) {
     turn_state.consecutive_sixes = 0;
     turn_state.current_roll = None;
     turn_state.current_roll_faces = None;
+    turn_state.pending_double_dice_choice = None;
     turn_state.hold_last_roll_display = false;
     turn_state.roll_display_animation_started = false;
     advance_to_next_player(turn_state, player_count);
@@ -2384,6 +2462,11 @@ mod tests {
             player_last_rolls: [None, None, None, Some(6)],
             player_last_roll_faces: [None, None, None, Some([6, 0])],
             pending_roll_display: None,
+            pending_double_dice_choice: Some(PendingDoubleDiceChoice {
+                roll_serial: 3,
+                player_id: 4,
+                faces: [2, 6],
+            }),
             last_piece_effect: None,
             last_action: None,
             last_action_player_id: None,
@@ -2398,6 +2481,7 @@ mod tests {
         assert_eq!(turn_state.consecutive_sixes, 0);
         assert_eq!(turn_state.current_roll, None);
         assert_eq!(turn_state.current_roll_faces, None);
+        assert_eq!(turn_state.pending_double_dice_choice, None);
         assert!(!turn_state.hold_last_roll_display);
         assert!(!turn_state.roll_display_animation_started);
         assert_eq!(turn_state.turn_index, 9);
@@ -2932,6 +3016,7 @@ mod tests {
             player_last_rolls: [Some(6), None, None, None],
             player_last_roll_faces: [Some([6, 0]), None, None, None],
             pending_roll_display: None,
+            pending_double_dice_choice: None,
             last_piece_effect: None,
             last_action: None,
             last_action_player_id: None,
@@ -2990,6 +3075,53 @@ mod tests {
         set_roll(&mut turn_state, 6);
         assert_eq!(turn_state.extra_rolls_remaining, 3);
         assert_eq!(turn_state.consecutive_sixes, 4);
+    }
+
+    #[test]
+    fn double_dice_choice_applies_selected_roll_only_after_choice() {
+        let mut turn_state = TurnState::opening_turn();
+        turn_state.last_roll = Some(4);
+        turn_state.last_roll_faces = Some([4, 0]);
+        turn_state.last_roll_player = Some(2);
+
+        set_pending_double_dice_choice(&mut turn_state, [2, 6]);
+
+        assert_eq!(turn_state.current_roll, None);
+        assert_eq!(turn_state.last_roll, None);
+        assert_eq!(turn_state.last_roll_faces, None);
+        assert_eq!(turn_state.last_roll_player, None);
+        assert_eq!(turn_state.extra_rolls_remaining, 0);
+        assert_eq!(turn_state.consecutive_sixes, 0);
+        assert_eq!(
+            turn_state.pending_double_dice_choice,
+            Some(PendingDoubleDiceChoice {
+                roll_serial: 1,
+                player_id: 1,
+                faces: [2, 6],
+            })
+        );
+        assert_eq!(
+            turn_state.pending_roll_display,
+            Some(PendingRollDisplay {
+                roll_serial: 1,
+                player_id: 1,
+                roll: 0,
+                faces: [2, 6],
+            })
+        );
+        assert!(commit_pending_roll_display(&mut turn_state, 1));
+        assert_eq!(turn_state.player_last_roll(1), None);
+
+        assert_eq!(choose_pending_double_dice(&mut turn_state, 1), Some(6));
+
+        assert_eq!(turn_state.current_roll, Some(6));
+        assert_eq!(turn_state.last_roll, Some(6));
+        assert_eq!(turn_state.current_roll_faces, Some([2, 6]));
+        assert_eq!(turn_state.player_last_roll(1), Some(6));
+        assert_eq!(turn_state.player_last_roll_faces(1), Some([2, 6]));
+        assert_eq!(turn_state.extra_rolls_remaining, 1);
+        assert_eq!(turn_state.consecutive_sixes, 1);
+        assert_eq!(turn_state.pending_double_dice_choice, None);
     }
 
     #[test]

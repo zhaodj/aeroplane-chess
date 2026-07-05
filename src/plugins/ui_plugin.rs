@@ -2171,7 +2171,7 @@ fn skill_tip_body(action: SkillUiAction) -> &'static str {
         SkillUiAction::Shield => {
             "Give one active friendly aircraft a shield, up to 2 layers. Shields block hits."
         }
-        SkillUiAction::DoubleDice => "Arm the next roll with two dice; the higher die is used.",
+        SkillUiAction::DoubleDice => "Arm the next roll with two dice, then choose one result.",
     }
 }
 

@@ -772,6 +772,10 @@ fn update_center_dice_roll_displays(
     )>,
 ) {
     let Some(animation) = dice_visual_state.animation else {
+        if let Some(choice) = turn_state.pending_double_dice_choice {
+            render_center_dice_faces(choice.faces, &dice_sprite_assets, &mut dice_query);
+            return;
+        }
         if center_dice_prompt_visible(&turn_state, game_phase.get(), &player_roster, &match_result)
         {
             render_center_dice_prompt(time.elapsed_secs(), &dice_sprite_assets, &mut dice_query);
@@ -887,28 +891,77 @@ fn render_center_dice_prompt(
     }
 }
 
+fn render_center_dice_faces(
+    faces: [u8; 2],
+    dice_sprite_assets: &DiceSpriteAssets,
+    dice_query: &mut Query<(
+        &CenterDiceSprite,
+        &mut Sprite,
+        &mut Visibility,
+        &mut Transform,
+    )>,
+) {
+    for (display, mut sprite, mut visibility, mut transform) in dice_query.iter_mut() {
+        let Some(roll) = dice_face_for_index(faces, display.die_index) else {
+            *visibility = Visibility::Hidden;
+            transform.rotation = Quat::IDENTITY;
+            transform.scale = Vec3::ONE;
+            continue;
+        };
+
+        sprite.custom_size = Some(Vec2::splat(CENTER_DICE_SPRITE_SIZE));
+        sprite.color = Color::WHITE;
+        sprite.image = dice_sprite_assets.face_handle(roll);
+        *visibility = Visibility::Visible;
+        let center = center_dice_center_for_index(display.base_center, faces, display.die_index);
+        transform.translation.x = center.x;
+        transform.translation.y = center.y;
+        transform.rotation = Quat::IDENTITY;
+        transform.scale = Vec3::ONE;
+    }
+}
+
 fn visible_dice_roll_key(turn_state: &TurnState) -> Option<DiceRollVisualKey> {
     if turn_state.roll_serial == 0 {
         return None;
     }
 
+    if let Some(choice) = turn_state.pending_double_dice_choice {
+        return Some(DiceRollVisualKey {
+            roll_serial: choice.roll_serial,
+            player_id: choice.player_id,
+            roll: visual_roll_for_faces(choice.faces),
+            faces: choice.faces,
+        });
+    }
+
     if let Some(roll) = turn_state.current_roll {
+        let faces = display_faces_for_roll(roll, turn_state.current_roll_faces);
         return Some(DiceRollVisualKey {
             roll_serial: turn_state.roll_serial,
             player_id: turn_state.current_player,
-            roll,
-            faces: display_faces_for_roll(roll, turn_state.current_roll_faces),
+            roll: visual_roll_for_faces(faces),
+            faces,
         });
     }
 
     let player_id = turn_state.last_roll_player?;
     let roll = turn_state.last_roll?;
+    let faces = display_faces_for_roll(roll, turn_state.last_roll_faces);
     Some(DiceRollVisualKey {
         roll_serial: turn_state.roll_serial,
         player_id,
-        roll,
-        faces: display_faces_for_roll(roll, turn_state.last_roll_faces),
+        roll: visual_roll_for_faces(faces),
+        faces,
     })
+}
+
+fn visual_roll_for_faces(faces: [u8; 2]) -> u8 {
+    if dice_face_for_index(faces, 1).is_some() {
+        faces[0].max(faces[1])
+    } else {
+        faces[0]
+    }
 }
 
 fn dice_roll_animation_faces(animation: DiceRollVisualAnimation) -> [u8; 2] {
@@ -1181,6 +1234,14 @@ fn center_dice_turn_halo_state<'a>(
             .iter()
             .find(|player| player.state.player_id == animation.key.player_id)
             .map(|player| (player, dice_roll_animation_faces(animation)));
+    }
+
+    if let Some(choice) = turn_state.pending_double_dice_choice {
+        return player_roster
+            .players
+            .iter()
+            .find(|player| player.state.player_id == choice.player_id)
+            .map(|player| (player, choice.faces));
     }
 
     center_dice_prompt_visible(turn_state, game_phase, player_roster, match_result)
@@ -3083,6 +3144,23 @@ mod tests {
                 player_id: 1,
                 roll: 5,
                 faces: [2, 5],
+            })
+        );
+    }
+
+    #[test]
+    fn dice_roll_visual_key_tracks_pending_double_dice_choice() {
+        let mut turn_state = TurnState::opening_turn();
+        crate::gameplay::turn_flow::set_pending_double_dice_choice(&mut turn_state, [6, 2]);
+
+        assert_eq!(turn_state.current_roll, None);
+        assert_eq!(
+            visible_dice_roll_key(&turn_state),
+            Some(DiceRollVisualKey {
+                roll_serial: 1,
+                player_id: 1,
+                roll: 6,
+                faces: [6, 2],
             })
         );
     }

@@ -38,7 +38,7 @@ pub struct PlayerSkillState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// 掷骰解析结果（是否消耗了 DoubleDice）。
+/// 掷骰解析结果；DoubleDice 会保留两个骰面，`value` 是自动路径的默认选择。
 pub struct RollResolution {
     pub value: u8,
     pub dice: [u8; 2],
@@ -394,7 +394,7 @@ pub fn arm_double_dice(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     true
 }
 
-/// 根据当前技能状态解析最终掷骰值（包含 DoubleDice 逻辑）。
+/// 根据当前技能状态解析掷骰结果；DoubleDice 默认值供 AI/自动路径使用。
 pub fn resolve_roll_value(skill_roster: &mut SkillRoster, player_id: u8) -> RollResolution {
     let Some(player_state) = skill_roster
         .players
@@ -417,7 +417,7 @@ pub fn resolve_roll_value(skill_roster: &mut SkillRoster, player_id: u8) -> Roll
     resolve_roll_from_values(random_range(1..=6), 0, false)
 }
 
-/// 在给定骰面下计算最终点数（测试与回放友好）。
+/// 在给定骰面下计算默认点数（测试与回放友好）。
 pub fn resolve_roll_from_values(first: u8, second: u8, use_double_dice: bool) -> RollResolution {
     if use_double_dice {
         RollResolution {
@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_roll_from_values_uses_higher_die_for_double_dice() {
+    fn resolve_roll_from_values_defaults_to_higher_die_for_double_dice() {
         assert_eq!(
             resolve_roll_from_values(2, 5, true),
             RollResolution {

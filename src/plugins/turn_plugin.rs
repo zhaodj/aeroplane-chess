@@ -19,10 +19,11 @@ use crate::gameplay::skill_flow::{
 };
 use crate::gameplay::turn_flow::{
     ActionResources, ActionState, PlannedAction, TurnInputState, TurnState, choose_action,
-    clear_pending_input, collect_actions, current_player_control, execute_action,
-    find_pending_action_by_piece_id, finish_turn_without_action, get_pending_action,
-    player_has_finished_all_pieces, pressed_selection_key, record_turn_action, roll_die,
-    set_pending_actions, set_roll_with_faces, skip_current_player_turn,
+    choose_pending_double_dice, clear_pending_input, collect_actions, current_player_control,
+    execute_action, find_pending_action_by_piece_id, finish_turn_without_action,
+    get_pending_action, player_has_finished_all_pieces, pressed_selection_key, record_turn_action,
+    roll_die, set_pending_actions, set_pending_double_dice_choice, set_roll_with_faces,
+    skip_current_player_turn,
 };
 use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::boot_plugin::AutoplayMatch;
@@ -65,13 +66,20 @@ struct TurnAutomation {
     timer: Timer,
 }
 
-fn double_dice_resolution_note(player_id: u8, dice: [u8; 2]) -> String {
+const DOUBLE_DICE_CHOICE_OFFSET_X: f32 = 38.0;
+const DOUBLE_DICE_CHOICE_MIN_PICK_RADIUS: f32 = 40.0;
+
+fn double_dice_resolution_note(player_id: u8, dice: [u8; 2], chosen_roll: u8) -> String {
     format!(
-        "P{} resolved DoubleDice: rolled {}/{} -> {}",
-        player_id,
-        dice[0],
-        dice[1],
-        dice[0].max(dice[1])
+        "P{} resolved DoubleDice: rolled {}/{} and chose {}",
+        player_id, dice[0], dice[1], chosen_roll
+    )
+}
+
+fn double_dice_choice_prompt(faces: [u8; 2]) -> String {
+    format!(
+        "DoubleDice rolled {}/{}. Press 1/2 or tap a die.",
+        faces[0], faces[1]
     )
 }
 
@@ -296,13 +304,18 @@ fn drive_ai_turn_loop(
             &mut params.skill_roster,
             params.turn_state.turn_index,
             params.turn_state.current_player,
-            double_dice_resolution_note(params.turn_state.current_player, roll_resolution.dice),
+            double_dice_resolution_note(
+                params.turn_state.current_player,
+                roll_resolution.dice,
+                roll_value,
+            ),
         );
     }
 }
 
 fn roll_result_waiting_for_display(turn_state: &TurnState) -> bool {
-    turn_state.current_roll.is_some() && turn_state.pending_roll_display.is_some()
+    turn_state.pending_roll_display.is_some()
+        && (turn_state.current_roll.is_some() || turn_state.pending_double_dice_choice.is_some())
 }
 
 fn finish_ai_roll_after_display(roll_value: u8, params: &mut TurnActionParams) {
@@ -874,8 +887,13 @@ fn execute_swap_on_turn_query(
 /// 人类玩家“掷骰阶段”输入处理（棋盘 Roll 按钮或 Space 掷骰）。
 fn handle_human_roll_input(
     keyboard: Res<ButtonInput<KeyCode>>,
+    pointer: Res<PointerInputState>,
+    device_profile: Res<DeviceProfile>,
+    windows: Query<&Window>,
+    camera_query: Query<(&Camera, &GlobalTransform)>,
     game_phase: Res<State<GamePhase>>,
     overlay_state: Res<SoundSettingsOverlayState>,
+    hud_state: Res<PlayerHudState>,
     mut params: TurnActionParams,
 ) {
     if overlay_state.open
@@ -891,11 +909,47 @@ fn handle_human_roll_input(
         return;
     }
 
-    params.input_state.prompt = None;
+    if let Some(choice) = params.turn_state.pending_double_dice_choice {
+        if roll_result_waiting_for_display(&params.turn_state) {
+            return;
+        }
+
+        params.input_state.prompt = Some(double_dice_choice_prompt(choice.faces));
+        let keyboard_selection = pressed_double_dice_choice_key(&keyboard);
+        let pointer_selection = keyboard_selection.is_none().then(|| {
+            clicked_double_dice_choice(
+                &pointer,
+                *device_profile,
+                &windows,
+                &camera_query,
+                &hud_state,
+                &params.player_roster,
+                params.match_config.rule_set.skills_enabled(),
+                choice.faces,
+            )
+        });
+        let Some(selection) = keyboard_selection.or(pointer_selection.flatten()) else {
+            return;
+        };
+        let Some(roll_value) = choose_pending_double_dice(&mut params.turn_state, selection) else {
+            return;
+        };
+        params.input_state.prompt = None;
+        record_skill_action(
+            &mut params.skill_roster,
+            params.turn_state.turn_index,
+            params.turn_state.current_player,
+            double_dice_resolution_note(params.turn_state.current_player, choice.faces, roll_value),
+        );
+        finish_human_roll_after_display(roll_value, &mut params);
+        return;
+    }
 
     if roll_result_waiting_for_display(&params.turn_state) {
         return;
     }
+
+    params.input_state.prompt = None;
 
     if let Some(roll_value) = params.turn_state.current_roll {
         finish_human_roll_after_display(roll_value, &mut params);
@@ -912,15 +966,98 @@ fn handle_human_roll_input(
         params.match_config.rule_set.skills_enabled(),
     );
     let roll_value = roll_resolution.value;
-    set_roll_with_faces(&mut params.turn_state, roll_value, roll_resolution.dice);
     if roll_resolution.used_double_dice {
-        record_skill_action(
-            &mut params.skill_roster,
-            params.turn_state.turn_index,
-            params.turn_state.current_player,
-            double_dice_resolution_note(params.turn_state.current_player, roll_resolution.dice),
-        );
+        set_pending_double_dice_choice(&mut params.turn_state, roll_resolution.dice);
+        params.input_state.prompt = Some(double_dice_choice_prompt(roll_resolution.dice));
+        return;
     }
+
+    set_roll_with_faces(&mut params.turn_state, roll_value, roll_resolution.dice);
+}
+
+fn pressed_double_dice_choice_key(keyboard: &ButtonInput<KeyCode>) -> Option<usize> {
+    if keyboard.just_pressed(KeyCode::Digit1) {
+        return Some(0);
+    }
+    if keyboard.just_pressed(KeyCode::Digit2) {
+        return Some(1);
+    }
+    None
+}
+
+fn clicked_double_dice_choice(
+    pointer: &PointerInputState,
+    device_profile: DeviceProfile,
+    windows: &Query<&Window>,
+    camera_query: &Query<(&Camera, &GlobalTransform)>,
+    hud_state: &PlayerHudState,
+    player_roster: &PlayerRoster,
+    skills_enabled: bool,
+    faces: [u8; 2],
+) -> Option<usize> {
+    if !pointer.just_pressed() {
+        return None;
+    }
+    let pointer_position = pointer.just_pressed_position()?;
+    let window = windows.single().ok()?;
+    if player_hud_point_is_interactive(
+        pointer_position,
+        window,
+        device_profile,
+        player_roster,
+        hud_state,
+        skills_enabled,
+    ) {
+        return None;
+    }
+    let (camera, camera_transform) = camera_query.single().ok()?;
+    let cursor_world = camera
+        .viewport_to_world_2d(camera_transform, pointer_position)
+        .ok()?;
+    double_dice_choice_at_world(
+        cursor_world,
+        faces,
+        device_profile
+            .piece_pick_radius_world()
+            .max(DOUBLE_DICE_CHOICE_MIN_PICK_RADIUS),
+    )
+}
+
+fn double_dice_choice_at_world(
+    cursor_world: Vec2,
+    faces: [u8; 2],
+    pick_radius: f32,
+) -> Option<usize> {
+    let has_second_die = (1..=6).contains(&faces[1]);
+    let mut best_index = None;
+    let mut best_distance_sq = f32::MAX;
+    let pick_radius_sq = pick_radius * pick_radius;
+
+    for (index, face) in faces.iter().enumerate() {
+        if !(1..=6).contains(face) || (!has_second_die && index > 0) {
+            continue;
+        }
+
+        let center = if has_second_die {
+            Vec2::new(
+                if index == 0 {
+                    -DOUBLE_DICE_CHOICE_OFFSET_X
+                } else {
+                    DOUBLE_DICE_CHOICE_OFFSET_X
+                },
+                0.0,
+            )
+        } else {
+            Vec2::ZERO
+        };
+        let distance_sq = center.distance_squared(cursor_world);
+        if distance_sq <= pick_radius_sq && distance_sq < best_distance_sq {
+            best_distance_sq = distance_sq;
+            best_index = Some(index);
+        }
+    }
+
+    best_index
 }
 
 fn finish_human_roll_after_display(roll_value: u8, params: &mut TurnActionParams) {
@@ -1501,6 +1638,37 @@ mod tests {
         ));
         assert!(!roll_result_waiting_for_display(&turn_state));
         assert_eq!(turn_state.current_roll, Some(3));
+
+        let mut choice_state = TurnState::opening_turn();
+        crate::gameplay::turn_flow::set_pending_double_dice_choice(&mut choice_state, [2, 6]);
+        assert!(roll_result_waiting_for_display(&choice_state));
+        assert!(crate::gameplay::turn_flow::commit_pending_roll_display(
+            &mut choice_state,
+            1
+        ));
+        assert!(!roll_result_waiting_for_display(&choice_state));
+        assert_eq!(choice_state.current_roll, None);
+        assert!(choice_state.pending_double_dice_choice.is_some());
+    }
+
+    #[test]
+    fn double_dice_choice_hit_testing_picks_nearest_visible_die() {
+        assert_eq!(
+            double_dice_choice_at_world(Vec2::new(-DOUBLE_DICE_CHOICE_OFFSET_X, 0.0), [2, 6], 40.0),
+            Some(0)
+        );
+        assert_eq!(
+            double_dice_choice_at_world(Vec2::new(DOUBLE_DICE_CHOICE_OFFSET_X, 0.0), [2, 6], 40.0),
+            Some(1)
+        );
+        assert_eq!(
+            double_dice_choice_at_world(Vec2::new(0.0, 0.0), [4, 0], 40.0),
+            Some(0)
+        );
+        assert_eq!(
+            double_dice_choice_at_world(Vec2::new(140.0, 0.0), [2, 6], 40.0),
+            None
+        );
     }
 
     #[test]
