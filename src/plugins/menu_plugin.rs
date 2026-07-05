@@ -115,7 +115,7 @@ struct SoundSettingsValueText {
     kind: SoundSettingsValueKind,
 }
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, Component, Debug)]
 /// 通用点击矩形（屏幕坐标）。
 struct ClickRect {
     x: f32,
@@ -237,8 +237,10 @@ const SOUND_BACK_TOP: f32 = 488.0;
 const SECTION_LABEL_X: f32 = 96.0;
 const OPTION_LEFT: f32 = 336.0;
 const OPTION_W: f32 = 112.0;
+const RULE_SET_OPTION_W: f32 = 168.0;
 const OPTION_H: f32 = 36.0;
 const OPTION_GAP: f32 = 12.0;
+const OPTION_LABEL_SAFETY_PX: f32 = 8.0;
 const MODE_ROW_TOP: f32 = 72.0;
 const RULE_SET_ROW_TOP: f32 = MODE_ROW_TOP + SETTING_ROW_GAP;
 const PLAYER_ROW_START_TOP: f32 = RULE_SET_ROW_TOP + SETTING_ROW_GAP;
@@ -1348,9 +1350,9 @@ fn spawn_mode_select_content(
             commands,
             ModeSelectAction::SetRuleSet(*rule_set),
             layout.rect(ClickRect {
-                x: OPTION_LEFT + rule_set_index as f32 * (OPTION_W * 1.35 + OPTION_GAP),
+                x: OPTION_LEFT + rule_set_index as f32 * (RULE_SET_OPTION_W + OPTION_GAP),
                 y: RULE_SET_ROW_TOP,
-                w: OPTION_W * 1.35,
+                w: RULE_SET_OPTION_W,
                 h: OPTION_H,
             }),
             rule_set.label(),
@@ -1619,7 +1621,9 @@ fn spawn_box_with_label(
             let mut label_entity = parent.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size: FontSize::Px(fitted_box_font_size(font_size, rect.h)),
+                    font_size: FontSize::Px(fitted_box_label_font_size(
+                        font_size, rect.w, rect.h, label,
+                    )),
                     ..default()
                 },
                 TextColor(MODE_SELECT_UNSELECTED_TEXT),
@@ -1636,6 +1640,31 @@ fn spawn_box_with_label(
 
 fn fitted_box_font_size(requested: f32, box_height: f32) -> f32 {
     requested.min((box_height * 0.68).max(10.0))
+}
+
+fn fitted_box_label_font_size(requested: f32, box_width: f32, box_height: f32, label: &str) -> f32 {
+    let height_limited = fitted_box_font_size(requested, box_height);
+    let label_width_units = label_width_units(label);
+    if label_width_units <= f32::EPSILON {
+        return height_limited;
+    }
+
+    let usable_width =
+        (box_width - fitted_box_padding(box_height) * 2.0 - OPTION_LABEL_SAFETY_PX).max(1.0);
+    height_limited.min((usable_width / label_width_units).max(10.0))
+}
+
+fn label_width_units(label: &str) -> f32 {
+    label.chars().map(label_char_width_unit).sum()
+}
+
+fn label_char_width_unit(character: char) -> f32 {
+    match character {
+        ' ' => 0.34,
+        '/' | '-' => 0.36,
+        '0'..='9' => 0.56,
+        _ => 0.62,
+    }
 }
 
 fn fitted_box_border(box_height: f32) -> f32 {
@@ -2194,6 +2223,31 @@ mod tests {
         assert!(row.w <= 600.0 - 32.0 + 0.01);
         assert!((row.x + row.w * 0.5 - 300.0).abs() < 0.01);
         assert!((start.x + back.x + back.w - 600.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn rule_set_option_labels_fit_inside_buttons() {
+        for (width, height) in [(1280.0, 720.0), (600.0, 960.0)] {
+            let layout = mode_select_layout(width, height, 4);
+            for (rule_set_index, rule_set) in RuleSet::ALL.iter().enumerate() {
+                let rect = layout.rect(ClickRect {
+                    x: OPTION_LEFT + rule_set_index as f32 * (RULE_SET_OPTION_W + OPTION_GAP),
+                    y: RULE_SET_ROW_TOP,
+                    w: RULE_SET_OPTION_W,
+                    h: OPTION_H,
+                });
+                let font_size = fitted_box_label_font_size(24.0, rect.w, rect.h, rule_set.label());
+                let estimated_label_width = label_width_units(rule_set.label()) * font_size
+                    + fitted_box_padding(rect.h) * 2.0
+                    + OPTION_LABEL_SAFETY_PX;
+
+                assert!(
+                    estimated_label_width <= rect.w + f32::EPSILON,
+                    "{} label overflows {rect:?} at {width}x{height}",
+                    rule_set.label()
+                );
+            }
+        }
     }
 
     #[test]

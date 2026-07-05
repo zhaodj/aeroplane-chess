@@ -9,11 +9,13 @@ use crate::plugins::piece_plugin::PieceId;
 
 pub const MAX_PIECE_SHIELD: u8 = 2;
 pub const STARTING_SKILL_CHARGE_POINTS: u8 = 1;
+pub const FINISH_BOUNCES_PER_SKILL_REWARD: u8 = 2;
 
 #[derive(Clone, Debug, Default, Resource)]
 /// 全体玩家技能资源与本回合技能使用状态。
 pub struct SkillRoster {
     pub players: Vec<PlayerSkillState>,
+    pub finish_bounce_counts: [u8; 4],
     pub last_skill_action: Option<String>,
     pub last_skill_action_player_id: Option<u8>,
     pub last_skill_action_turn_index: u32,
@@ -64,6 +66,7 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
                 skill_blocked_this_turn: false,
             })
             .collect(),
+        finish_bounce_counts: [0; 4],
         last_skill_action: None,
         last_skill_action_player_id: None,
         last_skill_action_turn_index: 0,
@@ -71,6 +74,13 @@ pub fn build_skill_roster(player_roster: &PlayerRoster) -> SkillRoster {
         active_turn_player: None,
         skill_used_this_turn: false,
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinishBounceProgress {
+    pub count: u8,
+    pub threshold: u8,
+    pub rewarded_skill: Option<&'static str>,
 }
 
 /// 记录一次技能日志事件，并分配稳定序号避免 UI 按帧重复消费旧消息。
@@ -275,7 +285,6 @@ pub fn is_legal_snipe_target(
     piece_state.owner_player_id != current_player
         && piece_state.team_id != current_team
         && piece_state.status == PieceStatus::Active
-        && piece_state.progress <= HOME_ENTRY_PROGRESS
 }
 
 /// 判断棋子是否在主环道上，可参与 Swap。
@@ -492,6 +501,49 @@ pub fn grant_random_skill_charge(
     }
 }
 
+pub fn finish_bounce_count(skill_roster: &SkillRoster, player_id: u8) -> u8 {
+    skill_roster
+        .finish_bounce_counts
+        .get(player_id.saturating_sub(1) as usize)
+        .copied()
+        .unwrap_or(0)
+}
+
+pub fn record_finish_bounce(
+    skill_roster: &mut SkillRoster,
+    player_id: u8,
+    allow_swap: bool,
+) -> Option<FinishBounceProgress> {
+    if !skill_roster
+        .players
+        .iter()
+        .any(|player| player.player_id == player_id)
+    {
+        return None;
+    }
+
+    let count_slot = skill_roster
+        .finish_bounce_counts
+        .get_mut(player_id.saturating_sub(1) as usize)?;
+    *count_slot = count_slot.saturating_add(1);
+
+    if *count_slot < FINISH_BOUNCES_PER_SKILL_REWARD {
+        return Some(FinishBounceProgress {
+            count: *count_slot,
+            threshold: FINISH_BOUNCES_PER_SKILL_REWARD,
+            rewarded_skill: None,
+        });
+    }
+
+    *count_slot = 0;
+    let rewarded_skill = grant_random_skill_charge(skill_roster, player_id, allow_swap);
+    Some(FinishBounceProgress {
+        count: 0,
+        threshold: FINISH_BOUNCES_PER_SKILL_REWARD,
+        rewarded_skill,
+    })
+}
+
 /// 给目标玩家打上“下回合禁止用技能”的标记。
 pub fn disable_next_skill_turn(skill_roster: &mut SkillRoster, player_id: u8) -> bool {
     let Some(player_state) = skill_roster
@@ -591,6 +643,7 @@ mod tests {
         let skill_roster = build_skill_roster(&sample_roster());
 
         assert_eq!(skill_roster.players.len(), 2);
+        assert_eq!(finish_bounce_count(&skill_roster, 1), 0);
         for player in &skill_roster.players {
             assert_eq!(total_charges(player), STARTING_SKILL_CHARGE_POINTS * 5);
             assert_eq!(player.dash_charges, STARTING_SKILL_CHARGE_POINTS);
@@ -601,6 +654,33 @@ mod tests {
             assert!(!player.dash_armed);
             assert!(!player.double_dice_armed);
         }
+    }
+
+    #[test]
+    fn finish_bounces_reward_one_random_skill_every_two_counts() {
+        let mut skill_roster = build_skill_roster(&sample_roster());
+        let before = total_charges(player_skill_state(&skill_roster, 1).unwrap());
+
+        let first = record_finish_bounce(&mut skill_roster, 1, false).expect("player should exist");
+        assert_eq!(first.count, 1);
+        assert_eq!(first.threshold, FINISH_BOUNCES_PER_SKILL_REWARD);
+        assert_eq!(first.rewarded_skill, None);
+        assert_eq!(finish_bounce_count(&skill_roster, 1), 1);
+        assert_eq!(
+            total_charges(player_skill_state(&skill_roster, 1).unwrap()),
+            before
+        );
+
+        let second =
+            record_finish_bounce(&mut skill_roster, 1, false).expect("player should exist");
+        assert_eq!(second.count, 0);
+        assert_eq!(second.threshold, FINISH_BOUNCES_PER_SKILL_REWARD);
+        assert!(second.rewarded_skill.is_some());
+        assert_eq!(finish_bounce_count(&skill_roster, 1), 0);
+        assert_eq!(
+            total_charges(player_skill_state(&skill_roster, 1).unwrap()),
+            before + 1
+        );
     }
 
     #[test]
@@ -895,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_snipe_targets_excludes_home_lane_enemies() {
+    fn collect_snipe_targets_includes_home_lane_enemies() {
         let mut world = World::new();
         world.spawn((
             PieceId(1),
@@ -912,7 +992,7 @@ mod tests {
         world.spawn((
             PieceId(2),
             PieceState {
-                owner_player_id: 3,
+                owner_player_id: 2,
                 team_id: 2,
                 status: PieceStatus::Active,
                 progress: HOME_ENTRY_PROGRESS + 1,
@@ -924,10 +1004,34 @@ mod tests {
         world.spawn((
             PieceId(3),
             PieceState {
-                owner_player_id: 4,
-                team_id: 2,
+                owner_player_id: 3,
+                team_id: 3,
                 status: PieceStatus::Active,
                 progress: 6,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+        ));
+        world.spawn((
+            PieceId(4),
+            PieceState {
+                owner_player_id: 4,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: HOME_ENTRY_PROGRESS + 2,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+        ));
+        world.spawn((
+            PieceId(5),
+            PieceState {
+                owner_player_id: 5,
+                team_id: 5,
+                status: PieceStatus::Finished,
+                progress: HOME_ENTRY_PROGRESS + 6,
                 shield: 0,
                 stack_shield: 0,
                 motion_serial: 0,
@@ -938,6 +1042,6 @@ mod tests {
             SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world).unwrap();
 
-        assert_eq!(collect_snipe_targets(1, 1, &query), vec![3]);
+        assert_eq!(collect_snipe_targets(1, 1, &query), vec![2, 3]);
     }
 }

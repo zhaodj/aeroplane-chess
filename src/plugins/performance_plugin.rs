@@ -86,6 +86,11 @@ fn update_fps_display(
     mut container_query: Query<&mut Visibility, (With<FpsDisplay>, Without<Text>)>,
     mut text_query: Query<&mut Text, (With<FpsDisplay>, With<Text>)>,
 ) {
+    let smoothed_fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|fps| fps.smoothed());
+    update_smoke_fps_metric(smoothed_fps);
+
     let visible = settings.show_fps && !matches!(app_state.get(), AppState::Boot);
     for mut visibility in &mut container_query {
         *visibility = if visible {
@@ -99,15 +104,30 @@ fn update_fps_display(
         return;
     }
 
-    let label = fps_display_text(
-        diagnostics
-            .get(&FrameTimeDiagnosticsPlugin::FPS)
-            .and_then(|fps| fps.smoothed()),
-    );
+    let label = fps_display_text(smoothed_fps);
     for mut text in &mut text_query {
         *text = Text::new(label.clone());
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+fn update_smoke_fps_metric(fps: Option<f64>) {
+    let Some(body) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.body())
+    else {
+        return;
+    };
+    if !body.has_attribute("data-ac-smoke-shell") && !body.has_attribute("data-ac-smoke-state") {
+        return;
+    }
+
+    let value = fps.map_or_else(|| "--".to_owned(), |value| format!("{value:.1}"));
+    let _ = body.set_attribute("data-ac-smoke-fps", &value);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn update_smoke_fps_metric(_fps: Option<f64>) {}
 
 fn fps_display_text(fps: Option<f64>) -> String {
     fps.map_or_else(

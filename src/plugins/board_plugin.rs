@@ -132,6 +132,76 @@ const DICE_ROLL_MAX_ROTATION: f32 = 0.36;
 const DICE_ROLL_MAX_SCALE_BUMP: f32 = 0.11;
 const DICE_ROLL_SPIN_TURNS: f32 = 2.0;
 const DICE_ROLL_TRAVEL_DISTANCE: f32 = 26.0;
+const LUCIDE_VIEWBOX_SIZE: f32 = 24.0;
+const LUCIDE_VIEWBOX_CENTER: Vec2 = Vec2::new(12.0, 12.0);
+const SPECIAL_TILE_ICON_SIZE: f32 = 22.0;
+const SPECIAL_TILE_ICON_STROKE: f32 = 2.35;
+const SPECIAL_TILE_ICON_DOT_RADIUS: f32 = 1.55;
+const SPECIAL_TILE_ICON_BACKDROP_RADIUS: f32 = 13.2;
+const SPECIAL_TILE_ICON_CIRCLE_SEGMENTS: usize = 36;
+const LAUNCH_ARROW_ICON_SIZE: f32 = 25.0;
+const DIRECTION_ICON_STROKE: f32 = 2.65;
+const CHEVRON_ICON_STROKE: f32 = 2.45;
+const HOME_TURN_ICON_STROKE: f32 = 2.65;
+
+// Icon coordinates adapted from Lucide icons (sword, shield-check, circle-question-mark).
+// Copyright (c) 2026 Lucide Icons and Contributors, ISC license.
+// Some Lucide icons inherit Feather project shapes under the MIT license.
+const SWORD_MAIN_POLYLINE: [Vec2; 5] = [
+    Vec2::new(9.5, 17.5),
+    Vec2::new(21.0, 6.0),
+    Vec2::new(21.0, 3.0),
+    Vec2::new(18.0, 3.0),
+    Vec2::new(6.5, 14.5),
+];
+const SWORD_ACCENT_LINES: [IconLine; 3] = [
+    IconLine {
+        start: Vec2::new(11.0, 19.0),
+        end: Vec2::new(5.0, 13.0),
+    },
+    IconLine {
+        start: Vec2::new(5.0, 21.0),
+        end: Vec2::new(3.0, 19.0),
+    },
+    IconLine {
+        start: Vec2::new(8.0, 16.0),
+        end: Vec2::new(4.0, 20.0),
+    },
+];
+const SHIELD_CHECK_OUTLINE: [Vec2; 13] = [
+    Vec2::new(20.0, 13.0),
+    Vec2::new(18.8, 16.5),
+    Vec2::new(16.0, 19.2),
+    Vec2::new(12.0, 21.1),
+    Vec2::new(8.0, 19.2),
+    Vec2::new(5.2, 16.5),
+    Vec2::new(4.0, 13.0),
+    Vec2::new(4.0, 6.0),
+    Vec2::new(8.3, 4.7),
+    Vec2::new(12.0, 2.6),
+    Vec2::new(15.7, 4.7),
+    Vec2::new(20.0, 6.0),
+    Vec2::new(20.0, 13.0),
+];
+const SHIELD_CHECK_MARK: [Vec2; 3] = [
+    Vec2::new(9.0, 12.0),
+    Vec2::new(11.0, 14.0),
+    Vec2::new(15.0, 10.0),
+];
+const QUESTION_CIRCLE: IconCircle = IconCircle {
+    center: Vec2::new(12.0, 12.0),
+    radius: 10.0,
+};
+const QUESTION_MARK_POLYLINE: [Vec2; 7] = [
+    Vec2::new(9.1, 9.0),
+    Vec2::new(10.1, 7.9),
+    Vec2::new(12.0, 7.75),
+    Vec2::new(14.2, 8.35),
+    Vec2::new(14.9, 10.0),
+    Vec2::new(13.5, 11.7),
+    Vec2::new(12.0, 13.0),
+];
+const QUESTION_DOT: Vec2 = Vec2::new(12.0, 17.0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DiceRollVisualKey {
@@ -312,6 +382,18 @@ struct StarDraw {
     radius: f32,
     color: Color,
     z: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct IconLine {
+    start: Vec2,
+    end: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct IconCircle {
+    center: Vec2,
+    radius: f32,
 }
 
 #[derive(Clone)]
@@ -561,6 +643,8 @@ fn spawn_board(
         if dot.show_turn_marker {
             spawn_home_lane_turn_marker(
                 &mut commands,
+                &mut meshes,
+                &mut materials,
                 TurnMarkerDraw {
                     center: dot.position,
                     direction: home_lane_turn_direction(dot.seat),
@@ -637,6 +721,8 @@ fn spawn_board(
     for icon in CHEVRON_ICONS {
         spawn_chevron_icon(
             &mut commands,
+            &mut meshes,
+            &mut materials,
             ChevronDraw {
                 center: icon.center,
                 direction: icon.direction,
@@ -1631,6 +1717,25 @@ fn home_lane_turn_direction(seat: PlayerSeat) -> Vec2 {
     }
 }
 
+fn spawn_filled_circle(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    center: Vec2,
+    radius: f32,
+    color: Color,
+    z: f32,
+    name: impl Into<String>,
+) {
+    commands.spawn((
+        Mesh2d(meshes.add(Circle::new(radius))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+        Transform::from_xyz(center.x, center.y, z),
+        Name::new(name.into()),
+        BoardSceneEntity,
+    ));
+}
+
 /// 绘制带描边圆形。
 fn spawn_circle_with_border(
     commands: &mut Commands,
@@ -1702,6 +1807,33 @@ fn spawn_triangle_with_border(
     ));
 }
 
+fn direction_arrow_lines(center: Vec2, direction: Vec2, size: f32) -> Option<[IconLine; 3]> {
+    let direction = direction.normalize_or_zero();
+    if direction.length_squared() <= 0.01 {
+        return None;
+    }
+
+    let unit = size / LUCIDE_VIEWBOX_SIZE;
+    let half_length = 7.0 * unit;
+    let head_width = 7.0 * unit;
+    let perp = Vec2::new(-direction.y, direction.x);
+    let start = center - direction * half_length;
+    let tip = center + direction * half_length;
+    let head_back = center;
+
+    Some([
+        IconLine { start, end: tip },
+        IconLine {
+            start: head_back + perp * head_width,
+            end: tip,
+        },
+        IconLine {
+            start: head_back - perp * head_width,
+            end: tip,
+        },
+    ])
+}
+
 /// 绘制方向箭头图标。
 fn spawn_arrow_icon(
     commands: &mut Commands,
@@ -1711,40 +1843,24 @@ fn spawn_arrow_icon(
     name: impl Into<String>,
 ) {
     let name = name.into();
-    let direction = icon.direction.normalize_or_zero();
-    let angle = direction.y.atan2(direction.x);
-    let tail = icon.center - direction * 4.0;
-    let head = icon.center + direction * 7.0;
-    let perp = Vec2::new(-direction.y, direction.x);
+    let Some(lines) = direction_arrow_lines(icon.center, icon.direction, LAUNCH_ARROW_ICON_SIZE)
+    else {
+        return;
+    };
 
-    commands.spawn((
-        Sprite::from_color(icon.color, Vec2::new(15.0, 3.0)),
-        Transform {
-            translation: Vec3::new(tail.x, tail.y, icon.z),
-            rotation: Quat::from_rotation_z(angle),
-            ..default()
-        },
-        Name::new(format!("{name}_shaft")),
-        BoardSceneEntity,
-    ));
-
-    spawn_triangle_with_border(
-        commands,
-        meshes,
-        materials,
-        [
-            head + direction * 4.0,
-            head - direction * 5.5 + perp * 5.0,
-            head - direction * 5.5 - perp * 5.0,
-        ],
-        DrawStyle {
-            fill: icon.color,
-            border: icon.color,
-            border_width: 0.0,
-            z: icon.z + 0.01,
-        },
-        format!("{name}_head"),
-    );
+    for (index, line) in lines.iter().copied().enumerate() {
+        spawn_rounded_icon_line(
+            commands,
+            meshes,
+            materials,
+            line.start,
+            line.end,
+            DIRECTION_ICON_STROKE,
+            icon.color,
+            icon.z + index as f32 * 0.003,
+            format!("{name}_{index}"),
+        );
+    }
 }
 
 fn spawn_special_tile_icon(
@@ -1758,31 +1874,63 @@ fn spawn_special_tile_icon(
 ) {
     let name = name.into();
     match kind {
-        TileKind::Attack => spawn_sword_icon(
-            commands,
-            meshes,
-            materials,
-            center,
-            Color::srgb(0.82, 0.08, 0.08),
-            z,
-            format!("{name}_Sword"),
-        ),
-        TileKind::Defense => spawn_shield_icon(
-            commands,
-            center,
-            Color::srgb(0.08, 0.28, 0.78),
-            z,
-            format!("{name}_Shield"),
-        ),
-        TileKind::Event => spawn_question_icon(
-            commands,
-            meshes,
-            materials,
-            center,
-            Color::srgb(0.12, 0.12, 0.16),
-            z,
-            format!("{name}_Question"),
-        ),
+        TileKind::Attack => {
+            spawn_special_tile_icon_backdrop(
+                commands,
+                meshes,
+                materials,
+                center,
+                z,
+                format!("{name}_Backdrop"),
+            );
+            spawn_sword_icon(
+                commands,
+                meshes,
+                materials,
+                center,
+                Color::srgb(0.82, 0.08, 0.08),
+                z,
+                format!("{name}_Sword"),
+            );
+        }
+        TileKind::Defense => {
+            spawn_special_tile_icon_backdrop(
+                commands,
+                meshes,
+                materials,
+                center,
+                z,
+                format!("{name}_Backdrop"),
+            );
+            spawn_shield_check_icon(
+                commands,
+                meshes,
+                materials,
+                center,
+                Color::srgb(0.08, 0.28, 0.78),
+                z,
+                format!("{name}_ShieldCheck"),
+            );
+        }
+        TileKind::Event => {
+            spawn_special_tile_icon_backdrop(
+                commands,
+                meshes,
+                materials,
+                center,
+                z,
+                format!("{name}_Backdrop"),
+            );
+            spawn_question_icon(
+                commands,
+                meshes,
+                materials,
+                center,
+                Color::srgb(0.12, 0.12, 0.16),
+                z,
+                format!("{name}_Question"),
+            );
+        }
         TileKind::Normal | TileKind::Jump | TileKind::Goal => {}
     }
 }
@@ -1798,96 +1946,61 @@ fn spawn_sword_icon(
     name: impl Into<String>,
 ) {
     let name = name.into();
-    let direction = Vec2::new(1.0, 1.0).normalize();
-    let perp = Vec2::new(-direction.y, direction.x);
-    let blade_base = center - direction * 3.0;
-    let blade_tip = center + direction * 8.0;
-    let guard = center - direction * 5.0;
-
-    spawn_line_segment(
-        commands,
-        blade_base,
-        blade_tip,
-        2.2,
-        color,
-        z,
-        format!("{name}_blade"),
-    );
-    spawn_triangle_with_border(
+    spawn_lucide_polyline(
         commands,
         meshes,
         materials,
-        [
-            blade_tip + direction * 3.2,
-            blade_tip - direction * 2.2 + perp * 3.0,
-            blade_tip - direction * 2.2 - perp * 3.0,
-        ],
-        DrawStyle {
-            fill: color,
-            border: color,
-            border_width: 0.0,
-            z: z + 0.01,
-        },
-        format!("{name}_tip"),
-    );
-    spawn_line_segment(
-        commands,
-        guard - perp * 5.0,
-        guard + perp * 5.0,
-        2.0,
+        center,
+        &SWORD_MAIN_POLYLINE,
         color,
-        z + 0.03,
-        format!("{name}_guard"),
+        z + 0.02,
+        format!("{name}_main"),
     );
-    spawn_line_segment(
-        commands,
-        guard - direction * 5.0,
-        guard - direction * 1.2,
-        2.2,
-        color,
-        z + 0.04,
-        format!("{name}_hilt"),
-    );
+
+    for (index, line) in SWORD_ACCENT_LINES.iter().copied().enumerate() {
+        spawn_lucide_line(
+            commands,
+            meshes,
+            materials,
+            center,
+            line,
+            color,
+            z + 0.045 + index as f32 * 0.003,
+            format!("{name}_accent_{index}"),
+        );
+    }
 }
 
 /// 绘制防御点盾牌图标。
-fn spawn_shield_icon(
+fn spawn_shield_check_icon(
     commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
     center: Vec2,
     color: Color,
     z: f32,
     name: impl Into<String>,
 ) {
     let name = name.into();
-    let outline = [
-        Vec2::new(-6.2, 5.8),
-        Vec2::new(0.0, 8.2),
-        Vec2::new(6.2, 5.8),
-        Vec2::new(5.0, -1.2),
-        Vec2::new(0.0, -8.0),
-        Vec2::new(-5.0, -1.2),
-        Vec2::new(-6.2, 5.8),
-    ];
-
-    for (index, segment) in outline.windows(2).enumerate() {
-        spawn_line_segment(
-            commands,
-            center + segment[0],
-            center + segment[1],
-            2.2,
-            color,
-            z + index as f32 * 0.002,
-            format!("{name}_outline_{index}"),
-        );
-    }
-    spawn_line_segment(
+    spawn_lucide_polyline(
         commands,
-        center + Vec2::new(0.0, 4.7),
-        center + Vec2::new(0.0, -4.2),
-        1.9,
+        meshes,
+        materials,
+        center,
+        &SHIELD_CHECK_OUTLINE,
         color,
         z + 0.02,
-        format!("{name}_center"),
+        format!("{name}_outline"),
+    );
+    spawn_lucide_polyline(
+        commands,
+        meshes,
+        materials,
+        center,
+        &SHIELD_CHECK_MARK,
+        color,
+        z + 0.065,
+        format!("{name}_check"),
     );
 }
 
@@ -1902,71 +2015,233 @@ fn spawn_question_icon(
     name: impl Into<String>,
 ) {
     let name = name.into();
-    let question = [
-        Vec2::new(-5.2, 4.5),
-        Vec2::new(-3.5, 7.2),
-        Vec2::new(1.0, 7.8),
-        Vec2::new(4.6, 5.5),
-        Vec2::new(4.2, 1.8),
-        Vec2::new(0.0, -0.8),
-        Vec2::new(0.0, -4.0),
-    ];
-
-    for (index, segment) in question.windows(2).enumerate() {
-        spawn_line_segment(
-            commands,
-            center + segment[0],
-            center + segment[1],
-            2.3,
-            color,
-            z + index as f32 * 0.002,
-            format!("{name}_mark_{index}"),
-        );
-    }
-    spawn_circle_with_border(
+    spawn_lucide_circle_outline(
         commands,
         meshes,
         materials,
-        center + Vec2::new(0.0, -8.0),
-        1.8,
-        DrawStyle {
-            fill: color,
-            border: color,
-            border_width: 0.0,
-            z: z + 0.03,
-        },
+        center,
+        QUESTION_CIRCLE,
+        color,
+        z + 0.02,
+        format!("{name}_circle"),
+    );
+    spawn_lucide_polyline(
+        commands,
+        meshes,
+        materials,
+        center,
+        &QUESTION_MARK_POLYLINE,
+        color,
+        z + 0.055,
+        format!("{name}_mark"),
+    );
+    spawn_filled_circle(
+        commands,
+        meshes,
+        materials,
+        lucide_world_point(center, QUESTION_DOT, SPECIAL_TILE_ICON_SIZE),
+        SPECIAL_TILE_ICON_DOT_RADIUS,
+        color,
+        z + 0.075,
         format!("{name}_dot"),
     );
 }
 
+fn spawn_special_tile_icon_backdrop(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    center: Vec2,
+    z: f32,
+    name: impl Into<String>,
+) {
+    spawn_filled_circle(
+        commands,
+        meshes,
+        materials,
+        center,
+        SPECIAL_TILE_ICON_BACKDROP_RADIUS,
+        Color::srgba(1.0, 1.0, 1.0, 0.48),
+        z - 0.025,
+        name,
+    );
+}
+
+fn spawn_lucide_polyline(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    center: Vec2,
+    points: &[Vec2],
+    color: Color,
+    z: f32,
+    name: impl Into<String>,
+) {
+    let name = name.into();
+    for (index, segment) in points.windows(2).enumerate() {
+        spawn_lucide_line(
+            commands,
+            meshes,
+            materials,
+            center,
+            IconLine {
+                start: segment[0],
+                end: segment[1],
+            },
+            color,
+            z + index as f32 * 0.002,
+            format!("{name}_{index}"),
+        );
+    }
+}
+
+fn spawn_lucide_line(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    center: Vec2,
+    line: IconLine,
+    color: Color,
+    z: f32,
+    name: impl Into<String>,
+) {
+    spawn_rounded_icon_line(
+        commands,
+        meshes,
+        materials,
+        lucide_world_point(center, line.start, SPECIAL_TILE_ICON_SIZE),
+        lucide_world_point(center, line.end, SPECIAL_TILE_ICON_SIZE),
+        SPECIAL_TILE_ICON_STROKE,
+        color,
+        z,
+        name,
+    );
+}
+
+fn spawn_lucide_circle_outline(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    center: Vec2,
+    circle: IconCircle,
+    color: Color,
+    z: f32,
+    name: impl Into<String>,
+) {
+    let world_center = lucide_world_point(center, circle.center, SPECIAL_TILE_ICON_SIZE);
+    let radius = lucide_world_radius(circle.radius, SPECIAL_TILE_ICON_SIZE);
+    let half_stroke = SPECIAL_TILE_ICON_STROKE * 0.5;
+    commands.spawn((
+        Mesh2d(meshes.add(annulus_mesh(
+            (radius - half_stroke).max(0.1),
+            radius + half_stroke,
+            SPECIAL_TILE_ICON_CIRCLE_SEGMENTS,
+        ))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+        Transform::from_xyz(world_center.x, world_center.y, z),
+        Name::new(name.into()),
+        BoardSceneEntity,
+    ));
+}
+
+fn spawn_rounded_icon_line(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    start: Vec2,
+    end: Vec2,
+    thickness: f32,
+    color: Color,
+    z: f32,
+    name: impl Into<String>,
+) {
+    let name = name.into();
+    spawn_line_segment(
+        commands,
+        start,
+        end,
+        thickness,
+        color,
+        z,
+        format!("{name}_shaft"),
+    );
+    let cap_radius = thickness * 0.5;
+    spawn_filled_circle(
+        commands,
+        meshes,
+        materials,
+        start,
+        cap_radius,
+        color,
+        z + 0.001,
+        format!("{name}_start_cap"),
+    );
+    spawn_filled_circle(
+        commands,
+        meshes,
+        materials,
+        end,
+        cap_radius,
+        color,
+        z + 0.001,
+        format!("{name}_end_cap"),
+    );
+}
+
+fn lucide_world_point(center: Vec2, point: Vec2, icon_size: f32) -> Vec2 {
+    let scale = icon_size / LUCIDE_VIEWBOX_SIZE;
+    let offset = Vec2::new(
+        point.x - LUCIDE_VIEWBOX_CENTER.x,
+        LUCIDE_VIEWBOX_CENTER.y - point.y,
+    );
+    center + offset * scale
+}
+
+fn lucide_world_radius(radius: f32, icon_size: f32) -> f32 {
+    radius * icon_size / LUCIDE_VIEWBOX_SIZE
+}
+
 /// 绘制 SVG 中的单/双 chevron 方向提示。
-fn spawn_chevron_icon(commands: &mut Commands, icon: ChevronDraw, name: impl Into<String>) {
+fn spawn_chevron_icon(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    icon: ChevronDraw,
+    name: impl Into<String>,
+) {
     let name = name.into();
     let direction = icon.direction.normalize_or_zero();
+    if direction.length_squared() <= 0.01 {
+        return;
+    }
     let perp = Vec2::new(-direction.y, direction.x);
-    let spacing = icon.size * 0.58;
+    let spacing = icon.size * 0.56;
     let first_offset = -((icon.count.saturating_sub(1)) as f32) * spacing * 0.5;
 
     for index in 0..icon.count {
         let base = icon.center + direction * (first_offset + index as f32 * spacing);
-        let tip = base + direction * icon.size * 0.45;
-        let back = base - direction * icon.size * 0.35;
-        let wing_a = back + perp * icon.size * 0.42;
-        let wing_b = back - perp * icon.size * 0.42;
-        spawn_line_segment(
+        let tip = base + direction * icon.size * 0.43;
+        let back = base - direction * icon.size * 0.31;
+        let wing_a = back + perp * icon.size * 0.36;
+        let wing_b = back - perp * icon.size * 0.36;
+        spawn_rounded_icon_line(
             commands,
+            meshes,
+            materials,
             wing_a,
             tip,
-            3.0,
+            CHEVRON_ICON_STROKE,
             icon.color,
             icon.z + index as f32 * 0.002,
             format!("{name}_{index}_a"),
         );
-        spawn_line_segment(
+        spawn_rounded_icon_line(
             commands,
+            meshes,
+            materials,
             wing_b,
             tip,
-            3.0,
+            CHEVRON_ICON_STROKE,
             icon.color,
             icon.z + index as f32 * 0.002 + 0.001,
             format!("{name}_{index}_b"),
@@ -1976,6 +2251,8 @@ fn spawn_chevron_icon(commands: &mut Commands, icon: ChevronDraw, name: impl Int
 
 fn spawn_home_lane_turn_marker(
     commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
     icon: TurnMarkerDraw,
     name: impl Into<String>,
 ) {
@@ -1986,11 +2263,13 @@ fn spawn_home_lane_turn_marker(
     let points = points.map(|point| icon.center + point);
 
     for (index, segment) in points.windows(2).enumerate() {
-        spawn_line_segment(
+        spawn_rounded_icon_line(
             commands,
+            meshes,
+            materials,
             segment[0],
             segment[1],
-            3.1,
+            HOME_TURN_ICON_STROKE,
             icon.color,
             icon.z + index as f32 * 0.001,
             format!("{name}_elbow_{index}"),
@@ -2007,21 +2286,25 @@ fn spawn_home_lane_turn_marker(
         return;
     }
     let perp = Vec2::new(-direction.y, direction.x);
-    let head_back = tip - direction * 6.2;
-    spawn_line_segment(
+    let head_back = tip - direction * 5.7;
+    spawn_rounded_icon_line(
         commands,
+        meshes,
+        materials,
         head_back + perp * 4.4,
         tip,
-        3.1,
+        HOME_TURN_ICON_STROKE,
         icon.color,
         icon.z + 0.01,
         format!("{name}_head_a"),
     );
-    spawn_line_segment(
+    spawn_rounded_icon_line(
         commands,
+        meshes,
+        materials,
         head_back - perp * 4.4,
         tip,
-        3.1,
+        HOME_TURN_ICON_STROKE,
         icon.color,
         icon.z + 0.011,
         format!("{name}_head_b"),
@@ -2985,6 +3268,52 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn launch_direction_arrows_are_centered_line_icons() {
+        let lines =
+            direction_arrow_lines(Vec2::ZERO, Vec2::X, LAUNCH_ARROW_ICON_SIZE).expect("arrow");
+        let visual_limit = 16.0 - DIRECTION_ICON_STROKE * 0.5;
+
+        assert!(lines[0].start.x < 0.0);
+        assert!(lines[0].end.x > 0.0);
+        assert_eq!(lines[1].end, lines[0].end);
+        assert_eq!(lines[2].end, lines[0].end);
+        assert!(lines[1].start.y > 0.0);
+        assert!(lines[2].start.y < 0.0);
+
+        for line in lines {
+            assert!(line.start.length() <= visual_limit);
+            assert!(line.end.length() <= visual_limit);
+        }
+        assert!(direction_arrow_lines(Vec2::ZERO, Vec2::ZERO, LAUNCH_ARROW_ICON_SIZE).is_none());
+    }
+
+    #[test]
+    fn home_lane_turn_markers_fit_inside_home_lane_dot() {
+        let visual_limit = 16.0 - HOME_TURN_ICON_STROKE * 0.5;
+
+        for direction in [Vec2::X, Vec2::NEG_X, Vec2::Y, Vec2::NEG_Y] {
+            let points = home_lane_turn_marker_path(direction).expect("path should resolve");
+            for point in points {
+                assert!(
+                    point.length() <= visual_limit,
+                    "turn marker point {point:?} exceeds visual limit"
+                );
+            }
+
+            let tip = points[2];
+            let direction = (tip - points[1]).normalize_or_zero();
+            let perp = Vec2::new(-direction.y, direction.x);
+            let head_back = tip - direction * 5.7;
+            for point in [head_back + perp * 4.4, head_back - perp * 4.4, tip] {
+                assert!(
+                    point.length() <= visual_limit,
+                    "turn marker head point {point:?} exceeds visual limit"
+                );
+            }
+        }
+    }
+
     fn svg_rect_at(center: Vec2) -> SvgRect {
         *SVG_RECTS
             .iter()
@@ -3496,5 +3825,59 @@ mod tests {
                 size: runway.size
             }
         );
+    }
+
+    #[test]
+    fn lucide_icon_coordinates_center_and_flip_y_axis() {
+        let center = Vec2::new(8.0, -3.0);
+
+        assert_eq!(
+            lucide_world_point(center, LUCIDE_VIEWBOX_CENTER, SPECIAL_TILE_ICON_SIZE),
+            center
+        );
+        assert_eq!(
+            lucide_world_point(center, Vec2::new(24.0, 0.0), 24.0),
+            center + Vec2::new(12.0, 12.0)
+        );
+        assert_eq!(
+            lucide_world_point(center, Vec2::new(0.0, 24.0), 24.0),
+            center + Vec2::new(-12.0, -12.0)
+        );
+    }
+
+    #[test]
+    fn special_tile_lucide_icons_fit_inside_route_tiles() {
+        let center = Vec2::ZERO;
+        let route_tile_half_size = 20.0;
+        let visual_limit = route_tile_half_size - 2.0;
+        let stroke_radius = SPECIAL_TILE_ICON_STROKE * 0.5;
+        let mut points = Vec::new();
+
+        points.extend_from_slice(&SWORD_MAIN_POLYLINE);
+        for line in SWORD_ACCENT_LINES {
+            points.push(line.start);
+            points.push(line.end);
+        }
+        points.extend_from_slice(&SHIELD_CHECK_OUTLINE);
+        points.extend_from_slice(&SHIELD_CHECK_MARK);
+        points.extend_from_slice(&QUESTION_MARK_POLYLINE);
+        points.push(QUESTION_DOT);
+
+        for point in points {
+            let world = lucide_world_point(center, point, SPECIAL_TILE_ICON_SIZE);
+            assert!(
+                world.x.abs() + stroke_radius <= visual_limit,
+                "icon point {point:?} overflows horizontally at {world:?}"
+            );
+            assert!(
+                world.y.abs() + stroke_radius <= visual_limit,
+                "icon point {point:?} overflows vertically at {world:?}"
+            );
+        }
+
+        let event_circle_extent =
+            lucide_world_radius(QUESTION_CIRCLE.radius, SPECIAL_TILE_ICON_SIZE) + stroke_radius;
+        assert!(event_circle_extent <= visual_limit);
+        assert!(SPECIAL_TILE_ICON_BACKDROP_RADIUS <= visual_limit);
     }
 }

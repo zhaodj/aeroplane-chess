@@ -138,10 +138,7 @@ fn set_autoplay_boot_state(state: &str, query: &str) {
 fn set_autoplay_boot_state(_state: &str, _query: &str) {}
 
 fn autoplay_match_setup_from_query(query: &str) -> Option<MatchSetup> {
-    let value = query
-        .trim_start_matches('?')
-        .split('&')
-        .find_map(|part| part.strip_prefix("ac_autoplay="))?;
+    let value = query_param(query, "ac_autoplay")?;
     let mut setup = default_match_setup();
     setup.fast_mode = true;
     setup.ai_difficulty = AiDifficulty::Easy;
@@ -189,7 +186,28 @@ fn autoplay_match_setup_from_query(query: &str) -> Option<MatchSetup> {
         _ => return None,
     }
 
+    if let Some(ai_difficulty) = query_param(query, "ac_ai").and_then(autoplay_ai_difficulty) {
+        setup.ai_difficulty = ai_difficulty;
+    }
+
     Some(setup)
+}
+
+fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    query
+        .trim_start_matches('?')
+        .split('&')
+        .filter_map(|part| part.split_once('='))
+        .find_map(|(candidate, value)| (candidate == key).then_some(value))
+}
+
+fn autoplay_ai_difficulty(value: &str) -> Option<AiDifficulty> {
+    match value {
+        "easy" => Some(AiDifficulty::Easy),
+        "normal" => Some(AiDifficulty::Normal),
+        "hard" => Some(AiDifficulty::Hard),
+        _ => None,
+    }
 }
 
 fn fit_in_game_camera(
@@ -258,6 +276,7 @@ mod tests {
         assert_eq!(setup.mode, GameMode::FreeForAll);
         assert_eq!(setup.launch_rule, LaunchRule::Even);
         assert_eq!(setup.pieces_per_player, 1);
+        assert_eq!(setup.ai_difficulty, AiDifficulty::Easy);
         assert!(setup.fast_mode);
         assert!(
             setup
@@ -274,6 +293,15 @@ mod tests {
                 PlayerSeat::Red,
             ]
         );
+    }
+
+    #[test]
+    fn autoplay_query_can_request_hard_ai_for_skill_smoke() {
+        let setup = autoplay_match_setup_from_query("?ac_autoplay=2v2-even-1&ac_ai=hard")
+            .expect("autoplay setup should parse");
+
+        assert_eq!(setup.mode, GameMode::TwoVsTwo);
+        assert_eq!(setup.ai_difficulty, AiDifficulty::Hard);
     }
 
     #[test]

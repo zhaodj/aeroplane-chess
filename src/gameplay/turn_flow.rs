@@ -13,7 +13,8 @@ use crate::gameplay::match_flow::{
     evaluate_match_result, turn_marker_position_for_seat,
 };
 use crate::gameplay::skill_flow::{
-    SkillRoster, disable_next_skill_turn, grant_random_skill_charge,
+    FinishBounceProgress, SkillRoster, disable_next_skill_turn, grant_random_skill_charge,
+    record_finish_bounce,
 };
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::states::GamePhase;
@@ -668,6 +669,14 @@ pub fn execute_action(
         resources.board_layout,
         resources.player_roster,
     );
+    apply_finish_bounce_skill_reward(
+        &action,
+        action_origin.as_ref(),
+        movement_roll_value,
+        &resources,
+        state.skill_roster,
+        &mut notes,
+    );
     let attacker_landed = if action.is_move() {
         let pre_jump_position = attacker_position(&action, resources.player_roster, piece_query);
         apply_jump_effect(
@@ -779,6 +788,88 @@ pub fn execute_action(
         resources.player_roster.players.len() as u8,
     );
     state.next_phase.set(GamePhase::AwaitDice);
+}
+
+fn apply_finish_bounce_skill_reward(
+    action: &PlannedAction,
+    action_origin: Option<&ActionOrigin>,
+    movement_roll_value: u8,
+    resources: &ActionResources<'_>,
+    skill_roster: &mut SkillRoster,
+    notes: &mut Vec<String>,
+) {
+    if !resources.match_config.rule_set.skills_enabled() {
+        return;
+    }
+
+    let Some(origin) = action_origin else {
+        return;
+    };
+    let bounce_count = finish_bounces_for_action(
+        action,
+        origin,
+        movement_roll_value,
+        resources.board_layout,
+        resources.player_roster,
+    );
+    if bounce_count == 0 {
+        return;
+    }
+
+    let allow_swap = resources.player_roster.players.len() > 2;
+    for _ in 0..bounce_count {
+        if let Some(progress) =
+            record_finish_bounce(skill_roster, origin.owner_player_id, allow_swap)
+        {
+            notes.push(format_finish_bounce_note(progress));
+        }
+    }
+}
+
+fn finish_bounces_for_action(
+    action: &PlannedAction,
+    action_origin: &ActionOrigin,
+    movement_roll_value: u8,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
+) -> u8 {
+    if !matches!(action, PlannedAction::Move { .. }) {
+        return 0;
+    }
+
+    let Some(steps) = movement_steps_for_roll(
+        action_origin.owner_player_id,
+        action_origin.status,
+        action_origin.progress,
+        movement_roll_value,
+        board_layout,
+        player_roster,
+    ) else {
+        return 0;
+    };
+    if steps
+        .last()
+        .is_none_or(|step| step.progress == FINISH_DISTANCE)
+    {
+        return 0;
+    }
+
+    steps
+        .iter()
+        .filter(|step| step.progress == FINISH_DISTANCE)
+        .count()
+        .min(u8::MAX as usize) as u8
+}
+
+fn format_finish_bounce_note(progress: FinishBounceProgress) -> String {
+    if let Some(skill) = progress.rewarded_skill {
+        format!(
+            "finish bounce {}/{}: gained 1 {skill} charge",
+            progress.threshold, progress.threshold
+        )
+    } else {
+        format!("finish bounce {}/{}", progress.count, progress.threshold)
+    }
 }
 
 /// 当玩家无合法动作时，直接结束当前行动并切换到下一掷骰阶段。
@@ -2366,7 +2457,8 @@ mod tests {
     use crate::gameplay::ai::AiDifficulty;
     use crate::gameplay::match_flow::{MatchSetup, PlayerSeat, build_match_rosters};
     use crate::gameplay::skill_flow::{
-        build_skill_roster, can_use_skill_this_turn, sync_turn_skill_usage,
+        build_skill_roster, can_use_skill_this_turn, finish_bounce_count, player_skill_state,
+        sync_turn_skill_usage,
     };
     use bevy::ecs::system::SystemState;
 
@@ -2429,6 +2521,15 @@ mod tests {
             stack_shield: 0,
             motion_serial: 0,
         }
+    }
+
+    fn total_skill_charges(skill_roster: &SkillRoster, player_id: u8) -> u8 {
+        let skills = player_skill_state(skill_roster, player_id).expect("player skills exist");
+        skills.dash_charges
+            + skills.snipe_charges
+            + skills.swap_charges
+            + skills.shield_charges
+            + skills.double_dice_charges
     }
 
     #[test]
@@ -2917,6 +3018,118 @@ mod tests {
                 &player_roster
             ),
             Some(FINISH_DISTANCE - 1)
+        );
+    }
+
+    #[test]
+    fn finish_bounce_counter_counts_only_overshoot_paths() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let board_layout = BoardLayout::default();
+        let player_roster = PlayerRoster::from_players(players);
+        let origin = ActionOrigin {
+            owner_player_id: 1,
+            status: PieceStatus::Active,
+            progress: FINISH_DISTANCE - 1,
+            translation: Vec3::ZERO,
+            new_progress: FINISH_DISTANCE - 1,
+        };
+
+        assert_eq!(
+            finish_bounces_for_action(
+                &PlannedAction::Move {
+                    piece_id: 1,
+                    target_progress: FINISH_DISTANCE,
+                },
+                &origin,
+                1,
+                &board_layout,
+                &player_roster,
+            ),
+            0
+        );
+        assert_eq!(
+            finish_bounces_for_action(
+                &PlannedAction::Move {
+                    piece_id: 1,
+                    target_progress: FINISH_DISTANCE - 1,
+                },
+                &origin,
+                2,
+                &board_layout,
+                &player_roster,
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn creative_finish_bounces_grant_skill_charge_every_second_bounce() {
+        let match_config = match_config(GameMode::OneVsOne);
+        let board_layout = BoardLayout::default();
+        let (players, teams) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let team_roster = TeamRoster { teams };
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let before_charges = total_skill_charges(&skill_roster, 1);
+        let mut match_result = MatchResult::default();
+        let mut turn_state = TurnState::opening_turn();
+        let mut input_state = TurnInputState::default();
+        let mut next_phase = NextState::<GamePhase>::default();
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: FINISH_DISTANCE - 1,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        for expected_count in [1, 0] {
+            turn_state.current_player = 1;
+            let mut query = system_state.get_mut(&mut world).unwrap();
+            execute_action(
+                PlannedAction::Move {
+                    piece_id: 1,
+                    target_progress: FINISH_DISTANCE - 1,
+                },
+                2,
+                2,
+                ActionResources {
+                    player_roster: &player_roster,
+                    team_roster: &team_roster,
+                    match_config: &match_config,
+                    board_layout: &board_layout,
+                },
+                ActionState {
+                    skill_roster: &mut skill_roster,
+                    match_result: &mut match_result,
+                    turn_state: &mut turn_state,
+                    input_state: &mut input_state,
+                    next_phase: &mut next_phase,
+                },
+                &mut query,
+            );
+            assert_eq!(finish_bounce_count(&skill_roster, 1), expected_count);
+        }
+
+        assert_eq!(total_skill_charges(&skill_roster, 1), before_charges + 1);
+        assert!(
+            turn_state
+                .last_action
+                .as_deref()
+                .is_some_and(|action| action.contains("finish bounce 2/2: gained 1 "))
         );
     }
 

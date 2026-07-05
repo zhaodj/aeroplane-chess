@@ -11,9 +11,9 @@ use crate::gameplay::match_flow::{
     MatchConfig, MatchResult, PlayerProfile, PlayerRoster, PlayerSeat, hangar_center_for_seat,
 };
 use crate::gameplay::skill_flow::{
-    PlayerSkillState, SkillRoster, can_use_skill_this_turn, is_current_player_dash_move_piece,
-    is_current_player_swap_piece, is_legal_shield_target, is_legal_snipe_target,
-    is_swap_teammate_piece, player_skill_state,
+    FINISH_BOUNCES_PER_SKILL_REWARD, PlayerSkillState, SkillRoster, can_use_skill_this_turn,
+    finish_bounce_count, is_current_player_dash_move_piece, is_current_player_swap_piece,
+    is_legal_shield_target, is_legal_snipe_target, is_swap_teammate_piece, player_skill_state,
 };
 use crate::gameplay::turn_flow::{TurnState, player_has_finished_all_pieces};
 use crate::platform::{DeviceProfile, PointerInputState, PointerSource};
@@ -81,6 +81,7 @@ struct PlayerHudEntry {
 enum PlayerHudBadgeKind {
     Player,
     Team,
+    FinishBounce,
     Turn,
 }
 
@@ -335,12 +336,13 @@ struct HudContentQueries<'w, 's> {
 
 const HUD_EDGE_MARGIN: f32 = 10.0;
 const HANGAR_BACKGROUND_WORLD_SIZE: f32 = 150.0;
-const HUD_ENTRY_W: f32 = 98.0;
+const HUD_ENTRY_W: f32 = 146.0;
 const HUD_ENTRY_H: f32 = 32.0;
 const HUD_BADGE_H: f32 = 28.0;
 const HUD_BADGE_GAP: f32 = 3.0;
-const HUD_BADGE_PLAYER_W: f32 = 32.0;
-const HUD_BADGE_TEAM_W: f32 = 32.0;
+const HUD_BADGE_PLAYER_W: f32 = 34.0;
+const HUD_BADGE_TEAM_W: f32 = 28.0;
+const HUD_BADGE_FINISH_BOUNCE_W: f32 = 44.0;
 const HUD_BADGE_TURN_W: f32 = 28.0;
 const SKILL_BUTTON_SIZE: f32 = 54.0;
 const SKILL_ICON_SIZE: f32 = 42.0;
@@ -386,9 +388,10 @@ const HUD_SKILL_ACTIONS: [SkillUiAction; 5] = [
     SkillUiAction::Shield,
     SkillUiAction::DoubleDice,
 ];
-const PLAYER_HUD_BADGES: [PlayerHudBadgeKind; 3] = [
+const PLAYER_HUD_BADGES: [PlayerHudBadgeKind; 4] = [
     PlayerHudBadgeKind::Player,
     PlayerHudBadgeKind::Team,
+    PlayerHudBadgeKind::FinishBounce,
     PlayerHudBadgeKind::Turn,
 ];
 
@@ -1098,6 +1101,8 @@ fn update_hud_content(
             player,
             is_current,
             player_finished,
+            finish_bounce_count(&skill_roster, badge_text.player_id),
+            match_config.rule_set.skills_enabled(),
         ));
         *text_color = TextColor(player_hud_badge_text_color(badge_text.kind, is_current));
     }
@@ -2247,15 +2252,17 @@ fn player_hud_badge_width(kind: PlayerHudBadgeKind) -> f32 {
     match kind {
         PlayerHudBadgeKind::Player => HUD_BADGE_PLAYER_W,
         PlayerHudBadgeKind::Team => HUD_BADGE_TEAM_W,
+        PlayerHudBadgeKind::FinishBounce => HUD_BADGE_FINISH_BOUNCE_W,
         PlayerHudBadgeKind::Turn => HUD_BADGE_TURN_W,
     }
 }
 
-fn player_hud_badges_for_seat(seat: PlayerSeat) -> [PlayerHudBadgeKind; 3] {
+fn player_hud_badges_for_seat(seat: PlayerSeat) -> [PlayerHudBadgeKind; 4] {
     match seat {
         PlayerSeat::Blue | PlayerSeat::Green => PLAYER_HUD_BADGES,
         PlayerSeat::Red | PlayerSeat::Yellow => [
             PlayerHudBadgeKind::Turn,
+            PlayerHudBadgeKind::FinishBounce,
             PlayerHudBadgeKind::Team,
             PlayerHudBadgeKind::Player,
         ],
@@ -2274,6 +2281,7 @@ fn player_hud_badge_name(kind: PlayerHudBadgeKind) -> &'static str {
     match kind {
         PlayerHudBadgeKind::Player => "Player",
         PlayerHudBadgeKind::Team => "Team",
+        PlayerHudBadgeKind::FinishBounce => "FinishBounce",
         PlayerHudBadgeKind::Turn => "Turn",
     }
 }
@@ -2283,6 +2291,8 @@ fn player_hud_badge_text(
     player: &PlayerProfile,
     is_current: bool,
     player_finished: bool,
+    finish_bounces: u8,
+    show_finish_bounces: bool,
 ) -> String {
     match kind {
         PlayerHudBadgeKind::Player => {
@@ -2293,6 +2303,13 @@ fn player_hud_badge_text(
             }
         }
         PlayerHudBadgeKind::Team => format!("T{}", player.state.team_id),
+        PlayerHudBadgeKind::FinishBounce => {
+            if show_finish_bounces {
+                format!("B{finish_bounces}/{FINISH_BOUNCES_PER_SKILL_REWARD}")
+            } else {
+                "B-".to_string()
+            }
+        }
         PlayerHudBadgeKind::Turn => {
             if is_current {
                 ">".to_string()
@@ -2314,6 +2331,8 @@ fn player_hud_badge_color(
             .with_alpha(if is_current { 1.0 } else { 0.94 }),
         PlayerHudBadgeKind::Team if is_current => Color::srgba(0.98, 0.99, 1.0, 0.98),
         PlayerHudBadgeKind::Team => Color::srgba(0.90, 0.94, 0.98, 0.82),
+        PlayerHudBadgeKind::FinishBounce if is_current => Color::srgba(0.98, 0.99, 1.0, 0.98),
+        PlayerHudBadgeKind::FinishBounce => Color::srgba(0.90, 0.94, 0.98, 0.82),
         PlayerHudBadgeKind::Turn if is_current => Color::srgba(0.12, 0.18, 0.26, 0.92),
         PlayerHudBadgeKind::Turn => Color::srgba(0.78, 0.82, 0.88, 0.54),
     }
@@ -2345,11 +2364,28 @@ fn roll_button_text(cancel_target_ready: bool) -> String {
 fn event_notice_text_from_action(action: &str) -> Option<String> {
     let mut notice = None;
     for segment in action.split(';').flat_map(|part| part.split(", ")) {
-        if let Some(event_note) = extract_event_note(segment.trim()) {
+        let segment = segment.trim();
+        if let Some(finish_bounce_notice) = format_finish_bounce_notice(segment) {
+            notice = Some(finish_bounce_notice);
+        } else if let Some(event_note) = extract_event_note(segment) {
             notice = Some(format_event_notice(event_note));
         }
     }
     notice
+}
+
+fn format_finish_bounce_notice(segment: &str) -> Option<String> {
+    let detail = segment.strip_prefix("finish bounce ")?;
+    if let Some((progress, skill_detail)) = detail.split_once(": gained 1 ")
+        && let Some(skill) = skill_detail.strip_suffix(" charge")
+    {
+        return Some(format!("Finish bounce {progress}\n{skill} +1"));
+    }
+
+    Some(format!(
+        "Finish bounce {detail}\nSkill reward at {FINISH_BOUNCES_PER_SKILL_REWARD}/{}.",
+        FINISH_BOUNCES_PER_SKILL_REWARD
+    ))
 }
 
 fn extract_event_note(segment: &str) -> Option<&str> {
@@ -2973,6 +3009,7 @@ mod tests {
             player_hud_badges_for_seat(PlayerSeat::Red),
             [
                 PlayerHudBadgeKind::Turn,
+                PlayerHudBadgeKind::FinishBounce,
                 PlayerHudBadgeKind::Team,
                 PlayerHudBadgeKind::Player,
             ]
@@ -2981,6 +3018,7 @@ mod tests {
             player_hud_badges_for_seat(PlayerSeat::Yellow),
             [
                 PlayerHudBadgeKind::Turn,
+                PlayerHudBadgeKind::FinishBounce,
                 PlayerHudBadgeKind::Team,
                 PlayerHudBadgeKind::Player,
             ]
@@ -2997,23 +3035,45 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Player, player, true, false),
+            player_hud_badge_text(PlayerHudBadgeKind::Player, player, true, false, 1, true),
             "P1"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Team, player, true, false),
+            player_hud_badge_text(PlayerHudBadgeKind::Team, player, true, false, 1, true),
             "T1"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, true, false),
+            player_hud_badge_text(
+                PlayerHudBadgeKind::FinishBounce,
+                player,
+                true,
+                false,
+                1,
+                true
+            ),
+            "B1/2"
+        );
+        assert_eq!(
+            player_hud_badge_text(
+                PlayerHudBadgeKind::FinishBounce,
+                player,
+                true,
+                false,
+                1,
+                false
+            ),
+            "B-"
+        );
+        assert_eq!(
+            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, true, false, 1, true),
             ">"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, false, false),
+            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, false, false, 1, true),
             "-"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Player, player, false, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Player, player, false, true, 1, true),
             "P1✓"
         );
     }
@@ -3561,6 +3621,16 @@ mod tests {
                 "rolled 2, moved piece #1 to tile 3; jumped to next same-color tile 6, pre-jump event tile 0: event GainSkillCharge: gained 1 Dash charge"
             ),
             Some("Event: Skill charge\nDash +1".to_string())
+        );
+        assert_eq!(
+            event_notice_text_from_action("rolled 2, moved piece #1 to tile 55; finish bounce 1/2"),
+            Some("Finish bounce 1/2\nSkill reward at 2/2.".to_string())
+        );
+        assert_eq!(
+            event_notice_text_from_action(
+                "rolled 2, moved piece #1 to tile 55; finish bounce 2/2: gained 1 Shield charge"
+            ),
+            Some("Finish bounce 2/2\nShield +1".to_string())
         );
     }
 

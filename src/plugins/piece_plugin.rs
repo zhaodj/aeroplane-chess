@@ -2461,6 +2461,7 @@ mod tests {
                 skip_next_skill_turn: false,
                 skill_blocked_this_turn: false,
             }],
+            finish_bounce_counts: [0; 4],
             last_skill_action: None,
             last_skill_action_player_id: None,
             last_skill_action_turn_index: 0,

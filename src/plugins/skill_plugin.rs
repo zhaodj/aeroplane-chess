@@ -139,6 +139,7 @@ impl Plugin for SkillPlugin {
                     handle_human_skill_input,
                     handle_human_snipe_key_select,
                     handle_human_snipe_click,
+                    update_skill_smoke_state,
                 )
                     .run_if(in_state(AppState::InGame)),
             )
@@ -173,6 +174,35 @@ fn sync_skill_turn_state(
         clear_target_state(&mut target_state);
     }
 }
+
+fn update_skill_smoke_state(skill_roster: Res<SkillRoster>) {
+    if !skill_roster.is_changed() {
+        return;
+    }
+    let Some(action) = skill_roster.last_skill_action.as_deref() else {
+        return;
+    };
+    write_skill_smoke_state(skill_roster.last_skill_action_serial, action);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn write_skill_smoke_state(serial: u64, action: &str) {
+    let Some(body) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.body())
+    else {
+        return;
+    };
+    if !body.has_attribute("data-ac-smoke-shell") && !body.has_attribute("data-ac-smoke-state") {
+        return;
+    }
+
+    let _ = body.set_attribute("data-ac-smoke-skill-serial", &serial.to_string());
+    let _ = body.set_attribute("data-ac-smoke-skill-action", action);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_skill_smoke_state(_serial: u64, _action: &str) {}
 
 /// 人类技能入口：统一处理按键与 HUD 点击触发的技能动作。
 fn handle_human_skill_input(
@@ -1241,7 +1271,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_snipe_targets_for_full_query_excludes_home_lane_enemy() {
+    fn collect_snipe_targets_for_full_query_includes_home_lane_enemy() {
         let mut world = World::new();
         world.spawn((
             PieceId(1),
@@ -1276,9 +1306,23 @@ mod tests {
             HangarSlot(Vec2::ZERO),
             PieceState {
                 owner_player_id: 3,
-                team_id: 2,
+                team_id: 3,
                 status: crate::domain::piece::PieceStatus::Active,
                 progress: 6,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+        world.spawn((
+            PieceId(4),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 4,
+                team_id: 1,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: HOME_ENTRY_PROGRESS + 2,
                 shield: 0,
                 stack_shield: 0,
                 motion_serial: 0,
@@ -1291,6 +1335,9 @@ mod tests {
         > = SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world).unwrap();
 
-        assert_eq!(collect_snipe_targets_for_full_query(1, 1, &query), vec![3]);
+        assert_eq!(
+            collect_snipe_targets_for_full_query(1, 1, &query),
+            vec![2, 3]
+        );
     }
 }
