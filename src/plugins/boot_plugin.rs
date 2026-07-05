@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::constants::{BOARD_WORLD_SIZE, gameplay_board_target_pixels};
 use crate::data::game_mode::GameMode;
+use crate::data::rule_set::RuleSet;
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
@@ -65,6 +66,7 @@ fn setup_camera(mut commands: Commands, mut next_state: ResMut<NextState<AppStat
 fn default_match_setup() -> MatchSetup {
     MatchSetup {
         mode: GameMode::TwoVsTwo,
+        rule_set: RuleSet::Creative,
         ai_difficulty: AiDifficulty::Normal,
         fast_mode: false,
         launch_rule: LaunchRule::SixOnly,

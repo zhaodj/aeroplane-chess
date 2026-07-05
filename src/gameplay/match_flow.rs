@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::data::board_config::{TileConfig, default_board_tiles};
 use crate::data::game_mode::GameMode;
+use crate::data::rule_set::RuleSet;
 use crate::domain::player::{PlayerControl, PlayerState};
 use crate::domain::rules::LaunchRule;
 use crate::domain::team::TeamState;
@@ -13,6 +14,7 @@ use crate::gameplay::ai::AiDifficulty;
 /// 对局运行时配置（进入 InGame 后使用的不可变快照）。
 pub struct MatchConfig {
     pub mode: GameMode,
+    pub rule_set: RuleSet,
     pub ai_difficulty: AiDifficulty,
     pub fast_mode: bool,
     pub launch_rule: LaunchRule,
@@ -25,6 +27,7 @@ pub struct MatchConfig {
 /// 对局开始前可编辑的配置（菜单页使用）。
 pub struct MatchSetup {
     pub mode: GameMode,
+    pub rule_set: RuleSet,
     pub ai_difficulty: AiDifficulty,
     pub fast_mode: bool,
     pub launch_rule: LaunchRule,
@@ -554,6 +557,7 @@ mod tests {
     fn setup(mode: GameMode) -> MatchSetup {
         MatchSetup {
             mode,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,

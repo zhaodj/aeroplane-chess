@@ -1833,6 +1833,7 @@ mod tests {
     fn test_roster() -> (BoardLayout, PlayerRoster) {
         let setup = MatchSetup {
             mode: GameMode::TwoVsTwo,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,

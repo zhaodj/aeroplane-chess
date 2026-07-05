@@ -6,6 +6,7 @@ pub mod boot_plugin;
 pub mod effects_plugin;
 pub mod game_plugin;
 pub mod menu_plugin;
+pub mod performance_plugin;
 pub mod piece_plugin;
 pub mod skill_plugin;
 pub mod turn_plugin;
@@ -21,6 +22,7 @@ use self::boot_plugin::BootPlugin;
 use self::effects_plugin::EffectsPlugin;
 use self::game_plugin::GamePlugin;
 use self::menu_plugin::MenuPlugin;
+use self::performance_plugin::PerformancePlugin;
 use self::piece_plugin::PiecePlugin;
 use self::skill_plugin::SkillPlugin;
 use self::turn_plugin::TurnPlugin;
@@ -35,6 +37,7 @@ impl Plugin for AeroplaneChessPlugins {
             BootPlugin,
             MenuPlugin,
             GamePlugin,
+            PerformancePlugin,
             BoardPlugin,
             PiecePlugin,
             TurnPlugin,

@@ -1,6 +1,6 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use bevy::window::WindowFocused;
+use bevy::window::{AppLifecycle, WindowFocused};
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::{
     audio::{AudioSinkPlayback, Volume},
@@ -328,47 +328,89 @@ fn background_music_focus_command(
     BackgroundMusicFocusCommand::None
 }
 
+fn app_lifecycle_foreground(lifecycle: AppLifecycle) -> Option<bool> {
+    match lifecycle {
+        AppLifecycle::WillSuspend | AppLifecycle::Suspended => Some(false),
+        AppLifecycle::WillResume | AppLifecycle::Running => Some(true),
+        AppLifecycle::Idle => None,
+    }
+}
+
+fn sync_focus_without_music(focused: bool, audio_focus: &mut AudioFocusState) {
+    audio_focus.foreground = focused;
+    if !focused {
+        audio_focus.paused_for_background = false;
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn sync_background_music_focus(
     mut focus_messages: MessageReader<WindowFocused>,
+    mut lifecycle_messages: MessageReader<AppLifecycle>,
     mut audio_focus: ResMut<AudioFocusState>,
     music_query: Query<&AudioSink, With<BackgroundMusic>>,
 ) {
     for focus in focus_messages.read() {
-        audio_focus.foreground = focus.focused;
-        for sink in &music_query {
-            match background_music_focus_command(focus.focused, sink.is_paused(), &mut audio_focus)
-            {
-                BackgroundMusicFocusCommand::None => {}
-                BackgroundMusicFocusCommand::Pause => sink.pause(),
-                BackgroundMusicFocusCommand::Resume => sink.play(),
-            }
+        sync_native_background_music_foreground(focus.focused, &mut audio_focus, &music_query);
+    }
+    for lifecycle in lifecycle_messages.read() {
+        if let Some(foreground) = app_lifecycle_foreground(*lifecycle) {
+            sync_native_background_music_foreground(foreground, &mut audio_focus, &music_query);
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_native_background_music_foreground(
+    foreground: bool,
+    audio_focus: &mut AudioFocusState,
+    music_query: &Query<&AudioSink, With<BackgroundMusic>>,
+) {
+    let Some(sink) = music_query.iter().next() else {
+        sync_focus_without_music(foreground, audio_focus);
+        return;
+    };
+
+    match background_music_focus_command(foreground, sink.is_paused(), audio_focus) {
+        BackgroundMusicFocusCommand::None => {}
+        BackgroundMusicFocusCommand::Pause => sink.pause(),
+        BackgroundMusicFocusCommand::Resume => sink.play(),
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn sync_background_music_focus(
     mut focus_messages: MessageReader<WindowFocused>,
+    mut lifecycle_messages: MessageReader<AppLifecycle>,
     mut audio_focus: ResMut<AudioFocusState>,
 ) {
     for focus in focus_messages.read() {
-        audio_focus.foreground = focus.focused;
-        WEB_BACKGROUND_MUSIC.with(|music| {
-            let Some(audio) = music.borrow().as_ref().cloned() else {
-                return;
-            };
-            match background_music_focus_command(focus.focused, audio.paused(), &mut audio_focus) {
-                BackgroundMusicFocusCommand::None => {}
-                BackgroundMusicFocusCommand::Pause => {
-                    let _ = audio.pause();
-                }
-                BackgroundMusicFocusCommand::Resume => {
-                    let _ = audio.play();
-                }
-            }
-        });
+        sync_web_background_music_foreground(focus.focused, &mut audio_focus);
     }
+    for lifecycle in lifecycle_messages.read() {
+        if let Some(foreground) = app_lifecycle_foreground(*lifecycle) {
+            sync_web_background_music_foreground(foreground, &mut audio_focus);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sync_web_background_music_foreground(foreground: bool, audio_focus: &mut AudioFocusState) {
+    WEB_BACKGROUND_MUSIC.with(|music| {
+        let Some(audio) = music.borrow().as_ref().cloned() else {
+            sync_focus_without_music(foreground, audio_focus);
+            return;
+        };
+        match background_music_focus_command(foreground, audio.paused(), audio_focus) {
+            BackgroundMusicFocusCommand::None => {}
+            BackgroundMusicFocusCommand::Pause => {
+                let _ = audio.pause();
+            }
+            BackgroundMusicFocusCommand::Resume => {
+                let _ = audio.play();
+            }
+        }
+    });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -721,6 +763,45 @@ mod tests {
 
         assert_eq!(
             background_music_focus_command(true, true, &mut focus),
+            BackgroundMusicFocusCommand::Resume
+        );
+        assert!(focus.foreground);
+        assert!(!focus.paused_for_background);
+    }
+
+    #[test]
+    fn app_lifecycle_maps_suspend_to_background_and_resume_to_foreground() {
+        assert_eq!(
+            app_lifecycle_foreground(AppLifecycle::WillSuspend),
+            Some(false)
+        );
+        assert_eq!(
+            app_lifecycle_foreground(AppLifecycle::Suspended),
+            Some(false)
+        );
+        assert_eq!(
+            app_lifecycle_foreground(AppLifecycle::WillResume),
+            Some(true)
+        );
+        assert_eq!(app_lifecycle_foreground(AppLifecycle::Running), Some(true));
+        assert_eq!(app_lifecycle_foreground(AppLifecycle::Idle), None);
+    }
+
+    #[test]
+    fn background_music_pauses_and_resumes_with_lifecycle() {
+        let mut focus = AudioFocusState::default();
+
+        let suspended = app_lifecycle_foreground(AppLifecycle::WillSuspend).unwrap();
+        assert_eq!(
+            background_music_focus_command(suspended, false, &mut focus),
+            BackgroundMusicFocusCommand::Pause
+        );
+        assert!(!focus.foreground);
+        assert!(focus.paused_for_background);
+
+        let resumed = app_lifecycle_foreground(AppLifecycle::Running).unwrap();
+        assert_eq!(
+            background_music_focus_command(resumed, true, &mut focus),
             BackgroundMusicFocusCommand::Resume
         );
         assert!(focus.foreground);

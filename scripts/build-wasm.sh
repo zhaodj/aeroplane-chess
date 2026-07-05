@@ -8,11 +8,13 @@ BUILD_MODE="${1:-release}"
 
 case "${BUILD_MODE}" in
   dev)
-    CARGO_PROFILE_DIR="debug"
+    CARGO_PROFILE="wasm-dev"
+    CARGO_PROFILE_DIR="wasm-dev"
     RUN_WASM_OPT=false
     EMIT_COMPRESSED=false
     ;;
   release)
+    CARGO_PROFILE="wasm-release"
     CARGO_PROFILE_DIR="wasm-release"
     RUN_WASM_OPT=true
     EMIT_COMPRESSED=true
@@ -40,10 +42,7 @@ fi
 rustup target add wasm32-unknown-unknown >/dev/null
 
 echo "[1/5] building wasm binary (${BUILD_MODE})..."
-cargo_build_args=(build --target wasm32-unknown-unknown --lib)
-if [ "${BUILD_MODE}" = release ]; then
-  cargo_build_args=(build --profile wasm-release --target wasm32-unknown-unknown --lib)
-fi
+cargo_build_args=(build --profile "${CARGO_PROFILE}" --target wasm32-unknown-unknown --lib)
 RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo "${cargo_build_args[@]}"
 
 WASM_FILE=""

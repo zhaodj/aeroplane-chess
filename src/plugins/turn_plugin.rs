@@ -11,16 +11,18 @@ use crate::gameplay::match_flow::{
     BoardLayout, MatchConfig, MatchResult, PlayerRoster, TeamRoster,
 };
 use crate::gameplay::skill_flow::{
-    MAX_PIECE_SHIELD, SkillRoster, arm_dash, arm_double_dice, can_use_skill_this_turn,
-    clear_dash_arm, dash_bonus, is_active_teammate_piece, is_legal_shield_target,
-    is_legal_snipe_target, mark_skill_used, player_skill_state, record_skill_action,
-    resolve_roll_value, spend_shield_charge, spend_snipe_charge, spend_swap_charge,
+    MAX_PIECE_SHIELD, RollResolution, SkillRoster, arm_dash, arm_double_dice,
+    can_use_skill_this_turn, clear_dash_arm, dash_bonus, is_current_player_swap_piece,
+    is_legal_shield_target, is_legal_snipe_target, is_swap_teammate_piece, mark_skill_used,
+    player_skill_state, record_skill_action, resolve_roll_value, spend_shield_charge,
+    spend_snipe_charge, spend_swap_charge,
 };
 use crate::gameplay::turn_flow::{
     ActionResources, ActionState, PlannedAction, TurnInputState, TurnState, choose_action,
-    collect_actions, current_player_control, execute_action, find_pending_action_by_piece_id,
-    finish_turn_without_action, get_pending_action, pressed_selection_key, record_turn_action,
-    set_pending_actions, set_roll_with_faces,
+    clear_pending_input, collect_actions, current_player_control, execute_action,
+    find_pending_action_by_piece_id, finish_turn_without_action, get_pending_action,
+    player_has_finished_all_pieces, pressed_selection_key, record_turn_action, roll_die,
+    set_pending_actions, set_roll_with_faces, skip_current_player_turn,
 };
 use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::boot_plugin::AutoplayMatch;
@@ -44,11 +46,13 @@ impl Plugin for TurnPlugin {
             .add_systems(
                 Update,
                 (
+                    skip_completed_player_turn,
                     drive_ai_turn_loop,
                     handle_human_roll_input,
                     handle_human_action_input,
                     handle_human_action_click,
                 )
+                    .chain()
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnExit(AppState::InGame), cleanup_turn_automation);
@@ -69,6 +73,23 @@ fn double_dice_resolution_note(player_id: u8, dice: [u8; 2]) -> String {
         dice[1],
         dice[0].max(dice[1])
     )
+}
+
+fn resolve_roll_for_rule_set(
+    skill_roster: &mut SkillRoster,
+    player_id: u8,
+    skills_enabled: bool,
+) -> RollResolution {
+    if skills_enabled {
+        resolve_roll_value(skill_roster, player_id)
+    } else {
+        let value = roll_die();
+        RollResolution {
+            value,
+            dice: [value, 0],
+            used_double_dice: false,
+        }
+    }
 }
 
 #[derive(Resource, Default)]
@@ -178,6 +199,48 @@ fn cleanup_turn_automation(mut commands: Commands) {
     commands.remove_resource::<TurnUiRequest>();
 }
 
+fn skip_completed_player_turn(game_phase: Res<State<GamePhase>>, mut params: TurnActionParams) {
+    if !matches!(game_phase.get(), GamePhase::AwaitDice)
+        || !current_player_should_skip_turn(
+            &params.match_config,
+            &params.match_result,
+            &params.turn_state,
+            &params.piece_query,
+        )
+    {
+        return;
+    }
+
+    let current_player = params.turn_state.current_player;
+    clear_pending_input(&mut params.input_state);
+    params.turn_ui_request.roll_requested = false;
+    clear_dash_arm(&mut params.skill_roster, current_player);
+    record_turn_action(
+        &mut params.turn_state,
+        format!("P{current_player} completed all pieces; skipped turn"),
+    );
+    skip_current_player_turn(
+        &mut params.turn_state,
+        params.player_roster.players.len() as u8,
+    );
+    params.next_phase.set(GamePhase::AwaitDice);
+}
+
+fn current_player_should_skip_turn(
+    match_config: &MatchConfig,
+    match_result: &MatchResult,
+    turn_state: &TurnState,
+    piece_query: &TurnPieceQuery,
+) -> bool {
+    !match_result.finished
+        && match_config.mode == GameMode::TwoVsTwo
+        && turn_state.current_roll.is_none()
+        && player_has_finished_all_pieces(
+            turn_state.current_player,
+            piece_query.iter().map(|(_, _, piece_state, _)| piece_state),
+        )
+}
+
 /// AI 回合驱动主循环：定时触发掷骰、选动作并执行完整结算。
 fn drive_ai_turn_loop(
     time: Res<Time>,
@@ -221,8 +284,11 @@ fn drive_ai_turn_loop(
         &mut params.piece_query,
     );
 
-    let roll_resolution =
-        resolve_roll_value(&mut params.skill_roster, params.turn_state.current_player);
+    let roll_resolution = resolve_roll_for_rule_set(
+        &mut params.skill_roster,
+        params.turn_state.current_player,
+        params.match_config.rule_set.skills_enabled(),
+    );
     let roll_value = roll_resolution.value;
     set_roll_with_faces(&mut params.turn_state, roll_value, roll_resolution.dice);
     if roll_resolution.used_double_dice {
@@ -247,6 +313,7 @@ fn finish_ai_roll_after_display(roll_value: u8, params: &mut TurnActionParams) {
         params.turn_state.turn_index,
         AiDashEvaluation {
             ai_difficulty: params.match_config.ai_difficulty,
+            skills_enabled: params.match_config.rule_set.skills_enabled(),
             roll,
             launch_rule: params.match_config.launch_rule,
             board_layout: &params.board_layout,
@@ -294,6 +361,10 @@ fn maybe_use_ai_skills(
     motion_effects: &mut PieceMotionEffects,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) {
+    if !match_config.rule_set.skills_enabled() {
+        return;
+    }
+
     if !can_use_skill_this_turn(skill_roster, current_player) {
         return;
     }
@@ -479,6 +550,7 @@ fn try_ai_double_dice(
 /// AI 在掷骰后评估是否需要临时预备 Dash（仅当存在可移动动作）。
 struct AiDashEvaluation<'a> {
     ai_difficulty: AiDifficulty,
+    skills_enabled: bool,
     roll: DiceRoll,
     launch_rule: LaunchRule,
     board_layout: &'a BoardLayout,
@@ -493,6 +565,10 @@ fn maybe_arm_dash_for_ai_after_roll(
     piece_query: &mut TurnPieceQuery,
 ) {
     if evaluation.ai_difficulty == AiDifficulty::Easy {
+        return;
+    }
+
+    if !evaluation.skills_enabled {
         return;
     }
 
@@ -595,9 +671,7 @@ fn preferred_ai_swap_target(
     let mut own_team = None;
 
     for (_, _, piece_state, _) in piece_query.iter_mut() {
-        if piece_state.owner_player_id == current_player
-            && piece_state.status == crate::domain::piece::PieceStatus::Active
-        {
+        if is_current_player_swap_piece(current_player, &piece_state) {
             own_progress = Some(piece_state.progress);
             own_team = Some(piece_state.team_id);
             break;
@@ -611,7 +685,7 @@ fn preferred_ai_swap_target(
     let mut candidates = piece_query
         .iter_mut()
         .filter(|(_, _, piece_state, _)| {
-            is_active_teammate_piece(current_player, own_team, piece_state)
+            is_swap_teammate_piece(current_player, own_team, &piece_state)
                 && piece_state.progress >= own_progress.saturating_add(6)
         })
         .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.progress))
@@ -747,9 +821,11 @@ fn execute_swap_on_turn_query(
         piece_query
             .iter()
             .find_map(|(piece_id, _, piece_state, transform)| {
-                (piece_state.owner_player_id == current_player
-                    && piece_state.status == crate::domain::piece::PieceStatus::Active)
-                    .then_some((piece_id.0, *piece_state, transform.translation))
+                is_current_player_swap_piece(current_player, &piece_state).then_some((
+                    piece_id.0,
+                    *piece_state,
+                    transform.translation,
+                ))
             })
     else {
         return "AI Swap failed: current active piece not found".to_string();
@@ -759,10 +835,12 @@ fn execute_swap_on_turn_query(
         piece_query
             .iter()
             .find_map(|(piece_id, _, piece_state, transform)| {
-                (piece_id.0 == teammate_piece_id).then_some((*piece_state, transform.translation))
+                (piece_id.0 == teammate_piece_id
+                    && is_swap_teammate_piece(current_player, current_state.team_id, &piece_state))
+                .then_some((*piece_state, transform.translation))
             })
     else {
-        return "AI Swap failed: teammate piece not found".to_string();
+        return "AI Swap failed: teammate piece not found on main route".to_string();
     };
 
     for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
@@ -828,8 +906,11 @@ fn handle_human_roll_input(
         return;
     }
 
-    let roll_resolution =
-        resolve_roll_value(&mut params.skill_roster, params.turn_state.current_player);
+    let roll_resolution = resolve_roll_for_rule_set(
+        &mut params.skill_roster,
+        params.turn_state.current_player,
+        params.match_config.rule_set.skills_enabled(),
+    );
     let roll_value = roll_resolution.value;
     set_roll_with_faces(&mut params.turn_state, roll_value, roll_resolution.dice);
     if roll_resolution.used_double_dice {
@@ -873,7 +954,8 @@ fn finish_human_roll_after_display(roll_value: u8, params: &mut TurnActionParams
         return;
     }
 
-    let can_offer_dash = can_use_skill_this_turn(&params.skill_roster, current_player)
+    let can_offer_dash = params.match_config.rule_set.skills_enabled()
+        && can_use_skill_this_turn(&params.skill_roster, current_player)
         && dash_bonus(&params.skill_roster, current_player) == 0
         && player_skill_state(&params.skill_roster, current_player)
             .map(|skills| skills.dash_charges > 0)
@@ -975,6 +1057,7 @@ fn handle_human_action_click(
         *device_profile,
         &params.player_roster,
         &hud_state,
+        params.match_config.rule_set.skills_enabled(),
     ) {
         return;
     }
@@ -1124,12 +1207,14 @@ mod tests {
     use crate::gameplay::skill_flow::{
         build_skill_roster, player_skill_state, sync_turn_skill_usage,
     };
+    use crate::gameplay::turn_flow::HOME_ENTRY_PROGRESS;
     use crate::plugins::effects_plugin::PieceMotionEffect;
     use bevy::ecs::system::SystemState;
 
     fn setup(mode: GameMode) -> MatchSetup {
         MatchSetup {
             mode,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
@@ -1152,6 +1237,7 @@ mod tests {
     fn match_config(mode: GameMode, ai_difficulty: AiDifficulty) -> MatchConfig {
         MatchConfig {
             mode,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
             ai_difficulty,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
@@ -1219,6 +1305,101 @@ mod tests {
         ));
     }
 
+    fn spawn_test_piece_with_status(
+        world: &mut World,
+        piece_id: u8,
+        owner_player_id: u8,
+        team_id: u8,
+        status: PieceStatus,
+        progress: u8,
+    ) {
+        world.spawn((
+            PieceId(piece_id),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id,
+                team_id,
+                status,
+                progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+    }
+
+    #[test]
+    fn preferred_ai_swap_target_ignores_home_lane_source_and_teammate() {
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
+        spawn_test_piece(&mut world, 3, 4, 2, HOME_ENTRY_PROGRESS + 1, 0);
+        spawn_test_piece(&mut world, 4, 4, 2, 12, 0);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
+
+        assert_eq!(preferred_ai_swap_target(2, &mut query), Some(4));
+
+        let mut home_lane_source_world = World::new();
+        spawn_test_piece(
+            &mut home_lane_source_world,
+            1,
+            2,
+            2,
+            HOME_ENTRY_PROGRESS + 1,
+            0,
+        );
+        spawn_test_piece(&mut home_lane_source_world, 4, 4, 2, 12, 0);
+        let mut source_system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut home_lane_source_world);
+        let mut source_query = source_system_state
+            .get_mut(&mut home_lane_source_world)
+            .unwrap();
+
+        assert_eq!(preferred_ai_swap_target(2, &mut source_query), None);
+    }
+
+    #[test]
+    fn completed_player_is_skipped_only_in_two_vs_two_waiting_turns() {
+        let mut turn_state = TurnState::opening_turn();
+        let mut world = World::new();
+        spawn_test_piece_with_status(&mut world, 1, 1, 1, PieceStatus::Finished, 0);
+        spawn_test_piece_with_status(&mut world, 2, 1, 1, PieceStatus::Finished, 0);
+        spawn_test_piece_with_status(&mut world, 3, 3, 1, PieceStatus::Active, 4);
+        spawn_test_piece_with_status(&mut world, 4, 2, 2, PieceStatus::Active, 4);
+        let mut system_state: SystemState<TurnPieceQuery> = SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
+        let mut config = match_config(GameMode::TwoVsTwo, AiDifficulty::Normal);
+        let result = MatchResult::default();
+
+        assert!(current_player_should_skip_turn(
+            &config,
+            &result,
+            &turn_state,
+            &query
+        ));
+
+        config.mode = GameMode::FreeForAll;
+        assert!(!current_player_should_skip_turn(
+            &config,
+            &result,
+            &turn_state,
+            &query
+        ));
+
+        config.mode = GameMode::TwoVsTwo;
+        turn_state.current_roll = Some(3);
+        assert!(!current_player_should_skip_turn(
+            &config,
+            &result,
+            &turn_state,
+            &query
+        ));
+    }
+
     #[test]
     fn maybe_use_ai_skills_does_not_arm_dash_before_roll() {
         let match_config = match_config(GameMode::OneVsOne, AiDifficulty::Normal);
@@ -1250,6 +1431,46 @@ mod tests {
         );
         let state = player_skill_state(&skill_roster, 2).unwrap();
         assert!(!state.dash_armed);
+        assert!(!skill_roster.skill_used_this_turn);
+        assert_eq!(effect_queue.pending_count(), 0);
+    }
+
+    #[test]
+    fn traditional_rule_set_prevents_ai_skill_use() {
+        let mut match_config = match_config(GameMode::OneVsOne, AiDifficulty::Hard);
+        match_config.rule_set = crate::data::rule_set::RuleSet::Traditional;
+        let (players, _) = build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let mut skill_roster = build_skill_roster(&player_roster);
+        sync_turn_skill_usage(&mut skill_roster, 2);
+        set_ai_skill_charges(&mut skill_roster, 2, 1, 1, 0, 1, 1);
+
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 1, 0);
+        spawn_test_piece(&mut world, 2, 1, 1, HARD_AI_SNIPE_MIN_PROGRESS, 0);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
+        let mut effect_queue = VisualEffectQueue::default();
+        let mut reveal_delays = EffectRevealDelays::default();
+        let mut motion_effects = PieceMotionEffects::default();
+
+        maybe_use_ai_skills(
+            2,
+            1,
+            &match_config,
+            &mut skill_roster,
+            &mut effect_queue,
+            &mut reveal_delays,
+            &mut motion_effects,
+            &mut query,
+        );
+
+        let state = player_skill_state(&skill_roster, 2).unwrap();
+        assert_eq!(state.snipe_charges, 1);
+        assert_eq!(state.shield_charges, 1);
+        assert_eq!(state.double_dice_charges, 1);
         assert!(!skill_roster.skill_used_this_turn);
         assert_eq!(effect_queue.pending_count(), 0);
     }
@@ -1499,6 +1720,7 @@ mod tests {
             1,
             AiDashEvaluation {
                 ai_difficulty: AiDifficulty::Normal,
+                skills_enabled: true,
                 roll: DiceRoll(2),
                 launch_rule: LaunchRule::SixOnly,
                 board_layout: &board_layout,

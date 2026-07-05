@@ -6,15 +6,16 @@ use crate::constants::{BOARD_WORLD_SIZE, gameplay_board_target_pixels};
 use crate::data::game_mode::GameMode;
 use crate::domain::piece::PieceState;
 use crate::domain::player::PlayerControl;
+use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{
     MatchConfig, MatchResult, PlayerProfile, PlayerRoster, PlayerSeat, hangar_center_for_seat,
 };
 use crate::gameplay::skill_flow::{
-    PlayerSkillState, SkillRoster, can_use_skill_this_turn, is_active_teammate_piece,
-    is_current_player_active_piece, is_current_player_dash_move_piece, is_legal_shield_target,
-    is_legal_snipe_target, player_skill_state,
+    PlayerSkillState, SkillRoster, can_use_skill_this_turn, is_current_player_dash_move_piece,
+    is_current_player_swap_piece, is_legal_shield_target, is_legal_snipe_target,
+    is_swap_teammate_piece, player_skill_state,
 };
-use crate::gameplay::turn_flow::TurnState;
+use crate::gameplay::turn_flow::{TurnState, player_has_finished_all_pieces};
 use crate::platform::{DeviceProfile, PointerInputState, PointerSource};
 use crate::plugins::effects_plugin::EffectRevealDelays;
 use crate::plugins::menu_plugin::{SoundSettingsOverlayState, global_settings_entry_screen_rect};
@@ -446,9 +447,9 @@ impl SkillBoardAvailability {
                 is_legal_snipe_target(current_player, current_team, piece_state);
             availability.dash_move_target |=
                 is_current_player_dash_move_piece(current_player, piece_state);
-            availability.active_self |= is_current_player_active_piece(current_player, piece_state);
+            availability.active_self |= is_current_player_swap_piece(current_player, piece_state);
             availability.active_teammate |=
-                is_active_teammate_piece(current_player, current_team, piece_state);
+                is_swap_teammate_piece(current_player, current_team, piece_state);
         }
         availability
     }
@@ -915,6 +916,7 @@ fn spawn_hud(
 fn update_player_hud_layout(
     windows: Query<&Window>,
     device_profile: Res<DeviceProfile>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     mut entry_query: PlayerHudEntryLayoutQuery,
     mut board_roll_button_query: Query<
@@ -989,6 +991,11 @@ fn update_player_hud_layout(
         let rect =
             shared_skill_button_rect(window_width, window_height, *device_profile, button.action);
         apply_rect_to_node(&mut node, rect);
+        node.display = if match_config.rule_set.skills_enabled() {
+            Display::Flex
+        } else {
+            Display::None
+        };
     }
 
     for mut node in &mut event_notice_panel_query {
@@ -996,6 +1003,12 @@ fn update_player_hud_layout(
             &mut node,
             event_notice_panel_rect(window_width, window_height, *device_profile),
         );
+        node.display =
+            if match_config.rule_set.effective_tile_kind(TileKind::Event) == TileKind::Event {
+                Display::Flex
+            } else {
+                Display::None
+            };
     }
 
     for mut node in &mut event_log_toggle_query {
@@ -1036,15 +1049,19 @@ fn update_hud_content(
 ) {
     for (entry, mut background, mut border) in &mut queries.entry_style_query {
         let is_current = entry.player_id == turn_state.current_player;
-        let _color = player_roster
+        let color = player_roster
             .players
             .iter()
             .find(|player| player.state.player_id == entry.player_id)
             .map(|player| player.color)
             .unwrap_or(Color::srgb(0.78, 0.82, 0.89));
-        *background = BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0));
+        *background = BackgroundColor(if is_current {
+            color.mix(&Color::WHITE, 0.36).with_alpha(0.16)
+        } else {
+            Color::srgba(0.0, 0.0, 0.0, 0.0)
+        });
         *border = BorderColor::all(if is_current {
-            Color::srgba(0.12, 0.22, 0.32, 0.0)
+            color.mix(&Color::WHITE, 0.24).with_alpha(0.38)
         } else {
             Color::srgba(0.10, 0.16, 0.24, 0.0)
         });
@@ -1072,7 +1089,16 @@ fn update_hud_content(
             continue;
         };
         let is_current = badge_text.player_id == turn_state.current_player;
-        *text = Text::new(player_hud_badge_text(badge_text.kind, player, is_current));
+        let player_finished = player_has_finished_all_pieces(
+            badge_text.player_id,
+            piece_query.iter().map(|(_, piece_state)| piece_state),
+        );
+        *text = Text::new(player_hud_badge_text(
+            badge_text.kind,
+            player,
+            is_current,
+            player_finished,
+        ));
         *text_color = TextColor(player_hud_badge_text_color(badge_text.kind, is_current));
     }
 
@@ -1083,9 +1109,10 @@ fn update_hud_content(
     let current_human_turn = current_profile.is_some_and(|player| {
         player.state.control == PlayerControl::Human && !match_result.finished
     });
+    let skills_enabled = match_config.rule_set.skills_enabled();
     let mut can_use_skill = false;
     let mut board_availability = SkillBoardAvailability::default();
-    if let Some(player) = current_profile {
+    if skills_enabled && let Some(player) = current_profile {
         can_use_skill =
             current_human_turn && can_use_skill_this_turn(&skill_roster, player.state.player_id);
         board_availability = SkillBoardAvailability::from_query(
@@ -1096,7 +1123,8 @@ fn update_hud_content(
     }
 
     let current_skills = player_skill_state(&skill_roster, turn_state.current_player);
-    let show_skill_block_marker = skill_block_marker_visible(current_skills, match_result.finished);
+    let show_skill_block_marker =
+        skills_enabled && skill_block_marker_visible(current_skills, match_result.finished);
     for (button, mut background, mut border) in &mut queries.skill_button_query {
         let ready = current_skills
             .map(|skills| {
@@ -1389,7 +1417,11 @@ fn handle_skill_tip_input(
     mut skill_tip: ResMut<SkillTipState>,
     mut skill_ui_request: ResMut<SkillUiRequest>,
 ) {
-    if overlay_state.open || overlay_state.input_captured || match_result.finished {
+    if overlay_state.open
+        || overlay_state.input_captured
+        || match_result.finished
+        || !match_config.rule_set.skills_enabled()
+    {
         clear_skill_tip_interaction(&mut skill_tip);
         hud_state.skill_tip_action = skill_tip.visible_action;
         return;
@@ -1554,6 +1586,7 @@ fn handle_player_hud_click(
     windows: Query<&Window>,
     device_profile: Res<DeviceProfile>,
     overlay_state: Res<SoundSettingsOverlayState>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
@@ -1603,7 +1636,8 @@ fn handle_player_hud_click(
                 && player.state.control == PlayerControl::Human
         });
         let roll_ready = current_human_turn && matches!(game_phase.get(), GamePhase::AwaitDice);
-        let cancel_target_ready = current_human_turn
+        let cancel_target_ready = match_config.rule_set.skills_enabled()
+            && current_human_turn
             && matches!(game_phase.get(), GamePhase::ResolveSkillEffect)
             && skill_target_state.is_active();
         if roll_ready {
@@ -1616,11 +1650,13 @@ fn handle_player_hud_click(
         }
     }
 
-    for action in HUD_SKILL_ACTIONS {
-        let rect =
-            shared_skill_button_rect(window.width(), window.height(), *device_profile, action);
-        if rect.contains(cursor) {
-            return;
+    if match_config.rule_set.skills_enabled() {
+        for action in HUD_SKILL_ACTIONS {
+            let rect =
+                shared_skill_button_rect(window.width(), window.height(), *device_profile, action);
+            if rect.contains(cursor) {
+                return;
+            }
         }
     }
 
@@ -1762,6 +1798,10 @@ fn skill_ready_for_current_context(
     turn_state: &TurnState,
     piece_query: &HudPieceQuery<'_, '_>,
 ) -> bool {
+    if !match_config.rule_set.skills_enabled() {
+        return false;
+    }
+
     let Some(current_profile) = player_profile(player_roster, turn_state.current_player) else {
         return false;
     };
@@ -1794,6 +1834,7 @@ pub fn player_hud_point_is_interactive(
     device_profile: DeviceProfile,
     player_roster: &PlayerRoster,
     hud_state: &PlayerHudState,
+    skills_enabled: bool,
 ) -> bool {
     if top_right_controls_rect(window.width()).contains(point)
         || event_log_toggle_rect(window.width(), window.height(), device_profile).contains(point)
@@ -1813,17 +1854,20 @@ pub fn player_hud_point_is_interactive(
         return true;
     }
 
-    if let Some(action) = hud_state.skill_tip_action
+    if skills_enabled
+        && let Some(action) = hud_state.skill_tip_action
         && skill_tip_rect(window.width(), window.height(), device_profile, action).contains(point)
     {
         return true;
     }
 
-    for action in HUD_SKILL_ACTIONS {
-        if shared_skill_button_rect(window.width(), window.height(), device_profile, action)
-            .contains(point)
-        {
-            return true;
+    if skills_enabled {
+        for action in HUD_SKILL_ACTIONS {
+            if shared_skill_button_rect(window.width(), window.height(), device_profile, action)
+                .contains(point)
+            {
+                return true;
+            }
         }
     }
 
@@ -2121,7 +2165,9 @@ fn skill_tip_body(action: SkillUiAction) -> &'static str {
         SkillUiAction::Snipe => {
             "Target an enemy aircraft on the public route. Shields absorb the hit first."
         }
-        SkillUiAction::Swap => "In 2v2, swap positions with one active teammate aircraft.",
+        SkillUiAction::Swap => {
+            "In 2v2, swap positions with one teammate aircraft on the main route."
+        }
         SkillUiAction::Shield => {
             "Give one active friendly aircraft a shield, up to 2 layers. Shields block hits."
         }
@@ -2236,9 +2282,16 @@ fn player_hud_badge_text(
     kind: PlayerHudBadgeKind,
     player: &PlayerProfile,
     is_current: bool,
+    player_finished: bool,
 ) -> String {
     match kind {
-        PlayerHudBadgeKind::Player => format!("P{}", player.state.player_id),
+        PlayerHudBadgeKind::Player => {
+            if player_finished {
+                format!("P{}✓", player.state.player_id)
+            } else {
+                format!("P{}", player.state.player_id)
+            }
+        }
         PlayerHudBadgeKind::Team => format!("T{}", player.state.team_id),
         PlayerHudBadgeKind::Turn => {
             if is_current {
@@ -2257,11 +2310,10 @@ fn player_hud_badge_color(
 ) -> Color {
     match kind {
         PlayerHudBadgeKind::Player => player_color
-            .mix(&Color::WHITE, if is_current { 0.36 } else { 0.62 })
-            .with_alpha(0.94),
-        PlayerHudBadgeKind::Team => {
-            Color::srgba(0.90, 0.94, 0.98, if is_current { 0.96 } else { 0.82 })
-        }
+            .mix(&Color::WHITE, if is_current { 0.16 } else { 0.62 })
+            .with_alpha(if is_current { 1.0 } else { 0.94 }),
+        PlayerHudBadgeKind::Team if is_current => Color::srgba(0.98, 0.99, 1.0, 0.98),
+        PlayerHudBadgeKind::Team => Color::srgba(0.90, 0.94, 0.98, 0.82),
         PlayerHudBadgeKind::Turn if is_current => Color::srgba(0.12, 0.18, 0.26, 0.92),
         PlayerHudBadgeKind::Turn => Color::srgba(0.78, 0.82, 0.88, 0.54),
     }
@@ -2269,8 +2321,8 @@ fn player_hud_badge_color(
 
 fn player_hud_badge_border_color(kind: PlayerHudBadgeKind, is_current: bool) -> Color {
     match (kind, is_current) {
-        (PlayerHudBadgeKind::Turn, true) => Color::srgba(0.05, 0.08, 0.12, 0.92),
-        (_, true) => Color::srgba(0.08, 0.14, 0.22, 0.70),
+        (PlayerHudBadgeKind::Turn, true) => Color::srgba(0.02, 0.05, 0.08, 0.98),
+        (_, true) => Color::srgba(0.04, 0.09, 0.16, 0.86),
         _ => Color::srgba(0.10, 0.16, 0.24, 0.26),
     }
 }
@@ -2792,11 +2844,13 @@ fn cleanup_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::piece::PieceStatus;
     use crate::domain::rules::LaunchRule;
     use crate::gameplay::ai::AiDifficulty;
     use crate::gameplay::match_flow::{MatchSetup, build_match_rosters};
     use crate::gameplay::skill_flow::record_skill_action;
-    use crate::gameplay::turn_flow::record_turn_action;
+    use crate::gameplay::turn_flow::{HOME_ENTRY_PROGRESS, record_turn_action};
+    use bevy::ecs::system::SystemState;
 
     fn test_profile(width: f32, height: f32) -> DeviceProfile {
         DeviceProfile::from_window_size(width, height)
@@ -2805,6 +2859,7 @@ mod tests {
     fn test_roster() -> PlayerRoster {
         let setup = MatchSetup {
             mode: GameMode::TwoVsTwo,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
@@ -2942,20 +2997,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Player, player, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Player, player, true, false),
             "P1"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Team, player, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Team, player, true, false),
             "T1"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, true, false),
             ">"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, false),
+            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, false, false),
             "-"
+        );
+        assert_eq!(
+            player_hud_badge_text(PlayerHudBadgeKind::Player, player, false, true),
+            "P1✓"
         );
     }
 
@@ -3058,6 +3117,42 @@ mod tests {
     }
 
     #[test]
+    fn skill_board_availability_excludes_home_lane_swap_teammate() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: 3,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+        ));
+        world.spawn((
+            PieceId(2),
+            PieceState {
+                owner_player_id: 3,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: HOME_ENTRY_PROGRESS + 1,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+        ));
+        let mut system_state: SystemState<HudPieceQuery> = SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
+
+        let availability = SkillBoardAvailability::from_query(1, 1, &query);
+
+        assert!(availability.active_self);
+        assert!(!availability.active_teammate);
+    }
+
+    #[test]
     fn dash_button_requires_a_movable_piece_after_roll() {
         let skills = PlayerSkillState {
             player_id: 1,
@@ -3095,6 +3190,49 @@ mod tests {
             &GamePhase::AwaitPieceSelect,
             GameMode::TwoVsTwo,
             with_movable_piece,
+        ));
+    }
+
+    #[test]
+    fn swap_button_requires_ready_source_and_teammate() {
+        let skills = PlayerSkillState {
+            player_id: 1,
+            dash_charges: 0,
+            dash_armed: false,
+            snipe_charges: 0,
+            swap_charges: 1,
+            shield_charges: 0,
+            double_dice_charges: 0,
+            double_dice_armed: false,
+            skip_next_skill_turn: false,
+            skill_blocked_this_turn: false,
+        };
+        let only_source = SkillBoardAvailability {
+            active_self: true,
+            active_teammate: false,
+            ..default()
+        };
+        let source_and_teammate = SkillBoardAvailability {
+            active_self: true,
+            active_teammate: true,
+            ..default()
+        };
+
+        assert!(!is_skill_button_ready(
+            SkillUiAction::Swap,
+            &skills,
+            true,
+            &GamePhase::AwaitDice,
+            GameMode::TwoVsTwo,
+            only_source,
+        ));
+        assert!(is_skill_button_ready(
+            SkillUiAction::Swap,
+            &skills,
+            true,
+            &GamePhase::AwaitDice,
+            GameMode::TwoVsTwo,
+            source_and_teammate,
         ));
     }
 
@@ -3267,7 +3405,8 @@ mod tests {
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
         ));
         hud_state.board_roll_button_visible = true;
         assert!(player_hud_point_is_interactive(
@@ -3275,7 +3414,8 @@ mod tests {
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
         ));
         hud_state.board_roll_button_visible = false;
         assert!(player_hud_point_is_interactive(
@@ -3283,21 +3423,32 @@ mod tests {
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
         ));
         assert!(player_hud_point_is_interactive(
             Vec2::new(skill.x + 2.0, skill.y + 2.0),
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
+        ));
+        assert!(!player_hud_point_is_interactive(
+            Vec2::new(skill.x + 2.0, skill.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state,
+            false
         ));
         assert!(!player_hud_point_is_interactive(
             Vec2::new(tip.x + 2.0, tip.y + 2.0),
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
         ));
         hud_state.skill_tip_action = Some(SkillUiAction::Shield);
         assert!(player_hud_point_is_interactive(
@@ -3305,7 +3456,16 @@ mod tests {
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
+        ));
+        assert!(!player_hud_point_is_interactive(
+            Vec2::new(tip.x + 2.0, tip.y + 2.0),
+            &window,
+            profile,
+            &roster,
+            &hud_state,
+            false
         ));
         hud_state.skill_tip_action = None;
         assert!(player_hud_point_is_interactive(
@@ -3313,14 +3473,16 @@ mod tests {
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
         ));
         assert!(!player_hud_point_is_interactive(
             Vec2::new(log_panel.x + 2.0, log_panel.y + 2.0),
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
         ));
         hud_state.event_log_expanded = true;
         assert!(player_hud_point_is_interactive(
@@ -3328,7 +3490,8 @@ mod tests {
             &window,
             profile,
             &roster,
-            &hud_state
+            &hud_state,
+            true
         ));
     }
 

@@ -278,9 +278,14 @@ pub fn is_legal_snipe_target(
         && piece_state.progress <= HOME_ENTRY_PROGRESS
 }
 
-/// 判断棋子是否为当前玩家可操作的 Active 棋子。
-pub fn is_current_player_active_piece(current_player: u8, piece_state: &PieceState) -> bool {
-    piece_state.owner_player_id == current_player && piece_state.status == PieceStatus::Active
+/// 判断棋子是否在主环道上，可参与 Swap。
+pub fn is_swap_main_route_piece(piece_state: &PieceState) -> bool {
+    piece_state.status == PieceStatus::Active && piece_state.progress <= HOME_ENTRY_PROGRESS
+}
+
+/// 判断棋子是否为当前玩家可作为 Swap 发起方的棋子。
+pub fn is_current_player_swap_piece(current_player: u8, piece_state: &PieceState) -> bool {
+    piece_state.owner_player_id == current_player && is_swap_main_route_piece(piece_state)
 }
 
 /// 判断棋子是否为当前玩家可通过 Dash 增幅的移动棋子。
@@ -292,15 +297,15 @@ pub fn is_current_player_dash_move_piece(current_player: u8, piece_state: &Piece
         )
 }
 
-/// 判断棋子是否为当前玩家同队队友的 Active 棋子。
-pub fn is_active_teammate_piece(
+/// 判断棋子是否为当前玩家同队队友、且可作为 Swap 目标的棋子。
+pub fn is_swap_teammate_piece(
     current_player: u8,
     current_team: u8,
     piece_state: &PieceState,
 ) -> bool {
     piece_state.owner_player_id != current_player
         && piece_state.team_id == current_team
-        && piece_state.status == PieceStatus::Active
+        && is_swap_main_route_piece(piece_state)
 }
 
 /// AI 是否应当预备 DoubleDice（用于开局起飞机会）。
@@ -631,6 +636,31 @@ mod tests {
             1,
             &piece_state(2, PieceStatus::AtLaunch)
         ));
+    }
+
+    #[test]
+    fn swap_piece_requires_active_piece_on_main_route() {
+        let mut current_piece = piece_state(1, PieceStatus::Active);
+        current_piece.progress = HOME_ENTRY_PROGRESS;
+        assert!(is_current_player_swap_piece(1, &current_piece));
+
+        current_piece.progress = HOME_ENTRY_PROGRESS + 1;
+        assert!(!is_current_player_swap_piece(1, &current_piece));
+
+        let mut teammate_piece = PieceState {
+            owner_player_id: 3,
+            team_id: 1,
+            status: PieceStatus::Active,
+            progress: HOME_ENTRY_PROGRESS,
+            shield: 0,
+            stack_shield: 0,
+            motion_serial: 0,
+        };
+        assert!(is_swap_teammate_piece(1, 1, &teammate_piece));
+
+        teammate_piece.progress = HOME_ENTRY_PROGRESS + 1;
+        assert!(!is_swap_teammate_piece(1, 1, &teammate_piece));
+        assert!(!is_swap_teammate_piece(3, 1, &teammate_piece));
     }
 
     #[test]

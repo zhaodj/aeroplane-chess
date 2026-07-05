@@ -35,6 +35,7 @@ fn prepare_match(
 
     commands.insert_resource(MatchConfig {
         mode: match_setup.mode,
+        rule_set: match_setup.rule_set,
         ai_difficulty: match_setup.ai_difficulty,
         fast_mode: match_setup.fast_mode,
         launch_rule: match_setup.launch_rule,

@@ -266,6 +266,24 @@ pub fn current_player_control(
         .map(|player| player.state.control)
 }
 
+pub fn player_has_finished_all_pieces<'a>(
+    player_id: u8,
+    piece_states: impl IntoIterator<Item = &'a PieceState>,
+) -> bool {
+    let mut has_piece = false;
+    for piece_state in piece_states {
+        if piece_state.owner_player_id != player_id {
+            continue;
+        }
+
+        has_piece = true;
+        if piece_state.status != PieceStatus::Finished {
+            return false;
+        }
+    }
+    has_piece
+}
+
 /// 读取 1~4 数字键，返回合法的动作序号。
 pub fn pressed_selection_key(keyboard: &ButtonInput<KeyCode>, max_actions: usize) -> Option<usize> {
     let keys = [
@@ -589,6 +607,7 @@ pub fn execute_action(
             pre_jump_position,
             post_jump_position,
             resources.board_layout,
+            resources.match_config,
         );
         let notes_before_collision = notes.len();
         let attacker_landed = resolve_collision(
@@ -1424,7 +1443,9 @@ fn apply_post_collision_tile_effects(
     else {
         return true;
     };
-    let Some(tile_kind) = resources.board_layout.tile_kind_for_route_index(tile_index) else {
+    let Some(tile_kind) =
+        effective_tile_kind(resources.board_layout, resources.match_config, tile_index)
+    else {
         return true;
     };
 
@@ -1485,6 +1506,7 @@ fn jump_source_event_tile(
     pre_jump_position: Option<BoardPosition>,
     post_jump_position: Option<BoardPosition>,
     board_layout: &BoardLayout,
+    match_config: &MatchConfig,
 ) -> Option<u8> {
     let Some(BoardPosition::Main(source_tile_index)) = pre_jump_position else {
         return None;
@@ -1494,8 +1516,18 @@ fn jump_source_event_tile(
         return None;
     }
 
-    (board_layout.tile_kind_for_route_index(source_tile_index) == Some(TileKind::Event))
+    (effective_tile_kind(board_layout, match_config, source_tile_index) == Some(TileKind::Event))
         .then_some(source_tile_index)
+}
+
+fn effective_tile_kind(
+    board_layout: &BoardLayout,
+    match_config: &MatchConfig,
+    route_index: u8,
+) -> Option<TileKind> {
+    board_layout
+        .tile_kind_for_route_index(route_index)
+        .map(|kind| match_config.rule_set.effective_tile_kind(kind))
 }
 
 /// 撞击主逻辑：
@@ -1548,7 +1580,8 @@ fn resolve_collision(
         })
         .collect::<Vec<_>>();
 
-    if target_tile_index.is_some_and(|tile_index| is_attack_route_tile(board_layout, tile_index))
+    if target_tile_index
+        .is_some_and(|tile_index| is_attack_route_tile(board_layout, match_config, tile_index))
         && !defender_piece_ids.is_empty()
     {
         let target_tile_index = target_tile_index.expect("attack tile has a route index");
@@ -1560,11 +1593,11 @@ fn resolve_collision(
             piece_query,
             notes,
         );
-        append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+        append_attack_tile_collision_note(board_layout, match_config, target_tile_index, notes);
         return true;
     }
 
-    if is_plain_board_position(board_layout, attacker_board_position)
+    if is_plain_board_position(board_layout, match_config, attacker_board_position)
         && defender_piece_ids.len() >= 2
     {
         send_attacker_to_hangar(action, piece_query);
@@ -1585,7 +1618,10 @@ fn resolve_collision(
             continue;
         }
 
-        if match_config.mode == GameMode::TwoVsTwo && piece_state.stack_shield > 0 {
+        if match_config.rule_set.shields_enabled()
+            && match_config.mode == GameMode::TwoVsTwo
+            && piece_state.stack_shield > 0
+        {
             defenders_with_stack.push(piece_id.0);
         }
     }
@@ -1595,7 +1631,7 @@ fn resolve_collision(
         notes.push("shared stack shield blocked collision".to_string());
         restore_attacker_origin(action, action_origin, piece_query);
         if let Some(target_tile_index) = target_tile_index {
-            append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+            append_attack_tile_collision_note(board_layout, match_config, target_tile_index, notes);
         }
         return false;
     }
@@ -1613,7 +1649,7 @@ fn resolve_collision(
             continue;
         }
 
-        if piece_state.shield > 0 {
+        if match_config.rule_set.shields_enabled() && piece_state.shield > 0 {
             piece_state.shield -= 1;
             collision_blocked = true;
             notes.push(format!(
@@ -1636,7 +1672,7 @@ fn resolve_collision(
         restore_attacker_origin(action, action_origin, piece_query);
         notes.push("attacker bounced back after shield block".to_string());
         if let Some(target_tile_index) = target_tile_index {
-            append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+            append_attack_tile_collision_note(board_layout, match_config, target_tile_index, notes);
         }
         return false;
     } else if notes
@@ -1644,27 +1680,41 @@ fn resolve_collision(
         .any(|note| note.contains("sent piece #") && note.contains("back to hangar"))
     {
         if let Some(target_tile_index) = target_tile_index {
-            append_attack_tile_collision_note(board_layout, target_tile_index, notes);
+            append_attack_tile_collision_note(board_layout, match_config, target_tile_index, notes);
         }
     }
     true
 }
 
-fn is_plain_board_position(board_layout: &BoardLayout, target_position: BoardPosition) -> bool {
+fn is_plain_board_position(
+    board_layout: &BoardLayout,
+    match_config: &MatchConfig,
+    target_position: BoardPosition,
+) -> bool {
     match target_position {
-        BoardPosition::Main(tile_index) => is_plain_route_tile(board_layout, tile_index),
+        BoardPosition::Main(tile_index) => {
+            is_plain_route_tile(board_layout, match_config, tile_index)
+        }
         BoardPosition::TurnMarker(_) => true,
         BoardPosition::Launch | BoardPosition::Home(_) | BoardPosition::Goal => false,
     }
 }
 
 /// 普通主环道格：不含攻击、防御、随机、飞跃等特殊效果。
-fn is_plain_route_tile(board_layout: &BoardLayout, target_tile_index: u8) -> bool {
-    board_layout.tile_kind_for_route_index(target_tile_index) == Some(TileKind::Normal)
+fn is_plain_route_tile(
+    board_layout: &BoardLayout,
+    match_config: &MatchConfig,
+    target_tile_index: u8,
+) -> bool {
+    effective_tile_kind(board_layout, match_config, target_tile_index) == Some(TileKind::Normal)
 }
 
-fn is_attack_route_tile(board_layout: &BoardLayout, target_tile_index: u8) -> bool {
-    board_layout.tile_kind_for_route_index(target_tile_index) == Some(TileKind::Attack)
+fn is_attack_route_tile(
+    board_layout: &BoardLayout,
+    match_config: &MatchConfig,
+    target_tile_index: u8,
+) -> bool {
+    effective_tile_kind(board_layout, match_config, target_tile_index) == Some(TileKind::Attack)
 }
 
 /// 攻击格撞击会穿透护盾，将目标格上的所有敌方棋子送回机库。
@@ -1699,10 +1749,12 @@ fn clear_attack_tile_defenders(
 /// 若撞击发生在攻击格，补充一条强化撞击说明。
 fn append_attack_tile_collision_note(
     board_layout: &BoardLayout,
+    match_config: &MatchConfig,
     target_tile_index: u8,
     notes: &mut Vec<String>,
 ) {
-    if board_layout.tile_kind_for_route_index(target_tile_index) == Some(TileKind::Attack) {
+    if effective_tile_kind(board_layout, match_config, target_tile_index) == Some(TileKind::Attack)
+    {
         notes.push("enhanced collision on attack tile".to_string());
     }
 }
@@ -1864,7 +1916,7 @@ fn apply_team_stack(
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     notes: &mut Vec<String>,
 ) {
-    if match_config.mode != GameMode::TwoVsTwo {
+    if match_config.mode != GameMode::TwoVsTwo || !match_config.rule_set.shields_enabled() {
         return;
     }
 
@@ -1967,6 +2019,15 @@ fn apply_event_kind_effect(
     skill_roster: &mut SkillRoster,
     notes: &mut Vec<String>,
 ) -> Option<TileEventOutcome> {
+    if resources
+        .match_config
+        .rule_set
+        .effective_tile_kind(TileKind::Event)
+        != TileKind::Event
+    {
+        return None;
+    }
+
     match event_kind {
         TileEventKind::GainShield => {
             let shield = modify_piece_shield(action, piece_query, 1)?;
@@ -2188,17 +2249,36 @@ pub fn advance_turn(turn_state: &mut TurnState, player_count: u8) {
     if turn_state.extra_rolls_remaining > 0 {
         turn_state.extra_rolls_remaining -= 1;
     } else {
-        turn_state.current_player = if turn_state.current_player >= player_count {
-            1
-        } else {
-            turn_state.current_player + 1
-        };
+        advance_to_next_player(turn_state, player_count);
         turn_state.consecutive_sixes = 0;
-        turn_state.turn_index = turn_state.turn_index.saturating_add(1);
     }
 
     turn_state.current_roll = None;
     turn_state.current_roll_faces = None;
+}
+
+/// 跳过当前玩家的回合：用于 2v2 中个人棋子已全部完成但队友尚未完成的等待玩家。
+pub fn skip_current_player_turn(turn_state: &mut TurnState, player_count: u8) {
+    turn_state.extra_rolls_remaining = 0;
+    turn_state.consecutive_sixes = 0;
+    turn_state.current_roll = None;
+    turn_state.current_roll_faces = None;
+    turn_state.hold_last_roll_display = false;
+    turn_state.roll_display_animation_started = false;
+    advance_to_next_player(turn_state, player_count);
+}
+
+fn advance_to_next_player(turn_state: &mut TurnState, player_count: u8) {
+    if player_count == 0 {
+        return;
+    }
+
+    turn_state.current_player = if turn_state.current_player >= player_count {
+        1
+    } else {
+        turn_state.current_player + 1
+    };
+    turn_state.turn_index = turn_state.turn_index.saturating_add(1);
 }
 
 #[cfg(test)]
@@ -2215,6 +2295,7 @@ mod tests {
     fn setup(mode: GameMode) -> MatchSetup {
         MatchSetup {
             mode,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
@@ -2260,9 +2341,72 @@ mod tests {
         assert_eq!(input_state.prompt, None);
     }
 
+    fn test_piece_state(owner_player_id: u8, status: PieceStatus) -> PieceState {
+        PieceState {
+            owner_player_id,
+            team_id: owner_player_id,
+            status,
+            progress: 0,
+            shield: 0,
+            stack_shield: 0,
+            motion_serial: 0,
+        }
+    }
+
+    #[test]
+    fn player_finished_requires_all_owned_pieces_finished() {
+        let pieces = [
+            test_piece_state(1, PieceStatus::Finished),
+            test_piece_state(1, PieceStatus::Finished),
+            test_piece_state(2, PieceStatus::Active),
+        ];
+
+        assert!(player_has_finished_all_pieces(1, pieces.iter()));
+        assert!(!player_has_finished_all_pieces(2, pieces.iter()));
+        assert!(!player_has_finished_all_pieces(3, pieces.iter()));
+    }
+
+    #[test]
+    fn skip_current_player_turn_clears_bonus_roll_and_advances_player() {
+        let mut turn_state = TurnState {
+            current_player: 4,
+            extra_rolls_remaining: 2,
+            consecutive_sixes: 2,
+            turn_index: 8,
+            roll_serial: 3,
+            current_roll: Some(6),
+            current_roll_faces: Some([6, 0]),
+            last_roll: Some(6),
+            last_roll_faces: Some([6, 0]),
+            last_roll_player: Some(4),
+            hold_last_roll_display: true,
+            roll_display_animation_started: true,
+            player_last_rolls: [None, None, None, Some(6)],
+            player_last_roll_faces: [None, None, None, Some([6, 0])],
+            pending_roll_display: None,
+            last_piece_effect: None,
+            last_action: None,
+            last_action_player_id: None,
+            last_action_turn_index: 0,
+            last_action_serial: 0,
+        };
+
+        skip_current_player_turn(&mut turn_state, 4);
+
+        assert_eq!(turn_state.current_player, 1);
+        assert_eq!(turn_state.extra_rolls_remaining, 0);
+        assert_eq!(turn_state.consecutive_sixes, 0);
+        assert_eq!(turn_state.current_roll, None);
+        assert_eq!(turn_state.current_roll_faces, None);
+        assert!(!turn_state.hold_last_roll_display);
+        assert!(!turn_state.roll_display_animation_started);
+        assert_eq!(turn_state.turn_index, 9);
+    }
+
     fn match_config(mode: GameMode) -> MatchConfig {
         MatchConfig {
             mode,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
@@ -2285,6 +2429,7 @@ mod tests {
     fn match_config_from_setup(setup: &MatchSetup) -> MatchConfig {
         MatchConfig {
             mode: setup.mode,
+            rule_set: setup.rule_set,
             ai_difficulty: setup.ai_difficulty,
             fast_mode: setup.fast_mode,
             launch_rule: setup.launch_rule,
@@ -3163,12 +3308,14 @@ mod tests {
     #[test]
     fn same_color_event_tile_is_kept_as_pre_jump_event_source() {
         let board_layout = BoardLayout::default();
+        let match_config = match_config(GameMode::OneVsOne);
 
         assert_eq!(
             jump_source_event_tile(
                 Some(BoardPosition::Main(0)),
                 Some(BoardPosition::Main(3)),
                 &board_layout,
+                &match_config,
             ),
             Some(0)
         );
@@ -3177,6 +3324,7 @@ mod tests {
                 Some(BoardPosition::Main(0)),
                 Some(BoardPosition::Main(0)),
                 &board_layout,
+                &match_config,
             ),
             None
         );
@@ -3185,6 +3333,7 @@ mod tests {
                 Some(BoardPosition::Main(44)),
                 Some(BoardPosition::Main(0)),
                 &board_layout,
+                &match_config,
             ),
             None
         );
@@ -4684,6 +4833,102 @@ mod tests {
     }
 
     #[test]
+    fn traditional_rule_set_treats_attack_defense_and_event_tiles_as_normal() {
+        let (players, _) =
+            crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
+        let player_roster = PlayerRoster::from_players(players);
+        let mut skill_roster = build_skill_roster(&player_roster);
+        let mut match_config = match_config(GameMode::OneVsOne);
+        match_config.rule_set = crate::data::rule_set::RuleSet::Traditional;
+        let board_layout = BoardLayout::default();
+
+        assert!(is_plain_route_tile(&board_layout, &match_config, 2));
+        assert!(!is_attack_route_tile(&board_layout, &match_config, 2));
+        assert!(is_plain_route_tile(&board_layout, &match_config, 44));
+        assert!(is_plain_route_tile(&board_layout, &match_config, 0));
+        assert_eq!(
+            jump_source_event_tile(
+                Some(BoardPosition::Main(0)),
+                Some(BoardPosition::Main(3)),
+                &board_layout,
+                &match_config,
+            ),
+            None
+        );
+
+        let target_tile = 44;
+        let target_progress = progress_for_main_tile(&player_roster, 1, target_tile);
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: PieceStatus::Active,
+                progress: target_progress,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::default(),
+        ));
+
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
+        let mut notes = Vec::new();
+        let mut piece_effect_notice = None;
+        assert!(apply_post_collision_tile_effects(
+            &PlannedAction::Move {
+                piece_id: 1,
+                target_progress,
+            },
+            LandingResources {
+                player_roster: &player_roster,
+                match_config: &match_config,
+                board_layout: &board_layout,
+                jump_source_event_tile: None,
+            },
+            &mut query,
+            &mut skill_roster,
+            &mut notes,
+            &mut piece_effect_notice,
+        ));
+        let shield = query
+            .iter_mut()
+            .find(|(piece_id, _, _, _)| piece_id.0 == 1)
+            .map(|(_, _, piece_state, _)| piece_state.shield)
+            .unwrap_or_default();
+        assert_eq!(shield, 0);
+        assert!(notes.is_empty());
+        assert_eq!(piece_effect_notice, None);
+
+        let mut final_progress = progress_for_main_tile(&player_roster, 1, 0);
+        assert_eq!(
+            apply_event_kind_effect(
+                TileEventKind::GainShield,
+                &PlannedAction::Move {
+                    piece_id: 1,
+                    target_progress: final_progress,
+                },
+                &mut final_progress,
+                LandingResources {
+                    player_roster: &player_roster,
+                    match_config: &match_config,
+                    board_layout: &board_layout,
+                    jump_source_event_tile: None,
+                },
+                &mut query,
+                &mut skill_roster,
+                &mut notes,
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn passing_over_special_tiles_does_not_trigger_tile_effects() {
         let (players, teams) =
             crate::gameplay::match_flow::build_match_rosters(&setup(GameMode::OneVsOne));
@@ -4803,6 +5048,7 @@ mod tests {
                 Some(BoardPosition::Main(0)),
                 Some(BoardPosition::Main(3)),
                 &board_layout,
+                &match_config,
             ),
             Some(0)
         );

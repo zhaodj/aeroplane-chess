@@ -2,12 +2,14 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
+use crate::data::rule_set::RuleSet;
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{MatchSetup, PlayerSeat};
 use crate::platform::PointerInputState;
 use crate::plugins::audio_plugin::AudioSettings;
+use crate::plugins::performance_plugin::{PerformanceSettings, fps_toggle_label};
 use crate::states::AppState;
 
 /// 菜单插件：主菜单与开局配置页的渲染和交互。
@@ -104,6 +106,7 @@ enum SoundSettingsValueKind {
     Music,
     Effects,
     Mute,
+    Fps,
 }
 
 #[derive(Component)]
@@ -134,6 +137,7 @@ impl ClickRect {
 #[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
 enum ModeSelectAction {
     SetMode(GameMode),
+    SetRuleSet(RuleSet),
     SetPlayerSeat {
         player_index: usize,
         seat: PlayerSeat,
@@ -167,6 +171,7 @@ enum SoundSettingsAction {
     EffectsDown,
     EffectsUp,
     ToggleMute,
+    ToggleFps,
     MainMenu,
     QuitGame,
     Back,
@@ -205,16 +210,17 @@ const GLOBAL_SOUND_ENTRY_TOP: f32 = 16.0;
 const GLOBAL_SOUND_ENTRY_W: f32 = 128.0;
 const GLOBAL_SOUND_ENTRY_H: f32 = 38.0;
 const GLOBAL_SOUND_PANEL_W: f32 = 462.0;
-const GLOBAL_SOUND_PANEL_H: f32 = 390.0;
+const GLOBAL_SOUND_PANEL_H: f32 = 448.0;
 const GLOBAL_SOUND_ROW_LEFT: f32 = 34.0;
 const GLOBAL_SOUND_CONTROL_LEFT: f32 = 244.0;
 const GLOBAL_SOUND_ROW_TOP: f32 = 98.0;
 const GLOBAL_SOUND_ROW_GAP: f32 = 58.0;
 const GLOBAL_SOUND_MUTE_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 2.0;
+const GLOBAL_SOUND_FPS_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 3.0;
 const GLOBAL_SOUND_BUTTON: f32 = 42.0;
 const GLOBAL_SOUND_VALUE_W: f32 = 82.0;
 const GLOBAL_SOUND_TOGGLE_W: f32 = 176.0;
-const GLOBAL_SETTINGS_ACTION_TOP: f32 = 304.0;
+const GLOBAL_SETTINGS_ACTION_TOP: f32 = 362.0;
 const GLOBAL_SETTINGS_ACTION_W: f32 = 160.0;
 const GLOBAL_SETTINGS_ACTION_H: f32 = 44.0;
 const GLOBAL_SETTINGS_ACTION_GAP: f32 = 18.0;
@@ -234,7 +240,8 @@ const OPTION_W: f32 = 112.0;
 const OPTION_H: f32 = 36.0;
 const OPTION_GAP: f32 = 12.0;
 const MODE_ROW_TOP: f32 = 72.0;
-const PLAYER_ROW_START_TOP: f32 = 128.0;
+const RULE_SET_ROW_TOP: f32 = MODE_ROW_TOP + SETTING_ROW_GAP;
+const PLAYER_ROW_START_TOP: f32 = RULE_SET_ROW_TOP + SETTING_ROW_GAP;
 const PLAYER_ROW_GAP: f32 = 48.0;
 const PLAYER_COLOR_LEFT: f32 = 250.0;
 const PLAYER_CONTROL_LEFT: f32 = 486.0;
@@ -371,7 +378,18 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                         SoundSettingsValueKind::Effects,
                         GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP,
                     );
-                    spawn_global_sound_toggle_row(panel, GLOBAL_SOUND_MUTE_ROW_TOP);
+                    spawn_global_sound_toggle_row(
+                        panel,
+                        "Mute",
+                        SoundSettingsValueKind::Mute,
+                        GLOBAL_SOUND_MUTE_ROW_TOP,
+                    );
+                    spawn_global_sound_toggle_row(
+                        panel,
+                        "FPS Counter",
+                        SoundSettingsValueKind::Fps,
+                        GLOBAL_SOUND_FPS_ROW_TOP,
+                    );
 
                     spawn_global_sound_panel_button(
                         panel,
@@ -389,9 +407,14 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
         });
 }
 
-fn spawn_global_sound_toggle_row(panel: &mut ChildSpawnerCommands<'_>, top: f32) {
+fn spawn_global_sound_toggle_row(
+    panel: &mut ChildSpawnerCommands<'_>,
+    label: &str,
+    value_kind: SoundSettingsValueKind,
+    top: f32,
+) {
     panel.spawn((
-        Text::new("Mute"),
+        Text::new(label),
         TextFont {
             font_size: FontSize::Px(20.0),
             ..default()
@@ -403,7 +426,7 @@ fn spawn_global_sound_toggle_row(panel: &mut ChildSpawnerCommands<'_>, top: f32)
             top: Val::Px(top + 10.0),
             ..default()
         },
-        Name::new("GlobalSoundLabelMute"),
+        Name::new(format!("GlobalSoundLabel{label}")),
     ));
 
     panel
@@ -421,23 +444,29 @@ fn spawn_global_sound_toggle_row(panel: &mut ChildSpawnerCommands<'_>, top: f32)
             },
             BackgroundColor(Color::srgba(0.55, 0.70, 0.88, 0.22)),
             BorderColor::all(Color::srgba(0.22, 0.30, 0.42, 0.24)),
-            Name::new("GlobalSoundButtonMute"),
+            Name::new(format!("GlobalSoundButton{label}")),
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Sound On"),
+                Text::new(global_sound_toggle_initial_label(value_kind)),
                 TextFont {
                     font_size: FontSize::Px(18.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.10, 0.16, 0.24)),
                 TextLayout::justify(Justify::Center),
-                SoundSettingsValueText {
-                    kind: SoundSettingsValueKind::Mute,
-                },
-                Name::new("GlobalSoundMuteValue"),
+                SoundSettingsValueText { kind: value_kind },
+                Name::new(format!("GlobalSound{label}Value")),
             ));
         });
+}
+
+fn global_sound_toggle_initial_label(value_kind: SoundSettingsValueKind) -> &'static str {
+    match value_kind {
+        SoundSettingsValueKind::Mute => "Sound On",
+        SoundSettingsValueKind::Fps => "FPS On",
+        SoundSettingsValueKind::Music | SoundSettingsValueKind::Effects => "",
+    }
 }
 
 fn spawn_global_sound_row(
@@ -573,6 +602,7 @@ fn update_sound_overlay_input_capture(
 fn update_global_sound_overlay(
     app_state: Res<State<AppState>>,
     audio_settings: Res<AudioSettings>,
+    performance_settings: Res<PerformanceSettings>,
     overlay_state: Res<SoundSettingsOverlayState>,
     mut entry_query: Query<
         (&mut Node, &mut Visibility),
@@ -601,7 +631,10 @@ fn update_global_sound_overlay(
         *visibility = modal_visibility;
     }
 
-    if !audio_settings.is_changed() && !overlay_state.is_changed() {
+    if !audio_settings.is_changed()
+        && !performance_settings.is_changed()
+        && !overlay_state.is_changed()
+    {
         return;
     }
     for (value_text, mut text) in &mut value_query {
@@ -609,6 +642,7 @@ fn update_global_sound_overlay(
             SoundSettingsValueKind::Music => format_volume_percent(audio_settings.music_volume),
             SoundSettingsValueKind::Effects => format_volume_percent(audio_settings.effects_volume),
             SoundSettingsValueKind::Mute => format_mute_label(&audio_settings).to_owned(),
+            SoundSettingsValueKind::Fps => fps_toggle_label(&performance_settings).to_owned(),
         });
     }
 }
@@ -629,6 +663,7 @@ fn handle_global_sound_overlay_click(
     pointer: Res<PointerInputState>,
     windows: Query<&Window>,
     mut audio_settings: ResMut<AudioSettings>,
+    mut performance_settings: ResMut<PerformanceSettings>,
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut app_exit: MessageWriter<AppExit>,
@@ -642,7 +677,12 @@ fn handle_global_sound_overlay_click(
 
     if overlay_state.open {
         if let Some(action) = global_sound_action_at(cursor, window) {
-            match apply_global_sound_action(action, &mut audio_settings, &mut overlay_state) {
+            match apply_global_sound_action(
+                action,
+                &mut audio_settings,
+                &mut performance_settings,
+                &mut overlay_state,
+            ) {
                 GlobalSettingsCommand::None => {}
                 GlobalSettingsCommand::MainMenu => next_app_state.set(AppState::MainMenu),
                 GlobalSettingsCommand::QuitGame => {
@@ -666,6 +706,7 @@ fn handle_global_sound_overlay_click(
 fn apply_global_sound_action(
     action: SoundSettingsAction,
     audio_settings: &mut AudioSettings,
+    performance_settings: &mut PerformanceSettings,
     overlay_state: &mut SoundSettingsOverlayState,
 ) -> GlobalSettingsCommand {
     match action {
@@ -678,6 +719,7 @@ fn apply_global_sound_action(
             audio_settings.adjust_effects(AudioSettings::EFFECTS_STEP)
         }
         SoundSettingsAction::ToggleMute => audio_settings.toggle_mute(),
+        SoundSettingsAction::ToggleFps => performance_settings.toggle_fps(),
         SoundSettingsAction::MainMenu => {
             overlay_state.open = false;
             return GlobalSettingsCommand::MainMenu;
@@ -788,6 +830,15 @@ fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettings
             ClickRect {
                 x: GLOBAL_SOUND_CONTROL_LEFT,
                 y: GLOBAL_SOUND_MUTE_ROW_TOP,
+                w: GLOBAL_SOUND_TOGGLE_W,
+                h: GLOBAL_SOUND_BUTTON,
+            },
+        ),
+        (
+            SoundSettingsAction::ToggleFps,
+            ClickRect {
+                x: GLOBAL_SOUND_CONTROL_LEFT,
+                y: GLOBAL_SOUND_FPS_ROW_TOP,
                 w: GLOBAL_SOUND_TOGGLE_W,
                 h: GLOBAL_SOUND_BUTTON,
             },
@@ -1291,6 +1342,22 @@ fn spawn_mode_select_content(
         );
     }
 
+    spawn_section_label(commands, layout, "Play Style", RULE_SET_ROW_TOP + 7.0);
+    for (rule_set_index, rule_set) in RuleSet::ALL.iter().enumerate() {
+        spawn_option(
+            commands,
+            ModeSelectAction::SetRuleSet(*rule_set),
+            layout.rect(ClickRect {
+                x: OPTION_LEFT + rule_set_index as f32 * (OPTION_W * 1.35 + OPTION_GAP),
+                y: RULE_SET_ROW_TOP,
+                w: OPTION_W * 1.35,
+                h: OPTION_H,
+            }),
+            rule_set.label(),
+            Color::srgba(0.58, 0.72, 0.58, 0.28),
+        );
+    }
+
     for player_index in 0..active_player_count {
         let row_top = player_row_top(player_index);
         spawn_section_label(
@@ -1686,6 +1753,7 @@ fn action_selected(action: ModeSelectAction, match_setup: &MatchSetup) -> bool {
     // 判断某个选项是否与当前配置一致（用于高亮）。
     match action {
         ModeSelectAction::SetMode(mode) => match_setup.mode == mode,
+        ModeSelectAction::SetRuleSet(rule_set) => match_setup.rule_set == rule_set,
         ModeSelectAction::SetPlayerSeat { player_index, seat } => {
             match_setup.player_seat(player_index) == Some(seat)
         }
@@ -1765,6 +1833,7 @@ fn update_sound_settings_text(
             SoundSettingsValueKind::Music => format_volume_percent(audio_settings.music_volume),
             SoundSettingsValueKind::Effects => format_volume_percent(audio_settings.effects_volume),
             SoundSettingsValueKind::Mute => format_mute_label(&audio_settings).to_owned(),
+            SoundSettingsValueKind::Fps => "FPS --".to_owned(),
         });
     }
 }
@@ -1812,6 +1881,7 @@ fn apply_sound_settings_action(
             audio_settings.adjust_effects(AudioSettings::EFFECTS_STEP)
         }
         SoundSettingsAction::ToggleMute => audio_settings.toggle_mute(),
+        SoundSettingsAction::ToggleFps => {}
         SoundSettingsAction::MainMenu | SoundSettingsAction::Back => {
             next_state.set(AppState::MainMenu)
         }
@@ -1851,6 +1921,20 @@ fn handle_mode_select_input(
     if keyboard.just_pressed(KeyCode::Digit3) {
         apply_mode_select_action(
             ModeSelectAction::SetMode(GameMode::FreeForAll),
+            &mut match_setup,
+            &mut next_state,
+        );
+    }
+    if keyboard.just_pressed(KeyCode::KeyT) {
+        apply_mode_select_action(
+            ModeSelectAction::SetRuleSet(RuleSet::Traditional),
+            &mut match_setup,
+            &mut next_state,
+        );
+    }
+    if keyboard.just_pressed(KeyCode::KeyC) {
+        apply_mode_select_action(
+            ModeSelectAction::SetRuleSet(RuleSet::Creative),
             &mut match_setup,
             &mut next_state,
         );
@@ -1940,6 +2024,7 @@ fn apply_mode_select_action(
             match_setup.sanitize_player_controls();
             match_setup.sanitize_player_seats();
         }
+        ModeSelectAction::SetRuleSet(rule_set) => match_setup.rule_set = rule_set,
         ModeSelectAction::SetPlayerSeat { player_index, seat } => {
             match_setup.set_player_seat(player_index, seat)
         }
@@ -1998,6 +2083,7 @@ mod tests {
     fn setup() -> MatchSetup {
         MatchSetup {
             mode: GameMode::TwoVsTwo,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
             ai_difficulty: AiDifficulty::Normal,
             fast_mode: false,
             launch_rule: LaunchRule::SixOnly,
@@ -2020,7 +2106,10 @@ mod tests {
     #[test]
     fn mode_select_layout_rows_do_not_overlap_or_overflow() {
         for active_player_count in [2, 4] {
-            let mut rows = vec![(MODE_ROW_TOP, MODE_ROW_TOP + OPTION_H)];
+            let mut rows = vec![
+                (MODE_ROW_TOP, MODE_ROW_TOP + OPTION_H),
+                (RULE_SET_ROW_TOP, RULE_SET_ROW_TOP + OPTION_H),
+            ];
             rows.extend((0..active_player_count).map(|index| {
                 let top = player_row_top(index);
                 (top, top + OPTION_H.max(COLOR_SWATCH_H))
@@ -2189,6 +2278,7 @@ mod tests {
             effects_volume: 0.5,
             muted: false,
         };
+        let mut performance_settings = PerformanceSettings { show_fps: false };
         let mut overlay_state = SoundSettingsOverlayState {
             open: true,
             input_captured: false,
@@ -2198,6 +2288,7 @@ mod tests {
             apply_global_sound_action(
                 SoundSettingsAction::MusicDown,
                 &mut audio_settings,
+                &mut performance_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2206,6 +2297,7 @@ mod tests {
             apply_global_sound_action(
                 SoundSettingsAction::EffectsUp,
                 &mut audio_settings,
+                &mut performance_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2219,6 +2311,7 @@ mod tests {
             apply_global_sound_action(
                 SoundSettingsAction::ToggleMute,
                 &mut audio_settings,
+                &mut performance_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2228,8 +2321,21 @@ mod tests {
 
         assert_eq!(
             apply_global_sound_action(
+                SoundSettingsAction::ToggleFps,
+                &mut audio_settings,
+                &mut performance_settings,
+                &mut overlay_state,
+            ),
+            GlobalSettingsCommand::None
+        );
+        assert!(performance_settings.show_fps);
+        assert!(overlay_state.open);
+
+        assert_eq!(
+            apply_global_sound_action(
                 SoundSettingsAction::MainMenu,
                 &mut audio_settings,
+                &mut performance_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::MainMenu
@@ -2241,6 +2347,7 @@ mod tests {
             apply_global_sound_action(
                 SoundSettingsAction::QuitGame,
                 &mut audio_settings,
+                &mut performance_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::QuitGame
@@ -2252,6 +2359,7 @@ mod tests {
             apply_global_sound_action(
                 SoundSettingsAction::Back,
                 &mut audio_settings,
+                &mut performance_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2315,6 +2423,15 @@ mod tests {
         assert_eq!(
             global_sound_action_at(mute, &window),
             Some(SoundSettingsAction::ToggleMute)
+        );
+
+        let fps = Vec2::new(
+            panel.x + GLOBAL_SOUND_CONTROL_LEFT + 8.0,
+            panel.y + GLOBAL_SOUND_FPS_ROW_TOP + 8.0,
+        );
+        assert_eq!(
+            global_sound_action_at(fps, &window),
+            Some(SoundSettingsAction::ToggleFps)
         );
 
         let main_menu = Vec2::new(
@@ -2447,6 +2564,26 @@ mod tests {
         );
         assert!(action_selected(p1_red, &match_setup));
         assert!(action_selected(p2_blue, &match_setup));
+    }
+
+    #[test]
+    fn rule_set_options_follow_match_setup_selection() {
+        let mut match_setup = setup();
+        let traditional_option = ModeSelectAction::SetRuleSet(RuleSet::Traditional);
+        let creative_option = ModeSelectAction::SetRuleSet(RuleSet::Creative);
+
+        assert!(action_selected(creative_option, &match_setup));
+        assert!(!action_selected(traditional_option, &match_setup));
+
+        apply_mode_select_action(
+            traditional_option,
+            &mut match_setup,
+            &mut NextState::<AppState>::default(),
+        );
+
+        assert_eq!(match_setup.rule_set, RuleSet::Traditional);
+        assert!(action_selected(traditional_option, &match_setup));
+        assert!(!action_selected(creative_option, &match_setup));
     }
 
     #[test]

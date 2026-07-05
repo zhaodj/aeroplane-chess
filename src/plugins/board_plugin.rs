@@ -7,8 +7,8 @@ use crate::constants::BOARD_Z_LAYER;
 use crate::domain::player::PlayerControl;
 use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{
-    BoardLayout, HANGAR_SLOT_OFFSETS, MatchResult, PlayerRoster, PlayerSeat,
-    hangar_center_for_seat, player_for_seat,
+    BoardLayout, HANGAR_SLOT_OFFSETS, MatchConfig, MatchResult, PlayerProfile, PlayerRoster,
+    PlayerSeat, hangar_center_for_seat, player_for_seat,
 };
 use crate::gameplay::turn_flow::{TurnState, commit_pending_roll_display};
 use crate::plugins::animation_plugin::PieceMoveAnimation;
@@ -27,6 +27,7 @@ impl Plugin for BoardPlugin {
                     update_dice_roll_visual_state,
                     update_player_dice_displays,
                     update_center_dice_roll_displays,
+                    update_center_dice_turn_halo,
                 )
                     .chain()
                     .run_if(in_state(AppState::InGame)),
@@ -64,6 +65,12 @@ struct CenterDiceSprite {
     base_center: Vec2,
 }
 
+#[derive(Component)]
+/// 棋盘中心骰子的当前玩家色光环。
+struct CenterDiceTurnHalo {
+    layer: CenterDiceTurnHaloLayer,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PlayerDiceDisplayLayer {
     Rim,
@@ -95,6 +102,12 @@ impl PlayerDiceDisplayState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CenterDiceTurnHaloLayer {
+    Glow,
+    Ring,
+}
+
 const PLAYER_DICE_DOUBLE_OFFSET: f32 = 20.5;
 const CENTER_DICE_DOUBLE_OFFSET: f32 = 38.0;
 const CENTER_DICE_SPRITE_SIZE: f32 = 66.0;
@@ -104,6 +117,11 @@ const CENTER_DICE_PROMPT_ALPHA: f32 = 1.0;
 const CENTER_DICE_PROMPT_BASE_ROTATION: f32 = -0.12;
 const CENTER_DICE_PROMPT_BOB: f32 = 4.0;
 const CENTER_DICE_PROMPT_SCALE_PULSE: f32 = 0.035;
+const CENTER_DICE_TURN_HALO_SEGMENTS: usize = 64;
+const CENTER_DICE_TURN_HALO_GLOW_INNER_RADIUS: f32 = 42.0;
+const CENTER_DICE_TURN_HALO_GLOW_OUTER_RADIUS: f32 = 55.0;
+const CENTER_DICE_TURN_HALO_RING_INNER_RADIUS: f32 = 49.0;
+const CENTER_DICE_TURN_HALO_RING_OUTER_RADIUS: f32 = 52.0;
 const DICE_ROLL_ANIMATION_DURATION: f32 = 1.8;
 const DICE_ROLL_SETTLE_START: f32 = 1.35;
 const DICE_ROLL_FACE_INTERVAL: f32 = 0.045;
@@ -382,6 +400,7 @@ fn spawn_board(
     mut materials: ResMut<Assets<ColorMaterial>>,
     asset_server: Res<AssetServer>,
     board_layout: Res<BoardLayout>,
+    match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
 ) {
     let board_palette = BoardPalette::from_player_roster(&player_roster);
@@ -515,7 +534,7 @@ fn spawn_board(
                 &mut meshes,
                 &mut materials,
                 tile.world_pos,
-                tile.kind,
+                match_config.rule_set.effective_tile_kind(tile.kind),
                 BOARD_Z_LAYER + 0.62,
                 format!("SpecialTileIcon_{route_index:02}"),
             );
@@ -583,6 +602,7 @@ fn spawn_board(
             hangar_center_for_seat(player.seat),
         );
     }
+
     // 中心四向目标点。
     for icon in CENTER_STAR_ICONS {
         spawn_circle_with_border(
@@ -630,6 +650,7 @@ fn spawn_board(
     }
 
     let dice_sprite_assets = DiceSpriteAssets::load(&asset_server);
+    spawn_center_dice_turn_halo(&mut commands, &mut meshes, &mut materials);
     spawn_center_dice_roll_display(&mut commands, &dice_sprite_assets);
     commands.insert_resource(dice_sprite_assets);
 }
@@ -779,6 +800,45 @@ fn update_center_dice_roll_displays(
         transform.translation.y = center.y;
         transform.rotation = Quat::from_rotation_z(visual_transform.rotation);
         transform.scale = Vec3::new(visual_transform.scale.x, visual_transform.scale.y, 1.0);
+    }
+}
+
+fn update_center_dice_turn_halo(
+    time: Res<Time>,
+    turn_state: Res<TurnState>,
+    dice_visual_state: Res<DiceRollVisualState>,
+    player_roster: Res<PlayerRoster>,
+    game_phase: Res<State<GamePhase>>,
+    match_result: Res<MatchResult>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut halo_query: Query<(
+        &CenterDiceTurnHalo,
+        &mut Visibility,
+        &mut Transform,
+        &MeshMaterial2d<ColorMaterial>,
+    )>,
+) {
+    let halo_state = center_dice_turn_halo_state(
+        &turn_state,
+        &dice_visual_state,
+        game_phase.get(),
+        &player_roster,
+        &match_result,
+    );
+    let pulse = current_turn_guide_pulse(time.elapsed_secs());
+
+    for (halo, mut visibility, mut transform, material_handle) in &mut halo_query {
+        let Some((player, faces)) = halo_state else {
+            *visibility = Visibility::Hidden;
+            transform.scale = Vec3::ONE;
+            continue;
+        };
+
+        *visibility = Visibility::Visible;
+        transform.scale = center_dice_turn_halo_scale(faces, pulse);
+        if let Some(mut material) = materials.get_mut(&material_handle.0) {
+            material.color = center_dice_turn_halo_color(halo.layer, player.color, pulse);
+        }
     }
 }
 
@@ -1089,6 +1149,74 @@ fn center_dice_center_for_index(base_center: Vec2, faces: [u8; 2], die_index: u8
     base_center + Vec2::new(offset, 0.0)
 }
 
+fn current_turn_profile<'a>(
+    turn_state: &TurnState,
+    player_roster: &'a PlayerRoster,
+    match_result: &MatchResult,
+) -> Option<&'a PlayerProfile> {
+    if match_result.finished {
+        return None;
+    }
+
+    player_roster
+        .players
+        .iter()
+        .find(|player| player.state.player_id == turn_state.current_player)
+}
+
+fn center_dice_turn_halo_state<'a>(
+    turn_state: &TurnState,
+    dice_visual_state: &DiceRollVisualState,
+    game_phase: &GamePhase,
+    player_roster: &'a PlayerRoster,
+    match_result: &MatchResult,
+) -> Option<(&'a PlayerProfile, [u8; 2])> {
+    if match_result.finished {
+        return None;
+    }
+
+    if let Some(animation) = dice_visual_state.animation {
+        return player_roster
+            .players
+            .iter()
+            .find(|player| player.state.player_id == animation.key.player_id)
+            .map(|player| (player, dice_roll_animation_faces(animation)));
+    }
+
+    center_dice_prompt_visible(turn_state, game_phase, player_roster, match_result)
+        .then(|| current_turn_profile(turn_state, player_roster, match_result))
+        .flatten()
+        .map(|player| (player, [1, 0]))
+}
+
+fn current_turn_guide_pulse(elapsed_secs: f32) -> f32 {
+    (elapsed_secs * PI * 1.35).sin() * 0.5 + 0.5
+}
+
+fn center_dice_turn_halo_color(
+    layer: CenterDiceTurnHaloLayer,
+    player_color: Color,
+    pulse: f32,
+) -> Color {
+    match layer {
+        CenterDiceTurnHaloLayer::Glow => player_color
+            .mix(&Color::WHITE, 0.30)
+            .with_alpha(0.14 + pulse * 0.10),
+        CenterDiceTurnHaloLayer::Ring => player_color
+            .mix(&Color::WHITE, 0.18)
+            .with_alpha(0.60 + pulse * 0.22),
+    }
+}
+
+fn center_dice_turn_halo_scale(faces: [u8; 2], pulse: f32) -> Vec3 {
+    let breath = 1.0 + pulse * 0.035;
+    if dice_face_for_index(faces, 1).is_some() {
+        Vec3::new(1.58 * breath, 1.02 * breath, 1.0)
+    } else {
+        Vec3::new(breath, breath, 1.0)
+    }
+}
+
 fn dice_face_asset_path(roll: u8) -> &'static str {
     match roll {
         1 => "ui/dice/die_1.png",
@@ -1327,6 +1455,41 @@ fn spawn_center_dice_roll_display(commands: &mut Commands, dice_sprite_assets: &
                 base_center: center,
             },
             Name::new(format!("CenterDiceSprite_D{die_index}")),
+            BoardSceneEntity,
+        ));
+    }
+}
+
+fn spawn_center_dice_turn_halo(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+) {
+    for (layer, inner_radius, outer_radius, z) in [
+        (
+            CenterDiceTurnHaloLayer::Glow,
+            CENTER_DICE_TURN_HALO_GLOW_INNER_RADIUS,
+            CENTER_DICE_TURN_HALO_GLOW_OUTER_RADIUS,
+            BOARD_Z_LAYER + 3.08,
+        ),
+        (
+            CenterDiceTurnHaloLayer::Ring,
+            CENTER_DICE_TURN_HALO_RING_INNER_RADIUS,
+            CENTER_DICE_TURN_HALO_RING_OUTER_RADIUS,
+            BOARD_Z_LAYER + 3.09,
+        ),
+    ] {
+        commands.spawn((
+            Mesh2d(meshes.add(annulus_mesh(
+                inner_radius,
+                outer_radius,
+                CENTER_DICE_TURN_HALO_SEGMENTS,
+            ))),
+            MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgba(1.0, 1.0, 1.0, 0.0)))),
+            Transform::from_xyz(0.0, 0.0, z),
+            Visibility::Hidden,
+            CenterDiceTurnHalo { layer },
+            Name::new(format!("CenterDiceTurnHalo_{layer:?}")),
             BoardSceneEntity,
         ));
     }
@@ -1853,6 +2016,39 @@ fn star_mesh(outer_radius: f32, inner_radius: f32) -> Mesh {
     for index in 1..=10 {
         let next = if index == 10 { 1 } else { index + 1 };
         indices.extend_from_slice(&[0, index as u32, next as u32]);
+    }
+
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+fn annulus_mesh(inner_radius: f32, outer_radius: f32, segments: usize) -> Mesh {
+    let segment_count = segments.max(3);
+    let inner_radius = inner_radius.max(0.0);
+    let outer_radius = outer_radius.max(inner_radius + 0.1);
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    let mut positions = Vec::with_capacity(segment_count * 2);
+
+    for index in 0..segment_count {
+        let angle = index as f32 / segment_count as f32 * PI * 2.0;
+        let direction = Vec2::new(angle.cos(), angle.sin());
+        positions.push([direction.x * outer_radius, direction.y * outer_radius, 0.0]);
+        positions.push([direction.x * inner_radius, direction.y * inner_radius, 0.0]);
+    }
+
+    let mut indices = Vec::with_capacity(segment_count * 6);
+    for index in 0..segment_count {
+        let next = (index + 1) % segment_count;
+        let outer = (index * 2) as u32;
+        let inner = outer + 1;
+        let next_outer = (next * 2) as u32;
+        let next_inner = next_outer + 1;
+        indices.extend_from_slice(&[outer, next_outer, inner]);
+        indices.extend_from_slice(&[inner, next_outer, next_inner]);
     }
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
@@ -3025,6 +3221,100 @@ mod tests {
             &roster,
             &match_result,
         ));
+    }
+
+    #[test]
+    fn current_turn_profile_hides_after_match_finished() {
+        let mut turn_state = TurnState::opening_turn();
+        turn_state.current_player = 2;
+        let roster = roster_with_players(vec![
+            player(1, PlayerSeat::Blue),
+            player(2, PlayerSeat::Red),
+        ]);
+        let mut match_result = MatchResult::default();
+
+        assert_eq!(
+            current_turn_profile(&turn_state, &roster, &match_result)
+                .map(|player| player.state.player_id),
+            Some(2)
+        );
+
+        match_result.finished = true;
+        assert!(current_turn_profile(&turn_state, &roster, &match_result).is_none());
+    }
+
+    #[test]
+    fn center_dice_turn_halo_follows_prompt_and_animation_player() {
+        let mut turn_state = TurnState::opening_turn();
+        let roster = roster_with_players(vec![
+            player(1, PlayerSeat::Blue),
+            player(2, PlayerSeat::Red),
+        ]);
+        let match_result = MatchResult::default();
+        let mut visual_state = DiceRollVisualState::default();
+
+        let prompt = center_dice_turn_halo_state(
+            &turn_state,
+            &visual_state,
+            &GamePhase::AwaitDice,
+            &roster,
+            &match_result,
+        )
+        .unwrap();
+        assert_eq!(prompt.0.state.player_id, 1);
+        assert_eq!(prompt.1, [1, 0]);
+
+        let key = DiceRollVisualKey {
+            roll_serial: 9,
+            player_id: 2,
+            roll: 5,
+            faces: [2, 5],
+        };
+        visual_state.animation = Some(DiceRollVisualAnimation {
+            key,
+            elapsed: DICE_ROLL_SETTLE_START,
+        });
+        turn_state.current_player = 1;
+        let rolling = center_dice_turn_halo_state(
+            &turn_state,
+            &visual_state,
+            &GamePhase::DiceRolling,
+            &roster,
+            &match_result,
+        )
+        .unwrap();
+        assert_eq!(rolling.0.state.player_id, 2);
+        assert_eq!(rolling.1, [2, 5]);
+    }
+
+    #[test]
+    fn center_dice_turn_halo_hides_without_visible_center_dice() {
+        let mut turn_state = TurnState::opening_turn();
+        let roster = roster_with_players(vec![player(1, PlayerSeat::Blue)]);
+        let match_result = MatchResult::default();
+        let visual_state = DiceRollVisualState::default();
+
+        turn_state.current_roll = Some(3);
+        assert!(
+            center_dice_turn_halo_state(
+                &turn_state,
+                &visual_state,
+                &GamePhase::AwaitPieceSelect,
+                &roster,
+                &match_result,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn center_dice_turn_halo_widens_for_double_dice() {
+        let single = center_dice_turn_halo_scale([4, 0], 0.0);
+        let double = center_dice_turn_halo_scale([2, 5], 0.0);
+
+        assert!((single.x - single.y).abs() < 0.001);
+        assert!(double.x > double.y * 1.45);
+        assert!((double.y - single.y * 1.02).abs() < 0.001);
     }
 
     #[test]
