@@ -3,6 +3,7 @@ use bevy::{
 };
 
 use crate::gameplay::turn_flow::TurnState;
+use crate::i18n::{Language, LanguageSettings};
 use crate::platform::DeviceProfile;
 use crate::plugins::piece_plugin::PieceId;
 use crate::plugins::skill_plugin::SkillUiAction;
@@ -432,6 +433,7 @@ fn drain_visual_effect_queue(
     windows: Query<&Window>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
     device_profile: Res<DeviceProfile>,
+    language_settings: Res<LanguageSettings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut queue: ResMut<VisualEffectQueue>,
@@ -462,14 +464,14 @@ fn drain_visual_effect_queue(
                     camera_transform,
                 )
                 .unwrap_or(target_world + Vec2::new(-90.0, -90.0));
-                spawn_lock_effect(&mut commands, target_world);
+                spawn_lock_effect(&mut commands, target_world, language_settings.language);
                 spawn_missile_effect(&mut commands, source_world, target_world);
             }
             VisualEffectRequest::WorldMissile {
                 source_world,
                 target_world,
             } => {
-                spawn_lock_effect(&mut commands, target_world);
+                spawn_lock_effect(&mut commands, target_world, language_settings.language);
                 spawn_missile_effect(&mut commands, source_world, target_world);
             }
             VisualEffectRequest::ShieldFlash { target_world } => {
@@ -479,7 +481,14 @@ fn drain_visual_effect_queue(
                 spawn_floating_text_effect(&mut commands, target_world, text);
             }
             VisualEffectRequest::HudSkillEffect { action, locked } => {
-                spawn_hud_skill_effect(&mut commands, window, *device_profile, action, locked);
+                spawn_hud_skill_effect(
+                    &mut commands,
+                    window,
+                    *device_profile,
+                    action,
+                    locked,
+                    language_settings.language,
+                );
             }
         }
     }
@@ -552,7 +561,7 @@ fn skill_button_center_world(
     camera.viewport_to_world_2d(camera_transform, center).ok()
 }
 
-fn spawn_lock_effect(commands: &mut Commands, target_world: Vec2) {
+fn spawn_lock_effect(commands: &mut Commands, target_world: Vec2, language: Language) {
     commands
         .spawn((
             Sprite::from_color(Color::srgba(0.98, 0.08, 0.08, 0.24), Vec2::splat(46.0)),
@@ -566,7 +575,7 @@ fn spawn_lock_effect(commands: &mut Commands, target_world: Vec2) {
         ))
         .with_children(|lock| {
             lock.spawn((
-                Text2d::new("LOCK"),
+                Text2d::new(effect_lock_label(language)),
                 TextFont {
                     font_size: FontSize::Px(11.0),
                     ..default()
@@ -693,9 +702,10 @@ fn spawn_hud_skill_effect(
     device_profile: DeviceProfile,
     action: SkillUiAction,
     locked: bool,
+    language: Language,
 ) {
     let rect = shared_skill_button_rect(window.width(), window.height(), device_profile, action);
-    let label = if locked { "LOCK" } else { "CHARGE" };
+    let label = hud_skill_effect_label(locked, language);
     let color = if locked {
         Color::srgba(0.12, 0.14, 0.18, 0.46)
     } else {
@@ -746,6 +756,22 @@ fn spawn_hud_skill_effect(
                 Name::new("HudSkillEffectLabel"),
             ));
         });
+}
+
+fn effect_lock_label(language: Language) -> &'static str {
+    match language {
+        Language::SimplifiedChinese => "锁定",
+        Language::English => "LOCK",
+    }
+}
+
+fn hud_skill_effect_label(locked: bool, language: Language) -> &'static str {
+    match (locked, language) {
+        (true, Language::SimplifiedChinese) => "禁用",
+        (false, Language::SimplifiedChinese) => "充能",
+        (true, Language::English) => "LOCK",
+        (false, Language::English) => "CHARGE",
+    }
 }
 
 fn animate_lock_effects(

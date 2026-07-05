@@ -27,6 +27,7 @@ use self::piece_plugin::PiecePlugin;
 use self::skill_plugin::SkillPlugin;
 use self::turn_plugin::TurnPlugin;
 use self::ui_plugin::UiPlugin;
+use crate::i18n::I18nPlugin;
 
 /// 游戏插件集合：统一注册所有子系统插件。
 pub struct AeroplaneChessPlugins;
@@ -34,6 +35,7 @@ pub struct AeroplaneChessPlugins;
 impl Plugin for AeroplaneChessPlugins {
     fn build(&self, app: &mut App) {
         app.add_plugins((
+            I18nPlugin,
             BootPlugin,
             MenuPlugin,
             GamePlugin,

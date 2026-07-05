@@ -13,7 +13,7 @@ use crate::gameplay::match_flow::{
 use crate::gameplay::skill_flow::{
     MAX_PIECE_SHIELD, RollResolution, SkillRoster, arm_dash, arm_double_dice,
     can_use_skill_this_turn, clear_dash_arm, dash_bonus, is_current_player_swap_piece,
-    is_legal_shield_target, is_legal_snipe_target, is_swap_teammate_piece, mark_skill_used,
+    is_legal_shield_target, is_legal_snipe_target, is_legal_swap_target, mark_skill_used,
     player_skill_state, record_skill_action, resolve_roll_value, spend_shield_charge,
     spend_snipe_charge, spend_swap_charge,
 };
@@ -25,6 +25,7 @@ use crate::gameplay::turn_flow::{
     roll_die, set_pending_actions, set_pending_double_dice_choice, set_roll_with_faces,
     skip_current_player_turn,
 };
+use crate::i18n::{Language, LanguageSettings};
 use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::boot_plugin::AutoplayMatch;
 use crate::plugins::effects_plugin::{
@@ -76,11 +77,17 @@ fn double_dice_resolution_note(player_id: u8, dice: [u8; 2], chosen_roll: u8) ->
     )
 }
 
-fn double_dice_choice_prompt(faces: [u8; 2]) -> String {
-    format!(
-        "DoubleDice rolled {}/{}. Press 1/2 or tap a die.",
-        faces[0], faces[1]
-    )
+fn double_dice_choice_prompt(faces: [u8; 2], language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => format!(
+            "双骰掷出 {}/{}。按 1/2 或点击一个骰子选择点数。",
+            faces[0], faces[1]
+        ),
+        Language::English => format!(
+            "DoubleDice rolled {}/{}. Press 1/2 or click one die to choose.",
+            faces[0], faces[1]
+        ),
+    }
 }
 
 fn resolve_roll_for_rule_set(
@@ -139,6 +146,7 @@ struct TurnActionParams<'w, 's> {
     match_config: Res<'w, MatchConfig>,
     player_roster: Res<'w, PlayerRoster>,
     team_roster: Res<'w, TeamRoster>,
+    language_settings: Res<'w, LanguageSettings>,
     skill_roster: ResMut<'w, SkillRoster>,
     effect_queue: ResMut<'w, VisualEffectQueue>,
     reveal_delays: ResMut<'w, EffectRevealDelays>,
@@ -510,10 +518,6 @@ fn try_ai_swap(
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> bool {
-    if mode != GameMode::TwoVsTwo {
-        return false;
-    }
-
     let can_use_swap = player_skill_state(skill_roster, current_player)
         .map(|skills| skills.swap_charges > 0)
         .unwrap_or(false);
@@ -521,7 +525,7 @@ fn try_ai_swap(
         return false;
     }
 
-    let Some(teammate_piece_id) = preferred_ai_swap_target(current_player, piece_query) else {
+    let Some(target_piece_id) = preferred_ai_swap_target(current_player, mode, piece_query) else {
         return false;
     };
 
@@ -530,7 +534,7 @@ fn try_ai_swap(
     }
 
     mark_skill_used(skill_roster, current_player);
-    let message = execute_swap_on_turn_query(current_player, teammate_piece_id, piece_query);
+    let message = execute_swap_on_turn_query(current_player, mode, target_piece_id, piece_query);
     record_skill_action(skill_roster, turn_index, current_player, message);
     true
 }
@@ -675,9 +679,10 @@ fn preferred_ai_shield_target(
         .min()
 }
 
-/// 选择 AI 的 Swap 目标：优先与“更靠前的队友”换位。
+/// 选择 AI 的 Swap 目标：2v2 找更靠前的队友，其他模式找更靠前的敌机。
 fn preferred_ai_swap_target(
     current_player: u8,
+    mode: GameMode,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
     let mut own_progress = None;
@@ -698,7 +703,7 @@ fn preferred_ai_swap_target(
     let mut candidates = piece_query
         .iter_mut()
         .filter(|(_, _, piece_state, _)| {
-            is_swap_teammate_piece(current_player, own_team, &piece_state)
+            is_legal_swap_target(current_player, own_team, mode, piece_state)
                 && piece_state.progress >= own_progress.saturating_add(6)
         })
         .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.progress))
@@ -827,7 +832,8 @@ fn execute_snipe_on_turn_query(
 /// 在 turn_query 上执行 Swap：交换两枚棋子的状态与位置。
 fn execute_swap_on_turn_query(
     current_player: u8,
-    teammate_piece_id: u8,
+    mode: GameMode,
+    target_piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> String {
     let Some((current_piece_id, current_state, current_translation)) =
@@ -844,29 +850,34 @@ fn execute_swap_on_turn_query(
         return "AI Swap failed: current active piece not found".to_string();
     };
 
-    let Some((teammate_state, teammate_translation)) =
+    let Some((target_state, target_translation)) =
         piece_query
             .iter()
             .find_map(|(piece_id, _, piece_state, transform)| {
-                (piece_id.0 == teammate_piece_id
-                    && is_swap_teammate_piece(current_player, current_state.team_id, &piece_state))
+                (piece_id.0 == target_piece_id
+                    && is_legal_swap_target(
+                        current_player,
+                        current_state.team_id,
+                        mode,
+                        &piece_state,
+                    ))
                 .then_some((*piece_state, transform.translation))
             })
     else {
-        return "AI Swap failed: teammate piece not found on main route".to_string();
+        return "AI Swap failed: target piece not found on main route".to_string();
     };
 
     for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
         if piece_id.0 == current_piece_id {
-            piece_state.status = teammate_state.status;
-            piece_state.progress = teammate_state.progress;
-            piece_state.shield = teammate_state.shield;
-            piece_state.stack_shield = teammate_state.stack_shield;
+            piece_state.status = target_state.status;
+            piece_state.progress = target_state.progress;
+            piece_state.shield = target_state.shield;
+            piece_state.stack_shield = target_state.stack_shield;
             piece_state.motion_serial = piece_state
                 .motion_serial
                 .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
-            transform.translation = teammate_translation;
-        } else if piece_id.0 == teammate_piece_id {
+            transform.translation = target_translation;
+        } else if piece_id.0 == target_piece_id {
             piece_state.status = current_state.status;
             piece_state.progress = current_state.progress;
             piece_state.shield = current_state.shield;
@@ -879,8 +890,8 @@ fn execute_swap_on_turn_query(
     }
 
     format!(
-        "AI Swap exchanged piece #{} with teammate piece #{}",
-        current_piece_id, teammate_piece_id
+        "AI Swap exchanged piece #{} with piece #{}",
+        current_piece_id, target_piece_id
     )
 }
 
@@ -914,7 +925,10 @@ fn handle_human_roll_input(
             return;
         }
 
-        params.input_state.prompt = Some(double_dice_choice_prompt(choice.faces));
+        params.input_state.prompt = Some(double_dice_choice_prompt(
+            choice.faces,
+            params.language_settings.language,
+        ));
         let keyboard_selection = pressed_double_dice_choice_key(&keyboard);
         let pointer_selection = keyboard_selection.is_none().then(|| {
             clicked_double_dice_choice(
@@ -968,7 +982,10 @@ fn handle_human_roll_input(
     let roll_value = roll_resolution.value;
     if roll_resolution.used_double_dice {
         set_pending_double_dice_choice(&mut params.turn_state, roll_resolution.dice);
-        params.input_state.prompt = Some(double_dice_choice_prompt(roll_resolution.dice));
+        params.input_state.prompt = Some(double_dice_choice_prompt(
+            roll_resolution.dice,
+            params.language_settings.language,
+        ));
         return;
     }
 
@@ -1110,16 +1127,41 @@ fn finish_human_roll_after_display(roll_value: u8, params: &mut TurnActionParams
         actions,
         &mut params.next_phase,
     );
-    if can_offer_dash {
-        params.input_state.prompt = Some(format!(
-            "Rolled {}. Tap Dash for +3, or tap a highlighted piece.",
-            roll_value
-        ));
-    }
+    params.input_state.prompt = Some(pending_action_prompt(
+        roll_value,
+        can_offer_dash,
+        params.language_settings.language,
+    ));
 }
 
 fn should_auto_execute_human_action(_actions: &[PlannedAction], _can_offer_dash: bool) -> bool {
     false
+}
+
+fn pending_action_prompt(roll_value: u8, can_offer_dash: bool, language: Language) -> String {
+    match (language, can_offer_dash) {
+        (Language::SimplifiedChinese, true) => {
+            format!("掷出 {}。可点冲刺 +3，或点击高亮飞机。", roll_value)
+        }
+        (Language::SimplifiedChinese, false) => {
+            format!("掷出 {}。点击高亮飞机移动。", roll_value)
+        }
+        (Language::English, true) => {
+            format!("Rolled {roll_value}. Tap Dash +3 or a highlighted aircraft.")
+        }
+        (Language::English, false) => {
+            format!("Rolled {roll_value}. Tap a highlighted aircraft to move.")
+        }
+    }
+}
+
+fn dash_pending_action_prompt(move_bonus: u8, language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => format!("冲刺已启用（+{}）。点击高亮飞机。", move_bonus),
+        Language::English => {
+            format!("Dash armed (+{move_bonus}). Tap a highlighted aircraft.")
+        }
+    }
 }
 
 /// 人类玩家“选棋阶段”键盘输入处理（1~4 选择动作）。
@@ -1144,6 +1186,7 @@ fn handle_human_action_input(
             player_roster: &params.player_roster,
             skill_roster: &params.skill_roster,
             launch_rule: params.match_config.launch_rule,
+            language: params.language_settings.language,
         },
         &mut params.piece_query,
         &mut params.next_phase,
@@ -1213,6 +1256,7 @@ fn handle_human_action_click(
             player_roster: &params.player_roster,
             skill_roster: &params.skill_roster,
             launch_rule: params.match_config.launch_rule,
+            language: params.language_settings.language,
         },
         &mut params.piece_query,
         &mut params.next_phase,
@@ -1294,6 +1338,7 @@ struct DashRefreshContext<'a> {
     player_roster: &'a PlayerRoster,
     skill_roster: &'a SkillRoster,
     launch_rule: LaunchRule,
+    language: Language,
 }
 
 fn refresh_pending_actions_for_dash(
@@ -1326,10 +1371,7 @@ fn refresh_pending_actions_for_dash(
         refreshed_actions,
         next_phase,
     );
-    input_state.prompt = Some(format!(
-        "Dash active (+{}). Tap a highlighted piece.",
-        move_bonus
-    ));
+    input_state.prompt = Some(dash_pending_action_prompt(move_bonus, context.language));
 }
 
 #[cfg(test)]
@@ -1477,7 +1519,10 @@ mod tests {
         > = SystemState::new(&mut world);
         let mut query = system_state.get_mut(&mut world).unwrap();
 
-        assert_eq!(preferred_ai_swap_target(2, &mut query), Some(4));
+        assert_eq!(
+            preferred_ai_swap_target(2, GameMode::TwoVsTwo, &mut query),
+            Some(4)
+        );
 
         let mut home_lane_source_world = World::new();
         spawn_test_piece(
@@ -1496,7 +1541,27 @@ mod tests {
             .get_mut(&mut home_lane_source_world)
             .unwrap();
 
-        assert_eq!(preferred_ai_swap_target(2, &mut source_query), None);
+        assert_eq!(
+            preferred_ai_swap_target(2, GameMode::TwoVsTwo, &mut source_query),
+            None
+        );
+    }
+
+    #[test]
+    fn preferred_ai_swap_target_can_pick_enemy_outside_two_vs_two() {
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
+        spawn_test_piece(&mut world, 3, 1, 1, 12, 0);
+        spawn_test_piece(&mut world, 4, 3, 3, HOME_ENTRY_PROGRESS + 1, 0);
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
+
+        assert_eq!(
+            preferred_ai_swap_target(2, GameMode::OneVsOne, &mut query),
+            Some(3)
+        );
     }
 
     #[test]

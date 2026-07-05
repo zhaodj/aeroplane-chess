@@ -1,6 +1,6 @@
 {
-  "name": "Aeroplane Chess",
-  "short_name": "Aeroplane Chess",
+  "name": "Aeroplane Chess / 飞行棋",
+  "short_name": "Aeroplane",
   "icons": [
     {
       "src": "./android-chrome-192x192.png",

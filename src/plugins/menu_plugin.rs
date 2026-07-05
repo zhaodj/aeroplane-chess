@@ -7,9 +7,15 @@ use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{MatchSetup, PlayerSeat};
+use crate::i18n::{
+    Language, LanguageSettings, LocalizedText, TextKey, ai_difficulty_label as i18n_ai_label,
+    launch_rule_label, mode_label, rule_set_label, text,
+};
 use crate::platform::PointerInputState;
 use crate::plugins::audio_plugin::AudioSettings;
-use crate::plugins::performance_plugin::{PerformanceSettings, fps_toggle_label};
+use crate::plugins::performance_plugin::{
+    PerformanceSettings, fps_toggle_label, fps_toggle_label_for_language,
+};
 use crate::states::AppState;
 
 /// 菜单插件：主菜单与开局配置页的渲染和交互。
@@ -69,6 +75,7 @@ struct ModeSelectRenderState {
 struct ModeSelectRenderKey {
     mode: GameMode,
     active_player_count: usize,
+    language: Language,
     window_width: u32,
     window_height: u32,
 }
@@ -111,6 +118,7 @@ enum SoundSettingsValueKind {
     Effects,
     Mute,
     Fps,
+    Language,
 }
 
 #[derive(Component)]
@@ -192,6 +200,7 @@ enum SoundSettingsAction {
     EffectsUp,
     ToggleMute,
     ToggleFps,
+    CycleLanguage,
     MainMenu,
     QuitGame,
     Back,
@@ -230,17 +239,18 @@ const GLOBAL_SOUND_ENTRY_TOP: f32 = 16.0;
 const GLOBAL_SOUND_ENTRY_W: f32 = 128.0;
 const GLOBAL_SOUND_ENTRY_H: f32 = 38.0;
 const GLOBAL_SOUND_PANEL_W: f32 = 462.0;
-const GLOBAL_SOUND_PANEL_H: f32 = 448.0;
+const GLOBAL_SOUND_PANEL_H: f32 = 506.0;
 const GLOBAL_SOUND_ROW_LEFT: f32 = 34.0;
 const GLOBAL_SOUND_CONTROL_LEFT: f32 = 244.0;
 const GLOBAL_SOUND_ROW_TOP: f32 = 98.0;
 const GLOBAL_SOUND_ROW_GAP: f32 = 58.0;
 const GLOBAL_SOUND_MUTE_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 2.0;
 const GLOBAL_SOUND_FPS_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 3.0;
+const GLOBAL_SOUND_LANGUAGE_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 4.0;
 const GLOBAL_SOUND_BUTTON: f32 = 42.0;
 const GLOBAL_SOUND_VALUE_W: f32 = 82.0;
 const GLOBAL_SOUND_TOGGLE_W: f32 = 176.0;
-const GLOBAL_SETTINGS_ACTION_TOP: f32 = 362.0;
+const GLOBAL_SETTINGS_ACTION_TOP: f32 = 424.0;
 const GLOBAL_SETTINGS_ACTION_W: f32 = 160.0;
 const GLOBAL_SETTINGS_ACTION_H: f32 = 44.0;
 const GLOBAL_SETTINGS_ACTION_GAP: f32 = 18.0;
@@ -298,7 +308,8 @@ const MODE_SELECT_BLACK: Color = Color::BLACK;
 const MODE_SELECT_UNSELECTED_TEXT: Color = Color::srgb(0.18, 0.24, 0.34);
 const MODE_SELECT_DISABLED_TEXT: Color = Color::srgba(0.18, 0.24, 0.34, 0.42);
 
-fn spawn_global_sound_overlay(mut commands: Commands) {
+fn spawn_global_sound_overlay(mut commands: Commands, language_settings: Res<LanguageSettings>) {
+    let language = language_settings.language;
     commands
         .spawn((
             Node {
@@ -323,13 +334,16 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
         ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new("Settings"),
+                Text::new(text(language, TextKey::Settings)),
                 TextFont {
                     font_size: FontSize::Px(16.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.10, 0.16, 0.24)),
                 TextLayout::justify(Justify::Center),
+                LocalizedText {
+                    key: TextKey::Settings,
+                },
                 Name::new("GlobalSoundEntryLabel"),
             ));
         });
@@ -370,7 +384,7 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                 ))
                 .with_children(|panel| {
                     panel.spawn((
-                        Text::new("Settings"),
+                        Text::new(text(language, TextKey::Settings)),
                         TextFont {
                             font_size: FontSize::Px(28.0),
                             ..default()
@@ -382,10 +396,13 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                             top: Val::Px(24.0),
                             ..default()
                         },
+                        LocalizedText {
+                            key: TextKey::Settings,
+                        },
                         Name::new("GlobalSoundTitle"),
                     ));
                     panel.spawn((
-                        Text::new("Audio"),
+                        Text::new(text(language, TextKey::Audio)),
                         TextFont {
                             font_size: FontSize::Px(18.0),
                             ..default()
@@ -397,44 +414,62 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
                             top: Val::Px(68.0),
                             ..default()
                         },
+                        LocalizedText {
+                            key: TextKey::Audio,
+                        },
                         Name::new("GlobalSoundAudioSection"),
                     ));
 
                     spawn_global_sound_row(
                         panel,
-                        "Music",
+                        text(language, TextKey::Music),
+                        TextKey::Music,
                         SoundSettingsValueKind::Music,
                         GLOBAL_SOUND_ROW_TOP,
                     );
                     spawn_global_sound_row(
                         panel,
-                        "Effects",
+                        text(language, TextKey::Effects),
+                        TextKey::Effects,
                         SoundSettingsValueKind::Effects,
                         GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP,
                     );
                     spawn_global_sound_toggle_row(
                         panel,
-                        "Mute",
+                        text(language, TextKey::Mute),
+                        TextKey::Mute,
                         SoundSettingsValueKind::Mute,
                         GLOBAL_SOUND_MUTE_ROW_TOP,
+                        language,
                     );
                     spawn_global_sound_toggle_row(
                         panel,
-                        "FPS Counter",
+                        text(language, TextKey::FpsCounter),
+                        TextKey::FpsCounter,
                         SoundSettingsValueKind::Fps,
                         GLOBAL_SOUND_FPS_ROW_TOP,
+                        language,
+                    );
+                    spawn_global_language_row(
+                        panel,
+                        text(language, TextKey::Language),
+                        TextKey::Language,
+                        GLOBAL_SOUND_LANGUAGE_ROW_TOP,
+                        language,
                     );
 
                     spawn_global_sound_panel_button(
                         panel,
                         global_settings_main_menu_rect(),
-                        "Main Menu",
+                        text(language, TextKey::MainMenu),
+                        Some(TextKey::MainMenu),
                         18.0,
                     );
                     spawn_global_sound_panel_button(
                         panel,
                         global_settings_quit_game_rect(),
-                        "Quit Game",
+                        text(language, TextKey::QuitGame),
+                        Some(TextKey::QuitGame),
                         18.0,
                     );
                 });
@@ -444,8 +479,10 @@ fn spawn_global_sound_overlay(mut commands: Commands) {
 fn spawn_global_sound_toggle_row(
     panel: &mut ChildSpawnerCommands<'_>,
     label: &str,
+    label_key: TextKey,
     value_kind: SoundSettingsValueKind,
     top: f32,
+    language: Language,
 ) {
     panel.spawn((
         Text::new(label),
@@ -460,6 +497,7 @@ fn spawn_global_sound_toggle_row(
             top: Val::Px(top + 10.0),
             ..default()
         },
+        LocalizedText { key: label_key },
         Name::new(format!("GlobalSoundLabel{label}")),
     ));
 
@@ -469,7 +507,7 @@ fn spawn_global_sound_toggle_row(
         w: GLOBAL_SOUND_TOGGLE_W,
         h: GLOBAL_SOUND_BUTTON,
     };
-    let state = global_sound_toggle_initial_state(value_kind);
+    let state = global_sound_toggle_initial_state(value_kind, language);
     panel
         .spawn((
             Node {
@@ -495,34 +533,95 @@ fn spawn_global_sound_toggle_row(
         });
 }
 
+fn spawn_global_language_row(
+    panel: &mut ChildSpawnerCommands<'_>,
+    label: &str,
+    label_key: TextKey,
+    top: f32,
+    language: Language,
+) {
+    panel.spawn((
+        Text::new(label),
+        TextFont {
+            font_size: FontSize::Px(20.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.16, 0.24)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(GLOBAL_SOUND_ROW_LEFT),
+            top: Val::Px(top + 10.0),
+            ..default()
+        },
+        LocalizedText { key: label_key },
+        Name::new(format!("GlobalSoundLabel{label}")),
+    ));
+
+    panel
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(GLOBAL_SOUND_CONTROL_LEFT),
+                top: Val::Px(top),
+                width: Val::Px(GLOBAL_SOUND_TOGGLE_W),
+                height: Val::Px(GLOBAL_SOUND_BUTTON),
+                border: UiRect::all(Val::Px(1.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::horizontal(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.55, 0.70, 0.88, 0.22)),
+            BorderColor::all(Color::srgba(0.22, 0.30, 0.42, 0.24)),
+            Name::new("GlobalSoundLanguageButton"),
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(language.label()),
+                TextFont {
+                    font_size: FontSize::Px(18.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                TextLayout::justify(Justify::Center),
+                SoundSettingsValueText {
+                    kind: SoundSettingsValueKind::Language,
+                },
+                Name::new("GlobalSoundLanguageValue"),
+            ));
+        });
+}
+
 fn global_sound_toggle_initial_state(
     value_kind: SoundSettingsValueKind,
+    language: Language,
 ) -> SettingsToggleVisualState {
     match value_kind {
         SoundSettingsValueKind::Mute => SettingsToggleVisualState {
             active: false,
-            label: "Sound On",
+            label: format_mute_label_for_language(false, language),
         },
         SoundSettingsValueKind::Fps => SettingsToggleVisualState {
             active: cfg!(debug_assertions),
             label: if cfg!(debug_assertions) {
-                "FPS On"
+                fps_toggle_label_for_language(true, language)
             } else {
-                "FPS Off"
+                fps_toggle_label_for_language(false, language)
             },
         },
-        SoundSettingsValueKind::Music | SoundSettingsValueKind::Effects => {
-            SettingsToggleVisualState {
-                active: false,
-                label: "",
-            }
-        }
+        SoundSettingsValueKind::Music
+        | SoundSettingsValueKind::Effects
+        | SoundSettingsValueKind::Language => SettingsToggleVisualState {
+            active: false,
+            label: "",
+        },
     }
 }
 
 fn spawn_global_sound_row(
     panel: &mut ChildSpawnerCommands<'_>,
     label: &str,
+    label_key: TextKey,
     value_kind: SoundSettingsValueKind,
     top: f32,
 ) {
@@ -539,6 +638,7 @@ fn spawn_global_sound_row(
             top: Val::Px(top + 10.0),
             ..default()
         },
+        LocalizedText { key: label_key },
         Name::new(format!("GlobalSoundLabel{label}")),
     ));
 
@@ -551,6 +651,7 @@ fn spawn_global_sound_row(
             h: GLOBAL_SOUND_BUTTON,
         },
         "-",
+        None,
         24.0,
     );
 
@@ -582,6 +683,7 @@ fn spawn_global_sound_row(
             h: GLOBAL_SOUND_BUTTON,
         },
         "+",
+        None,
         24.0,
     );
 }
@@ -590,6 +692,7 @@ fn spawn_global_sound_panel_button(
     panel: &mut ChildSpawnerCommands<'_>,
     rect: ClickRect,
     label: &str,
+    label_key: Option<TextKey>,
     font_size: f32,
 ) {
     panel
@@ -610,7 +713,7 @@ fn spawn_global_sound_panel_button(
             Name::new(format!("GlobalSoundButton{label}")),
         ))
         .with_children(|button| {
-            button.spawn((
+            let mut text_entity = button.spawn((
                 Text::new(label),
                 TextFont {
                     font_size: FontSize::Px(font_size),
@@ -620,6 +723,9 @@ fn spawn_global_sound_panel_button(
                 TextLayout::justify(Justify::Center),
                 Name::new("GlobalSoundButtonLabel"),
             ));
+            if let Some(label_key) = label_key {
+                text_entity.insert(LocalizedText { key: label_key });
+            }
         });
 }
 
@@ -654,6 +760,7 @@ fn update_global_sound_overlay(
     app_state: Res<State<AppState>>,
     audio_settings: Res<AudioSettings>,
     performance_settings: Res<PerformanceSettings>,
+    language_settings: Res<LanguageSettings>,
     overlay_state: Res<SoundSettingsOverlayState>,
     mut entry_query: Query<
         (&mut Node, &mut Visibility),
@@ -693,6 +800,7 @@ fn update_global_sound_overlay(
 
     if !audio_settings.is_changed()
         && !performance_settings.is_changed()
+        && !language_settings.is_changed()
         && !overlay_state.is_changed()
     {
         return;
@@ -706,24 +814,32 @@ fn update_global_sound_overlay(
                     value_text.kind,
                     &audio_settings,
                     &performance_settings,
+                    language_settings.language,
                 )
                 .map_or_else(String::new, |state| state.label.to_owned())
             }
+            SoundSettingsValueKind::Language => language_settings.label().to_owned(),
         });
     }
     for (track, mut background, mut border) in &mut toggle_track_query {
-        let Some(state) =
-            global_settings_toggle_state(track.kind, &audio_settings, &performance_settings)
-        else {
+        let Some(state) = global_settings_toggle_state(
+            track.kind,
+            &audio_settings,
+            &performance_settings,
+            language_settings.language,
+        ) else {
             continue;
         };
         *background = BackgroundColor(settings_toggle_track_color(state.active));
         *border = BorderColor::all(settings_toggle_track_border_color(state.active));
     }
     for (thumb, mut node) in &mut toggle_thumb_query {
-        let Some(state) =
-            global_settings_toggle_state(thumb.kind, &audio_settings, &performance_settings)
-        else {
+        let Some(state) = global_settings_toggle_state(
+            thumb.kind,
+            &audio_settings,
+            &performance_settings,
+            language_settings.language,
+        ) else {
             continue;
         };
         node.left = Val::Px(settings_toggle_thumb_left(state.active));
@@ -748,6 +864,7 @@ fn handle_global_sound_overlay_click(
     windows: Query<&Window>,
     mut audio_settings: ResMut<AudioSettings>,
     mut performance_settings: ResMut<PerformanceSettings>,
+    mut language_settings: ResMut<LanguageSettings>,
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut app_exit: MessageWriter<AppExit>,
@@ -766,6 +883,7 @@ fn handle_global_sound_overlay_click(
                 action,
                 &mut audio_settings,
                 &mut performance_settings,
+                &mut language_settings,
                 &mut overlay_state,
             ) {
                 GlobalSettingsCommand::None => {}
@@ -793,6 +911,7 @@ fn apply_global_sound_action(
     action: SoundSettingsAction,
     audio_settings: &mut AudioSettings,
     performance_settings: &mut PerformanceSettings,
+    language_settings: &mut LanguageSettings,
     overlay_state: &mut SoundSettingsOverlayState,
 ) -> GlobalSettingsCommand {
     match action {
@@ -806,6 +925,7 @@ fn apply_global_sound_action(
         }
         SoundSettingsAction::ToggleMute => audio_settings.toggle_mute(),
         SoundSettingsAction::ToggleFps => performance_settings.toggle_fps(),
+        SoundSettingsAction::CycleLanguage => language_settings.cycle(),
         SoundSettingsAction::MainMenu => {
             overlay_state.open = false;
             return GlobalSettingsCommand::MainMenu;
@@ -930,6 +1050,15 @@ fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettings
             },
         ),
         (
+            SoundSettingsAction::CycleLanguage,
+            ClickRect {
+                x: GLOBAL_SOUND_CONTROL_LEFT,
+                y: GLOBAL_SOUND_LANGUAGE_ROW_TOP,
+                w: GLOBAL_SOUND_TOGGLE_W,
+                h: GLOBAL_SOUND_BUTTON,
+            },
+        ),
+        (
             SoundSettingsAction::MainMenu,
             global_settings_main_menu_rect(),
         ),
@@ -944,7 +1073,11 @@ fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettings
         .find_map(|(action, rect)| rect.contains(local).then_some(*action))
 }
 
-fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
+fn spawn_main_menu(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    language_settings: Res<LanguageSettings>,
+) {
     // 主菜单：标题 + 开始按钮按当前窗口居中。
     let (window_width, window_height) = windows
         .single()
@@ -954,7 +1087,7 @@ fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
     let start_rect = main_menu_start_rect(window_width, window_height);
 
     commands.spawn((
-        Text::new("Aeroplane Chess"),
+        Text::new(text(language_settings.language, TextKey::GameTitle)),
         TextFont {
             font_size: FontSize::Px(54.0),
             ..default()
@@ -969,6 +1102,9 @@ fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
             ..default()
         },
         Name::new("MainMenuTitle"),
+        LocalizedText {
+            key: TextKey::GameTitle,
+        },
         MainMenuTitleNode,
         MenuEntity,
     ));
@@ -977,8 +1113,9 @@ fn spawn_main_menu(mut commands: Commands, windows: Query<&Window>) {
         &mut commands,
         start_rect,
         Color::srgba(0.42, 0.61, 0.88, 0.30),
-        "Start Match",
+        text(language_settings.language, TextKey::StartMatch),
         30.0,
+        Some(TextKey::StartMatch),
         None,
     );
     commands.entity(start_button).insert(MainMenuStartButton);
@@ -1105,22 +1242,25 @@ fn available_axis_scale(container: f32, item: f32, min_margin: f32) -> f32 {
 fn mode_select_render_key(
     windows: &Query<&Window>,
     match_setup: &MatchSetup,
+    language: Language,
 ) -> ModeSelectRenderKey {
     let (window_width, window_height) = windows
         .single()
         .map(|window| (window.width(), window.height()))
         .unwrap_or((1280.0, 720.0));
-    mode_select_render_key_from_size(window_width, window_height, match_setup)
+    mode_select_render_key_from_size(window_width, window_height, match_setup, language)
 }
 
 fn mode_select_render_key_from_size(
     window_width: f32,
     window_height: f32,
     match_setup: &MatchSetup,
+    language: Language,
 ) -> ModeSelectRenderKey {
     ModeSelectRenderKey {
         mode: match_setup.mode,
         active_player_count: match_setup.active_player_count(),
+        language,
         window_width: window_width.round().max(0.0) as u32,
         window_height: window_height.round().max(0.0) as u32,
     }
@@ -1181,9 +1321,14 @@ fn update_main_menu_layout(
     }
 }
 
-fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSettings>) {
+fn spawn_sound_settings(
+    mut commands: Commands,
+    audio_settings: Res<AudioSettings>,
+    language_settings: Res<LanguageSettings>,
+) {
+    let language = language_settings.language;
     commands.spawn((
-        Text::new("Sound Settings"),
+        Text::new(text(language, TextKey::SoundSettings)),
         TextFont {
             font_size: FontSize::Px(46.0),
             ..default()
@@ -1200,7 +1345,7 @@ fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSetting
     ));
 
     commands.spawn((
-        Text::new(sound_settings_content(&audio_settings)),
+        Text::new(sound_settings_content(&audio_settings, language)),
         TextFont {
             font_size: FontSize::Px(19.0),
             ..default()
@@ -1220,7 +1365,7 @@ fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSetting
 
     spawn_sound_row(
         &mut commands,
-        "Background Music",
+        text(language, TextKey::BackgroundMusic),
         SoundSettingsValueKind::Music,
         SoundSettingsAction::MusicDown,
         SoundSettingsAction::MusicUp,
@@ -1229,14 +1374,14 @@ fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSetting
     );
     spawn_sound_row(
         &mut commands,
-        "Action Effects",
+        text(language, TextKey::ActionEffects),
         SoundSettingsValueKind::Effects,
         SoundSettingsAction::EffectsDown,
         SoundSettingsAction::EffectsUp,
         SOUND_PANEL_TOP + SOUND_ROW_GAP,
         audio_settings.effects_volume,
     );
-    spawn_sound_toggle(&mut commands, SOUND_MUTE_TOP, &audio_settings);
+    spawn_sound_toggle(&mut commands, SOUND_MUTE_TOP, &audio_settings, language);
 
     spawn_sound_option(
         &mut commands,
@@ -1247,14 +1392,19 @@ fn spawn_sound_settings(mut commands: Commands, audio_settings: Res<AudioSetting
             w: MAIN_START_WIDTH * 0.64,
             h: MAIN_START_HEIGHT,
         },
-        "Back",
+        text(language, TextKey::Back),
         Color::srgba(0.72, 0.54, 0.44, 0.28),
     );
 }
 
-fn spawn_sound_toggle(commands: &mut Commands, top: f32, audio_settings: &AudioSettings) {
+fn spawn_sound_toggle(
+    commands: &mut Commands,
+    top: f32,
+    audio_settings: &AudioSettings,
+    language: Language,
+) {
     commands.spawn((
-        Text::new("Mute"),
+        Text::new(text(language, TextKey::Mute)),
         TextFont {
             font_size: FontSize::Px(24.0),
             ..default()
@@ -1297,7 +1447,7 @@ fn spawn_sound_toggle(commands: &mut Commands, top: f32, audio_settings: &AudioS
             spawn_settings_toggle_visual(
                 parent,
                 SoundSettingsValueKind::Mute,
-                sound_settings_toggle_state(audio_settings),
+                sound_settings_toggle_state(audio_settings, language),
                 rect.w,
                 rect.h,
                 22.0,
@@ -1383,16 +1533,27 @@ fn spawn_mode_select(
     mut commands: Commands,
     windows: Query<&Window>,
     match_setup: Res<MatchSetup>,
+    language_settings: Res<LanguageSettings>,
     mut render_state: ResMut<ModeSelectRenderState>,
 ) {
-    spawn_mode_select_content(&mut commands, &windows, &match_setup);
-    render_state.key = Some(mode_select_render_key(&windows, &match_setup));
+    spawn_mode_select_content(
+        &mut commands,
+        &windows,
+        &match_setup,
+        language_settings.language,
+    );
+    render_state.key = Some(mode_select_render_key(
+        &windows,
+        &match_setup,
+        language_settings.language,
+    ));
 }
 
 fn spawn_mode_select_content(
     commands: &mut Commands,
     windows: &Query<&Window>,
     match_setup: &MatchSetup,
+    language: Language,
 ) {
     // 对局配置页：按“模式/玩家配置/规则/开始返回”分区渲染。
     let (window_width, window_height) = windows
@@ -1402,7 +1563,12 @@ fn spawn_mode_select_content(
     let active_player_count = match_setup.active_player_count();
     let layout = mode_select_layout(window_width, window_height, active_player_count);
 
-    spawn_section_label(commands, layout, "Mode", MODE_ROW_TOP + 7.0);
+    spawn_section_label(
+        commands,
+        layout,
+        text(language, TextKey::Mode),
+        MODE_ROW_TOP + 7.0,
+    );
     for (mode_index, mode) in GameMode::ALL.iter().enumerate() {
         spawn_option(
             commands,
@@ -1413,12 +1579,17 @@ fn spawn_mode_select_content(
                 w: OPTION_W,
                 h: OPTION_H,
             }),
-            mode.label(),
+            mode_label(language, *mode),
             Color::srgba(0.53, 0.77, 0.96, 0.26),
         );
     }
 
-    spawn_section_label(commands, layout, "Play Style", RULE_SET_ROW_TOP + 7.0);
+    spawn_section_label(
+        commands,
+        layout,
+        text(language, TextKey::PlayStyle),
+        RULE_SET_ROW_TOP + 7.0,
+    );
     for (rule_set_index, rule_set) in RuleSet::ALL.iter().enumerate() {
         spawn_option(
             commands,
@@ -1429,7 +1600,7 @@ fn spawn_mode_select_content(
                 w: RULE_SET_OPTION_W,
                 h: OPTION_H,
             }),
-            rule_set.label(),
+            rule_set_label(language, *rule_set),
             Color::srgba(0.58, 0.72, 0.58, 0.28),
         );
     }
@@ -1439,7 +1610,7 @@ fn spawn_mode_select_content(
         spawn_section_label(
             commands,
             layout,
-            &format!("P{}", player_index + 1),
+            &player_label(language, player_index + 1),
             row_top + 6.0,
         );
         for (seat_index, seat) in PlayerSeat::ALL.iter().enumerate() {
@@ -1472,7 +1643,7 @@ fn spawn_mode_select_content(
                 w: PLAYER_CONTROL_W,
                 h: OPTION_H,
             }),
-            "Human",
+            text(language, TextKey::Human),
             Color::srgba(0.53, 0.77, 0.96, 0.26),
         );
         spawn_option(
@@ -1487,13 +1658,18 @@ fn spawn_mode_select_content(
                 w: PLAYER_CONTROL_W,
                 h: OPTION_H,
             }),
-            "AI",
+            text(language, TextKey::Ai),
             Color::srgba(0.53, 0.77, 0.96, 0.26),
         );
     }
 
     let pieces_top = pieces_row_top(active_player_count);
-    spawn_section_label(commands, layout, "Pieces / Player", pieces_top + 7.0);
+    spawn_section_label(
+        commands,
+        layout,
+        text(language, TextKey::PiecesPerPlayer),
+        pieces_top + 7.0,
+    );
     for pieces in 1..=4u8 {
         let x = OPTION_LEFT + (pieces as f32 - 1.0) * (OPTION_W * 0.7 + OPTION_GAP);
         spawn_option(
@@ -1511,7 +1687,12 @@ fn spawn_mode_select_content(
     }
 
     let launch_rule_top = launch_rule_row_top(active_player_count);
-    spawn_section_label(commands, layout, "Launch Rule", launch_rule_top + 7.0);
+    spawn_section_label(
+        commands,
+        layout,
+        text(language, TextKey::LaunchRule),
+        launch_rule_top + 7.0,
+    );
     for (rule_index, launch_rule) in LaunchRule::ALL.iter().enumerate() {
         spawn_option(
             commands,
@@ -1522,13 +1703,18 @@ fn spawn_mode_select_content(
                 w: OPTION_W,
                 h: OPTION_H,
             }),
-            launch_rule.label(),
+            launch_rule_label(language, *launch_rule),
             Color::srgba(0.53, 0.77, 0.96, 0.26),
         );
     }
 
     let ai_difficulty_top = ai_difficulty_row_top(active_player_count);
-    spawn_section_label(commands, layout, "AI Difficulty", ai_difficulty_top + 7.0);
+    spawn_section_label(
+        commands,
+        layout,
+        text(language, TextKey::AiDifficulty),
+        ai_difficulty_top + 7.0,
+    );
     for (difficulty_index, difficulty) in
         [AiDifficulty::Easy, AiDifficulty::Normal, AiDifficulty::Hard]
             .iter()
@@ -1543,7 +1729,7 @@ fn spawn_mode_select_content(
                 w: OPTION_W,
                 h: OPTION_H,
             }),
-            ai_difficulty_label(*difficulty),
+            ai_difficulty_label(language, *difficulty),
             Color::srgba(0.61, 0.68, 0.88, 0.30),
         );
     }
@@ -1552,16 +1738,23 @@ fn spawn_mode_select_content(
         commands,
         ModeSelectAction::StartMatch,
         layout.rect(mode_select_start_rect(active_player_count)),
-        "Start",
+        text(language, TextKey::Start),
         Color::srgba(0.40, 0.72, 0.55, 0.40),
     );
     spawn_option(
         commands,
         ModeSelectAction::Back,
         layout.rect(mode_select_back_rect(active_player_count)),
-        "Back",
+        text(language, TextKey::Back),
         Color::srgba(0.72, 0.54, 0.44, 0.28),
     );
+}
+
+fn player_label(language: Language, player_index: usize) -> String {
+    match language {
+        Language::SimplifiedChinese => format!("玩家{player_index}"),
+        Language::English => format!("P{player_index}"),
+    }
 }
 
 fn mode_select_start_rect(active_player_count: usize) -> ClickRect {
@@ -1633,7 +1826,7 @@ fn spawn_option(
     base_color: Color,
 ) {
     // 每个可选项都对应一个可点击矩形与行为枚举。
-    spawn_box_with_label(commands, rect, base_color, label, 24.0, Some(action));
+    spawn_box_with_label(commands, rect, base_color, label, 24.0, None, Some(action));
 }
 
 fn spawn_sound_option(
@@ -1643,7 +1836,7 @@ fn spawn_sound_option(
     label: &str,
     base_color: Color,
 ) {
-    spawn_box_with_label(commands, rect, base_color, label, 26.0, None);
+    spawn_box_with_label(commands, rect, base_color, label, 26.0, None, None);
     commands.spawn((
         ClickRect { ..rect },
         SoundSettingsOption { action },
@@ -1658,6 +1851,7 @@ fn spawn_box_with_label(
     color: Color,
     label: &str,
     font_size: f32,
+    localized_key: Option<TextKey>,
     action: Option<ModeSelectAction>,
 ) -> Entity {
     // 通用方块渲染器：用于按钮底板与色块选项。
@@ -1704,6 +1898,9 @@ fn spawn_box_with_label(
                 TextLayout::justify(Justify::Center),
                 Name::new("MenuOptionLabel"),
             ));
+            if let Some(localized_key) = localized_key {
+                label_entity.insert(LocalizedText { key: localized_key });
+            }
             if action.is_some() {
                 label_entity.insert(ModeSelectOptionLabel);
             }
@@ -1733,6 +1930,9 @@ fn label_width_units(label: &str) -> f32 {
 }
 
 fn label_char_width_unit(character: char) -> f32 {
+    if !character.is_ascii() {
+        return 1.0;
+    }
     match character {
         ' ' => 0.34,
         '/' | '-' => 0.36,
@@ -1847,10 +2047,13 @@ fn settings_toggle_track_border_color(active: bool) -> Color {
     }
 }
 
-fn sound_settings_toggle_state(audio_settings: &AudioSettings) -> SettingsToggleVisualState {
+fn sound_settings_toggle_state(
+    audio_settings: &AudioSettings,
+    language: Language,
+) -> SettingsToggleVisualState {
     SettingsToggleVisualState {
         active: audio_settings.muted,
-        label: format_mute_label(audio_settings),
+        label: format_mute_label(audio_settings, language),
     }
 }
 
@@ -1858,31 +2061,47 @@ fn global_settings_toggle_state(
     value_kind: SoundSettingsValueKind,
     audio_settings: &AudioSettings,
     performance_settings: &PerformanceSettings,
+    language: Language,
 ) -> Option<SettingsToggleVisualState> {
     match value_kind {
-        SoundSettingsValueKind::Mute => Some(sound_settings_toggle_state(audio_settings)),
+        SoundSettingsValueKind::Mute => Some(sound_settings_toggle_state(audio_settings, language)),
         SoundSettingsValueKind::Fps => Some(SettingsToggleVisualState {
             active: performance_settings.show_fps,
-            label: fps_toggle_label(performance_settings),
+            label: fps_toggle_label(performance_settings, language),
         }),
-        SoundSettingsValueKind::Music | SoundSettingsValueKind::Effects => None,
+        SoundSettingsValueKind::Music
+        | SoundSettingsValueKind::Effects
+        | SoundSettingsValueKind::Language => None,
     }
 }
 
-fn sound_settings_content(audio_settings: &AudioSettings) -> String {
-    format!(
-        "{}   |   Music {}   |   Effects {}",
-        format_mute_label(audio_settings),
-        format_volume_percent(audio_settings.music_volume),
-        format_volume_percent(audio_settings.effects_volume)
-    )
+fn sound_settings_content(audio_settings: &AudioSettings, language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => format!(
+            "{}   |   音乐 {}   |   音效 {}",
+            format_mute_label(audio_settings, language),
+            format_volume_percent(audio_settings.music_volume),
+            format_volume_percent(audio_settings.effects_volume)
+        ),
+        Language::English => format!(
+            "{}   |   Music {}   |   Effects {}",
+            format_mute_label(audio_settings, language),
+            format_volume_percent(audio_settings.music_volume),
+            format_volume_percent(audio_settings.effects_volume)
+        ),
+    }
 }
 
-fn format_mute_label(audio_settings: &AudioSettings) -> &'static str {
-    if audio_settings.muted {
-        "Muted"
-    } else {
-        "Sound On"
+fn format_mute_label(audio_settings: &AudioSettings, language: Language) -> &'static str {
+    format_mute_label_for_language(audio_settings.muted, language)
+}
+
+fn format_mute_label_for_language(muted: bool, language: Language) -> &'static str {
+    match (language, muted) {
+        (Language::SimplifiedChinese, true) => "已静音",
+        (Language::SimplifiedChinese, false) => "声音开",
+        (Language::English, true) => "Muted",
+        (Language::English, false) => "Sound On",
     }
 }
 
@@ -1890,12 +2109,8 @@ fn format_volume_percent(value: f32) -> String {
     format!("{:>3}%", (value.clamp(0.0, 1.0) * 100.0).round() as u8)
 }
 
-fn ai_difficulty_label(difficulty: AiDifficulty) -> &'static str {
-    match difficulty {
-        AiDifficulty::Easy => "Easy",
-        AiDifficulty::Normal => "Normal",
-        AiDifficulty::Hard => "Hard",
-    }
+fn ai_difficulty_label(language: Language, difficulty: AiDifficulty) -> &'static str {
+    i18n_ai_label(language, difficulty)
 }
 
 fn update_mode_select_option_visuals(
@@ -2040,6 +2255,7 @@ fn handle_main_menu_click(
 
 fn update_sound_settings_text(
     audio_settings: Res<AudioSettings>,
+    language_settings: Res<LanguageSettings>,
     mut summary_query: Query<&mut Text, (With<SoundSettingsText>, Without<SoundSettingsValueText>)>,
     mut value_query: SoundSettingsValueQuery,
     mut toggle_track_query: Query<(
@@ -2049,23 +2265,32 @@ fn update_sound_settings_text(
     )>,
     mut toggle_thumb_query: Query<(&SoundSettingsToggleThumb, &mut Node)>,
 ) {
-    if !audio_settings.is_changed() {
+    if !audio_settings.is_changed() && !language_settings.is_changed() {
         return;
     }
 
     for mut text in &mut summary_query {
-        *text = Text::new(sound_settings_content(&audio_settings));
+        *text = Text::new(sound_settings_content(
+            &audio_settings,
+            language_settings.language,
+        ));
     }
 
     for (value_text, mut text) in &mut value_query {
         *text = Text::new(match value_text.kind {
             SoundSettingsValueKind::Music => format_volume_percent(audio_settings.music_volume),
             SoundSettingsValueKind::Effects => format_volume_percent(audio_settings.effects_volume),
-            SoundSettingsValueKind::Mute => format_mute_label(&audio_settings).to_owned(),
-            SoundSettingsValueKind::Fps => "FPS --".to_owned(),
+            SoundSettingsValueKind::Mute => {
+                format_mute_label(&audio_settings, language_settings.language).to_owned()
+            }
+            SoundSettingsValueKind::Fps => match language_settings.language {
+                Language::SimplifiedChinese => "帧率 --".to_owned(),
+                Language::English => "FPS --".to_owned(),
+            },
+            SoundSettingsValueKind::Language => String::new(),
         });
     }
-    let state = sound_settings_toggle_state(&audio_settings);
+    let state = sound_settings_toggle_state(&audio_settings, language_settings.language);
     for (track, mut background, mut border) in &mut toggle_track_query {
         if track.kind != SoundSettingsValueKind::Mute {
             continue;
@@ -2124,6 +2349,7 @@ fn apply_sound_settings_action(
             audio_settings.adjust_effects(AudioSettings::EFFECTS_STEP)
         }
         SoundSettingsAction::ToggleMute => audio_settings.toggle_mute(),
+        SoundSettingsAction::CycleLanguage => {}
         SoundSettingsAction::ToggleFps => {}
         SoundSettingsAction::MainMenu | SoundSettingsAction::Back => {
             next_state.set(AppState::MainMenu)
@@ -2293,10 +2519,11 @@ fn refresh_mode_select_layout(
     mut commands: Commands,
     windows: Query<&Window>,
     match_setup: Res<MatchSetup>,
+    language_settings: Res<LanguageSettings>,
     mut render_state: ResMut<ModeSelectRenderState>,
     query: Query<Entity, (With<MenuEntity>, Without<ChildOf>)>,
 ) {
-    let next_key = mode_select_render_key(&windows, &match_setup);
+    let next_key = mode_select_render_key(&windows, &match_setup, language_settings.language);
     if render_state.key == Some(next_key) {
         return;
     }
@@ -2304,7 +2531,12 @@ fn refresh_mode_select_layout(
     for entity in &query {
         commands.entity(entity).despawn();
     }
-    spawn_mode_select_content(&mut commands, &windows, &match_setup);
+    spawn_mode_select_content(
+        &mut commands,
+        &windows,
+        &match_setup,
+        language_settings.language,
+    );
     render_state.key = Some(next_key);
 }
 
@@ -2450,16 +2682,18 @@ mod tests {
                     w: RULE_SET_OPTION_W,
                     h: OPTION_H,
                 });
-                let font_size = fitted_box_label_font_size(24.0, rect.w, rect.h, rule_set.label());
-                let estimated_label_width = label_width_units(rule_set.label()) * font_size
-                    + fitted_box_padding(rect.h) * 2.0
-                    + OPTION_LABEL_SAFETY_PX;
+                for language in [Language::SimplifiedChinese, Language::English] {
+                    let label = rule_set_label(language, *rule_set);
+                    let font_size = fitted_box_label_font_size(24.0, rect.w, rect.h, label);
+                    let estimated_label_width = label_width_units(label) * font_size
+                        + fitted_box_padding(rect.h) * 2.0
+                        + OPTION_LABEL_SAFETY_PX;
 
-                assert!(
-                    estimated_label_width <= rect.w + f32::EPSILON,
-                    "{} label overflows {rect:?} at {width}x{height}",
-                    rule_set.label()
-                );
+                    assert!(
+                        estimated_label_width <= rect.w + f32::EPSILON,
+                        "{label} label overflows {rect:?} at {width}x{height}",
+                    );
+                }
             }
         }
     }
@@ -2467,8 +2701,18 @@ mod tests {
     #[test]
     fn mode_select_render_key_tracks_window_size_changes() {
         let match_setup = setup();
-        let first = mode_select_render_key_from_size(1280.0, 720.0, &match_setup);
-        let tablet = mode_select_render_key_from_size(2800.0, 1840.0, &match_setup);
+        let first = mode_select_render_key_from_size(
+            1280.0,
+            720.0,
+            &match_setup,
+            Language::SimplifiedChinese,
+        );
+        let tablet = mode_select_render_key_from_size(
+            2800.0,
+            1840.0,
+            &match_setup,
+            Language::SimplifiedChinese,
+        );
 
         assert_ne!(first, tablet);
         assert_eq!(tablet.window_width, 2800);
@@ -2535,6 +2779,7 @@ mod tests {
             .init_state::<AppState>()
             .init_resource::<AudioSettings>()
             .init_resource::<PerformanceSettings>()
+            .init_resource::<LanguageSettings>()
             .init_resource::<SoundSettingsOverlayState>()
             .add_systems(Update, update_global_sound_overlay);
 
@@ -2582,6 +2827,7 @@ mod tests {
             muted: false,
         };
         let mut performance_settings = PerformanceSettings { show_fps: false };
+        let mut language_settings = LanguageSettings::default();
         let mut overlay_state = SoundSettingsOverlayState {
             open: true,
             input_captured: false,
@@ -2592,6 +2838,7 @@ mod tests {
                 SoundSettingsAction::MusicDown,
                 &mut audio_settings,
                 &mut performance_settings,
+                &mut language_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2601,6 +2848,7 @@ mod tests {
                 SoundSettingsAction::EffectsUp,
                 &mut audio_settings,
                 &mut performance_settings,
+                &mut language_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2615,6 +2863,7 @@ mod tests {
                 SoundSettingsAction::ToggleMute,
                 &mut audio_settings,
                 &mut performance_settings,
+                &mut language_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2627,6 +2876,7 @@ mod tests {
                 SoundSettingsAction::ToggleFps,
                 &mut audio_settings,
                 &mut performance_settings,
+                &mut language_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2636,9 +2886,23 @@ mod tests {
 
         assert_eq!(
             apply_global_sound_action(
+                SoundSettingsAction::CycleLanguage,
+                &mut audio_settings,
+                &mut performance_settings,
+                &mut language_settings,
+                &mut overlay_state,
+            ),
+            GlobalSettingsCommand::None
+        );
+        assert_eq!(language_settings.label(), "English");
+        assert!(overlay_state.open);
+
+        assert_eq!(
+            apply_global_sound_action(
                 SoundSettingsAction::MainMenu,
                 &mut audio_settings,
                 &mut performance_settings,
+                &mut language_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::MainMenu
@@ -2651,6 +2915,7 @@ mod tests {
                 SoundSettingsAction::QuitGame,
                 &mut audio_settings,
                 &mut performance_settings,
+                &mut language_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::QuitGame
@@ -2663,6 +2928,7 @@ mod tests {
                 SoundSettingsAction::Back,
                 &mut audio_settings,
                 &mut performance_settings,
+                &mut language_settings,
                 &mut overlay_state,
             ),
             GlobalSettingsCommand::None
@@ -2685,12 +2951,32 @@ mod tests {
             muted: false,
         };
 
-        assert_eq!(format_mute_label(&audio_settings), "Sound On");
-        assert!(sound_settings_content(&audio_settings).starts_with("Sound On"));
+        assert_eq!(
+            format_mute_label(&audio_settings, Language::SimplifiedChinese),
+            "声音开"
+        );
+        assert_eq!(
+            format_mute_label(&audio_settings, Language::English),
+            "Sound On"
+        );
+        assert!(
+            sound_settings_content(&audio_settings, Language::SimplifiedChinese)
+                .starts_with("声音开")
+        );
 
         audio_settings.toggle_mute();
-        assert_eq!(format_mute_label(&audio_settings), "Muted");
-        assert!(sound_settings_content(&audio_settings).starts_with("Muted"));
+        assert_eq!(
+            format_mute_label(&audio_settings, Language::SimplifiedChinese),
+            "已静音"
+        );
+        assert_eq!(
+            format_mute_label(&audio_settings, Language::English),
+            "Muted"
+        );
+        assert!(
+            sound_settings_content(&audio_settings, Language::SimplifiedChinese)
+                .starts_with("已静音")
+        );
     }
 
     #[test]
@@ -2720,10 +3006,11 @@ mod tests {
                 SoundSettingsValueKind::Mute,
                 &audio_settings,
                 &performance_settings,
+                Language::SimplifiedChinese,
             ),
             Some(SettingsToggleVisualState {
                 active: false,
-                label: "Sound On",
+                label: "声音开",
             })
         );
         assert_eq!(
@@ -2731,10 +3018,11 @@ mod tests {
                 SoundSettingsValueKind::Fps,
                 &audio_settings,
                 &performance_settings,
+                Language::SimplifiedChinese,
             ),
             Some(SettingsToggleVisualState {
                 active: false,
-                label: "FPS Off",
+                label: "帧率关",
             })
         );
 
@@ -2745,6 +3033,7 @@ mod tests {
                 SoundSettingsValueKind::Mute,
                 &audio_settings,
                 &performance_settings,
+                Language::SimplifiedChinese,
             )
             .map(|state| state.active),
             Some(true)
@@ -2754,9 +3043,10 @@ mod tests {
                 SoundSettingsValueKind::Fps,
                 &audio_settings,
                 &performance_settings,
+                Language::SimplifiedChinese,
             )
             .map(|state| state.label),
-            Some("FPS On")
+            Some("帧率开")
         );
     }
 
@@ -2802,6 +3092,15 @@ mod tests {
         assert_eq!(
             global_sound_action_at(fps, &window),
             Some(SoundSettingsAction::ToggleFps)
+        );
+
+        let language = Vec2::new(
+            panel.x + GLOBAL_SOUND_CONTROL_LEFT + 8.0,
+            panel.y + GLOBAL_SOUND_LANGUAGE_ROW_TOP + 8.0,
+        );
+        assert_eq!(
+            global_sound_action_at(language, &window),
+            Some(SoundSettingsAction::CycleLanguage)
         );
 
         let main_menu = Vec2::new(

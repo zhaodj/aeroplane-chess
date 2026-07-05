@@ -816,11 +816,8 @@ fn apply_finish_bounce_skill_reward(
         return;
     }
 
-    let allow_swap = resources.player_roster.players.len() > 2;
     for _ in 0..bounce_count {
-        if let Some(progress) =
-            record_finish_bounce(skill_roster, origin.owner_player_id, allow_swap)
-        {
+        if let Some(progress) = record_finish_bounce(skill_roster, origin.owner_player_id, true) {
             notes.push(format_finish_bounce_note(progress));
         }
     }
@@ -893,10 +890,7 @@ pub fn set_pending_actions(
     actions: Vec<PlannedAction>,
     next_phase: &mut ResMut<NextState<GamePhase>>,
 ) {
-    input_state.prompt = Some(format!(
-        "Rolled {}. Tap a highlighted piece to move.",
-        roll_value
-    ));
+    input_state.prompt = Some(format!("掷出 {}。点击高亮飞机移动。", roll_value));
     input_state.candidate_piece_ids = actions.iter().map(|action| action.piece_id()).collect();
     input_state.pending_actions = actions;
     next_phase.set(GamePhase::AwaitPieceSelect);
@@ -2206,8 +2200,7 @@ fn apply_event_kind_effect(
         }
         TileEventKind::GainSkillCharge => {
             let owner_player_id = owner_player_id_for_action(action, piece_query)?;
-            let allow_swap = resources.player_roster.players.len() > 2;
-            let charged = grant_random_skill_charge(skill_roster, owner_player_id, allow_swap)
+            let charged = grant_random_skill_charge(skill_roster, owner_player_id, true)
                 .unwrap_or("UnknownSkill");
             Some(TileEventOutcome {
                 kind: event_kind,

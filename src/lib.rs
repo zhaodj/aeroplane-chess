@@ -5,6 +5,7 @@ mod constants;
 mod data;
 mod domain;
 mod gameplay;
+mod i18n;
 mod platform;
 mod plugins;
 mod states;

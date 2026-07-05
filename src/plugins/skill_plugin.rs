@@ -8,10 +8,11 @@ use crate::gameplay::skill_flow::{
     MAX_PIECE_SHIELD, SkillRoster, arm_dash, arm_double_dice, build_skill_roster,
     can_use_skill_this_turn, current_player_type, dash_bonus, is_current_player_dash_move_piece,
     is_current_player_swap_piece, is_legal_shield_target, is_legal_snipe_target,
-    is_swap_teammate_piece, mark_skill_used, player_skill_state, record_skill_action,
+    is_legal_swap_target, mark_skill_used, player_skill_state, record_skill_action,
     spend_shield_charge, spend_snipe_charge, spend_swap_charge, sync_turn_skill_usage,
 };
 use crate::gameplay::turn_flow::TurnState;
+use crate::i18n::{Language, LanguageSettings};
 use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::effects_plugin::{
     EffectRevealDelays, PieceMotionEffects, TARGETED_MISSILE_REVEAL_DURATION, VisualEffectQueue,
@@ -104,6 +105,7 @@ struct HumanSkillInputParams<'w, 's> {
     match_result: Res<'w, MatchResult>,
     game_phase: Res<'w, State<GamePhase>>,
     turn_state: Res<'w, TurnState>,
+    language_settings: Res<'w, LanguageSettings>,
     skill_roster: ResMut<'w, SkillRoster>,
     skill_ui_request: ResMut<'w, SkillUiRequest>,
     target_state: ResMut<'w, SkillTargetState>,
@@ -395,7 +397,7 @@ fn handle_human_skill_input(
             mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
             params.target_state.candidate_piece_ids = targets;
             params.target_state.prompt =
-                Some("Tap a highlighted Snipe target, or use Cancel".to_string());
+                Some(snipe_target_prompt(params.language_settings.language));
             params.target_state.active = true;
             params.next_phase.set(GamePhase::ResolveSkillEffect);
         }
@@ -478,16 +480,6 @@ fn handle_human_skill_input(
             }
         }
         SkillUiAction::Swap if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
-            if params.match_config.mode != GameMode::TwoVsTwo {
-                record_skill_action(
-                    &mut params.skill_roster,
-                    params.turn_state.turn_index,
-                    params.turn_state.current_player,
-                    "Swap is only available in 2v2",
-                );
-                return;
-            }
-
             let Some(current_team_id) = params
                 .player_roster
                 .players
@@ -498,9 +490,10 @@ fn handle_human_skill_input(
                 return;
             };
 
-            let Some(teammate_piece_id) = find_active_teammate_piece_for_swap(
+            let Some(target_piece_id) = find_active_target_piece_for_swap(
                 params.turn_state.current_player,
                 current_team_id,
+                params.match_config.mode,
                 &params.piece_query,
             ) else {
                 record_skill_action(
@@ -508,7 +501,7 @@ fn handle_human_skill_input(
                     params.turn_state.turn_index,
                     params.turn_state.current_player,
                     format!(
-                        "P{} found no teammate piece to Swap with",
+                        "P{} found no target piece to Swap with",
                         params.turn_state.current_player
                     ),
                 );
@@ -543,7 +536,9 @@ fn handle_human_skill_input(
             mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
             let message = execute_swap(
                 params.turn_state.current_player,
-                teammate_piece_id,
+                current_team_id,
+                params.match_config.mode,
+                target_piece_id,
                 &mut params.piece_query,
             );
             record_skill_action(
@@ -561,6 +556,13 @@ fn handle_human_skill_input(
                 "Skill not available in current phase",
             );
         }
+    }
+}
+
+fn snipe_target_prompt(language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => "点击高亮狙击目标，或取消。".to_string(),
+        Language::English => "Tap a highlighted Snipe target, or cancel.".to_string(),
     }
 }
 
@@ -877,16 +879,17 @@ fn current_player_has_dash_move_piece(
     })
 }
 
-/// 查找可用于 Swap 的队友主环道棋子。
-fn find_active_teammate_piece_for_swap(
+/// 查找可用于 Swap 的目标主环道棋子。
+fn find_active_target_piece_for_swap(
     current_player: u8,
     current_team: u8,
+    mode: GameMode,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
     let mut candidates = piece_query
         .iter()
         .filter(|(_, _, piece_state, _)| {
-            is_swap_teammate_piece(current_player, current_team, &piece_state)
+            is_legal_swap_target(current_player, current_team, mode, piece_state)
         })
         .map(|(piece_id, _, _, _)| piece_id.0)
         .collect::<Vec<_>>();
@@ -897,7 +900,9 @@ fn find_active_teammate_piece_for_swap(
 /// 执行 Swap：交换双方状态与世界坐标。
 fn execute_swap(
     current_player: u8,
-    teammate_piece_id: u8,
+    current_team: u8,
+    mode: GameMode,
+    target_piece_id: u8,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> String {
     let Some((current_piece_id, current_state, current_translation)) =
@@ -914,29 +919,29 @@ fn execute_swap(
         return "Swap failed: current player's active piece not found".to_string();
     };
 
-    let Some((teammate_state, teammate_translation)) =
+    let Some((target_state, target_translation)) =
         piece_query
             .iter()
             .find_map(|(piece_id, _, piece_state, transform)| {
-                (piece_id.0 == teammate_piece_id
-                    && is_swap_teammate_piece(current_player, current_state.team_id, &piece_state))
+                (piece_id.0 == target_piece_id
+                    && is_legal_swap_target(current_player, current_team, mode, &piece_state))
                 .then_some((*piece_state, transform.translation))
             })
     else {
-        return "Swap failed: teammate piece not found on main route".to_string();
+        return "Swap failed: target piece not found on main route".to_string();
     };
 
     for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
         if piece_id.0 == current_piece_id {
-            piece_state.status = teammate_state.status;
-            piece_state.progress = teammate_state.progress;
-            piece_state.shield = teammate_state.shield;
-            piece_state.stack_shield = teammate_state.stack_shield;
+            piece_state.status = target_state.status;
+            piece_state.progress = target_state.progress;
+            piece_state.shield = target_state.shield;
+            piece_state.stack_shield = target_state.stack_shield;
             piece_state.motion_serial = piece_state
                 .motion_serial
                 .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
-            transform.translation = teammate_translation;
-        } else if piece_id.0 == teammate_piece_id {
+            transform.translation = target_translation;
+        } else if piece_id.0 == target_piece_id {
             piece_state.status = current_state.status;
             piece_state.progress = current_state.progress;
             piece_state.shield = current_state.shield;
@@ -949,8 +954,8 @@ fn execute_swap(
     }
 
     format!(
-        "Swap exchanged piece #{} with teammate piece #{}",
-        current_piece_id, teammate_piece_id
+        "Swap exchanged piece #{} with piece #{}",
+        current_piece_id, target_piece_id
     )
 }
 
@@ -1062,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn find_active_teammate_piece_for_swap_returns_smallest_main_route_piece_id() {
+    fn find_active_target_piece_for_swap_returns_smallest_valid_main_route_piece_id() {
         let mut world = World::new();
         world.spawn((
             PieceId(9),
@@ -1126,11 +1131,18 @@ mod tests {
         > = SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world).unwrap();
 
-        assert_eq!(find_active_teammate_piece_for_swap(1, 1, &query), Some(4));
+        assert_eq!(
+            find_active_target_piece_for_swap(1, 1, GameMode::TwoVsTwo, &query),
+            Some(4)
+        );
+        assert_eq!(
+            find_active_target_piece_for_swap(1, 1, GameMode::OneVsOne, &query),
+            None
+        );
     }
 
     #[test]
-    fn execute_swap_exchanges_progress_and_positions_between_teammates() {
+    fn execute_swap_exchanges_progress_and_positions_between_valid_targets() {
         let mut world = World::new();
         world.spawn((
             PieceId(1),
@@ -1166,7 +1178,7 @@ mod tests {
         > = SystemState::new(&mut world);
         let mut query = system_state.get_mut(&mut world).unwrap();
 
-        let note = execute_swap(1, 2, &mut query);
+        let note = execute_swap(1, 1, GameMode::TwoVsTwo, 2, &mut query);
         let states = query
             .iter_mut()
             .map(|(piece_id, _, piece_state, transform)| {
@@ -1187,6 +1199,60 @@ mod tests {
             states,
             vec![(1, 1, 18, 0, 1, 100.0, 50.0), (2, 3, 3, 1, 0, -100.0, 0.0),]
         );
+    }
+
+    #[test]
+    fn execute_swap_allows_enemy_target_outside_two_vs_two() {
+        let mut world = World::new();
+        world.spawn((
+            PieceId(1),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 1,
+                team_id: 1,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 4,
+                shield: 0,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::from_xyz(-20.0, 0.0, 0.0),
+        ));
+        world.spawn((
+            PieceId(3),
+            HangarSlot(Vec2::ZERO),
+            PieceState {
+                owner_player_id: 2,
+                team_id: 2,
+                status: crate::domain::piece::PieceStatus::Active,
+                progress: 16,
+                shield: 1,
+                stack_shield: 0,
+                motion_serial: 0,
+            },
+            Transform::from_xyz(20.0, 0.0, 0.0),
+        ));
+        let mut system_state: SystemState<
+            Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+        > = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
+
+        let note = execute_swap(1, 1, GameMode::OneVsOne, 3, &mut query);
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, transform)| {
+                (
+                    piece_id.0,
+                    piece_state.owner_player_id,
+                    piece_state.progress,
+                    piece_state.shield,
+                    transform.translation.x,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(note, "Swap exchanged piece #1 with piece #3");
+        assert_eq!(states, vec![(1, 1, 16, 1, 20.0), (3, 2, 4, 0, -20.0)]);
     }
 
     #[test]
@@ -1227,7 +1293,7 @@ mod tests {
         let mut target_query = target_system_state
             .get_mut(&mut target_home_lane_world)
             .unwrap();
-        let target_note = execute_swap(1, 2, &mut target_query);
+        let target_note = execute_swap(1, 1, GameMode::TwoVsTwo, 2, &mut target_query);
         assert!(target_note.contains("not found on main route"));
 
         let mut source_home_lane_world = World::new();
@@ -1266,7 +1332,7 @@ mod tests {
         let mut source_query = source_system_state
             .get_mut(&mut source_home_lane_world)
             .unwrap();
-        let source_note = execute_swap(1, 2, &mut source_query);
+        let source_note = execute_swap(1, 1, GameMode::TwoVsTwo, 2, &mut source_query);
         assert!(source_note.contains("active piece not found"));
     }
 

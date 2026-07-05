@@ -10,6 +10,7 @@ use crate::gameplay::turn_flow::{
     FINISH_DISTANCE, PieceEffectKind, PlannedAction, TurnInputState, TurnState,
     world_position_for_piece,
 };
+use crate::i18n::{Language, LanguageSettings};
 use crate::plugins::effects_plugin::EffectRevealDelays;
 use crate::plugins::skill_plugin::SkillTargetState;
 use crate::states::AppState;
@@ -216,6 +217,7 @@ struct ShieldBadgeData<'w, 's> {
     turn_state: Res<'w, TurnState>,
     input_state: Res<'w, TurnInputState>,
     reveal_delays: Res<'w, EffectRevealDelays>,
+    language_settings: Res<'w, LanguageSettings>,
     piece_query: PieceTransformQuery<'w, 's>,
 }
 
@@ -901,7 +903,7 @@ fn update_piece_stack_count_badges(
             continue;
         }
 
-        *text = Text2d::new(format!("x{}", info.stack_count));
+        *text = Text2d::new(format!("×{}", info.stack_count));
         *text_color = TextColor(Color::WHITE);
         transform.translation = info.stack_badge_translation
             + Vec3::new(STACK_BADGE_OFFSET.x, STACK_BADGE_OFFSET.y - 0.5, 0.0);
@@ -1435,6 +1437,7 @@ fn update_piece_shield_badges(data: ShieldBadgeData, mut nodes: ShieldBadgeNodes
                         &data.input_state,
                         &data.skill_roster,
                     ),
+                    data.language_settings.language,
                 ),
                 visual_infos
                     .iter()
@@ -1522,8 +1525,9 @@ fn shield_badge_info(
     shield: u8,
     stack_shield: u8,
     movement_bonus: Option<u8>,
+    language: Language,
 ) -> Option<ShieldBadgeInfo> {
-    let label = shield_badge_label(shield, stack_shield, movement_bonus)?;
+    let label = shield_badge_label(shield, stack_shield, movement_bonus, language)?;
     let has_movement_bonus = movement_bonus.unwrap_or_default() > 0;
     let fill = match (shield > 0, stack_shield > 0, has_movement_bonus) {
         (false, false, true) => Color::srgba(0.86, 0.38, 0.05, 0.95),
@@ -1542,16 +1546,30 @@ fn shield_badge_info(
     })
 }
 
-fn shield_badge_label(shield: u8, stack_shield: u8, movement_bonus: Option<u8>) -> Option<String> {
+fn shield_badge_label(
+    shield: u8,
+    stack_shield: u8,
+    movement_bonus: Option<u8>,
+    language: Language,
+) -> Option<String> {
     let mut labels = Vec::new();
     if shield > 0 {
-        labels.push(format!("SH{shield}"));
+        labels.push(match language {
+            Language::SimplifiedChinese => format!("盾{shield}"),
+            Language::English => format!("S{shield}"),
+        });
     }
     if stack_shield > 0 {
-        labels.push(format!("Team{stack_shield}"));
+        labels.push(match language {
+            Language::SimplifiedChinese => format!("队盾{stack_shield}"),
+            Language::English => format!("TS{stack_shield}"),
+        });
     }
     if let Some(movement_bonus) = movement_bonus.filter(|bonus| *bonus > 0) {
-        labels.push(format!("D+{movement_bonus}"));
+        labels.push(match language {
+            Language::SimplifiedChinese => format!("冲+{movement_bonus}"),
+            Language::English => format!("D+{movement_bonus}"),
+        });
     }
 
     (!labels.is_empty()).then(|| labels.join("+"))
@@ -1570,6 +1588,7 @@ fn update_piece_effect_badges(
     turn_state: Res<TurnState>,
     board_layout: Res<BoardLayout>,
     player_roster: Res<PlayerRoster>,
+    language_settings: Res<LanguageSettings>,
     piece_query: PieceTransformQuery,
     mut badge_query: EffectBadgeQuery,
     mut badge_text_query: EffectBadgeTextQuery,
@@ -1625,7 +1644,7 @@ fn update_piece_effect_badges(
             continue;
         };
 
-        *text = Text2d::new(piece_effect_label(effect.kind));
+        *text = Text2d::new(piece_effect_label(effect.kind, language_settings.language));
         *text_color = TextColor(piece_effect_text_color(effect.kind));
         transform.translation =
             *translation + Vec3::new(EFFECT_BADGE_OFFSET.x, EFFECT_BADGE_OFFSET.y - 6.0, 0.0);
@@ -1634,10 +1653,12 @@ fn update_piece_effect_badges(
     }
 }
 
-fn piece_effect_label(kind: PieceEffectKind) -> &'static str {
-    match kind {
-        PieceEffectKind::Attack => "ATK",
-        PieceEffectKind::Defense => "SHD",
+fn piece_effect_label(kind: PieceEffectKind, language: Language) -> &'static str {
+    match (kind, language) {
+        (PieceEffectKind::Attack, Language::SimplifiedChinese) => "攻",
+        (PieceEffectKind::Defense, Language::SimplifiedChinese) => "盾",
+        (PieceEffectKind::Attack, Language::English) => "ATK",
+        (PieceEffectKind::Defense, Language::English) => "DEF",
     }
 }
 
@@ -1902,8 +1923,22 @@ mod tests {
 
     #[test]
     fn piece_effect_labels_cover_attack_and_defense_results() {
-        assert_eq!(piece_effect_label(PieceEffectKind::Attack), "ATK");
-        assert_eq!(piece_effect_label(PieceEffectKind::Defense), "SHD");
+        assert_eq!(
+            piece_effect_label(PieceEffectKind::Attack, Language::SimplifiedChinese),
+            "攻"
+        );
+        assert_eq!(
+            piece_effect_label(PieceEffectKind::Defense, Language::SimplifiedChinese),
+            "盾"
+        );
+        assert_eq!(
+            piece_effect_label(PieceEffectKind::Attack, Language::English),
+            "ATK"
+        );
+        assert_eq!(
+            piece_effect_label(PieceEffectKind::Defense, Language::English),
+            "DEF"
+        );
     }
 
     #[test]
@@ -2430,16 +2465,30 @@ mod tests {
 
     #[test]
     fn shield_badge_labels_explain_personal_and_stack_buffs() {
-        assert_eq!(shield_badge_label(0, 0, None), None);
-        assert_eq!(shield_badge_label(1, 0, None), Some("SH1".to_string()));
-        assert_eq!(shield_badge_label(0, 1, None), Some("Team1".to_string()));
         assert_eq!(
-            shield_badge_label(2, 1, Some(3)),
-            Some("SH2+Team1+D+3".to_string())
+            shield_badge_label(0, 0, None, Language::SimplifiedChinese),
+            None
+        );
+        assert_eq!(
+            shield_badge_label(1, 0, None, Language::SimplifiedChinese),
+            Some("盾1".to_string())
+        );
+        assert_eq!(
+            shield_badge_label(0, 1, None, Language::SimplifiedChinese),
+            Some("队盾1".to_string())
+        );
+        assert_eq!(
+            shield_badge_label(2, 1, Some(3), Language::SimplifiedChinese),
+            Some("盾2+队盾1+冲+3".to_string())
+        );
+        assert_eq!(
+            shield_badge_label(2, 1, Some(3), Language::English),
+            Some("S2+TS1+D+3".to_string())
         );
 
-        let combined = shield_badge_info(2, 1, Some(3)).expect("combined badge is visible");
-        assert_eq!(combined.label, "SH2+Team1+D+3");
+        let combined = shield_badge_info(2, 1, Some(3), Language::SimplifiedChinese)
+            .expect("combined badge is visible");
+        assert_eq!(combined.label, "盾2+队盾1+冲+3");
         assert!(combined.size.x > SHIELD_BADGE_MIN_SIZE.x);
     }
 
@@ -2487,7 +2536,13 @@ mod tests {
             None
         );
         assert_eq!(
-            shield_badge_info(0, 0, Some(3))
+            shield_badge_info(0, 0, Some(3), Language::SimplifiedChinese)
+                .map(|badge| badge.label)
+                .as_deref(),
+            Some("冲+3")
+        );
+        assert_eq!(
+            shield_badge_info(0, 0, Some(3), Language::English)
                 .map(|badge| badge.label)
                 .as_deref(),
             Some("D+3")

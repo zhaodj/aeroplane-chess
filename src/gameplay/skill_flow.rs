@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use rand::random_range;
 
+use crate::data::game_mode::GameMode;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::PlayerRoster;
@@ -317,6 +318,24 @@ pub fn is_swap_teammate_piece(
         && is_swap_main_route_piece(piece_state)
 }
 
+/// 判断棋子是否为当前模式下合法的 Swap 目标：
+/// 2v2 只能换队友，其他模式可换敌方主环道棋子。
+pub fn is_legal_swap_target(
+    current_player: u8,
+    current_team: u8,
+    mode: GameMode,
+    piece_state: &PieceState,
+) -> bool {
+    match mode {
+        GameMode::TwoVsTwo => is_swap_teammate_piece(current_player, current_team, piece_state),
+        GameMode::OneVsOne | GameMode::FreeForAll => {
+            piece_state.owner_player_id != current_player
+                && piece_state.team_id != current_team
+                && is_swap_main_route_piece(piece_state)
+        }
+    }
+}
+
 /// AI 是否应当预备 DoubleDice（用于开局起飞机会）。
 pub fn should_ai_arm_double_dice(
     player_id: u8,
@@ -443,7 +462,7 @@ pub fn resolve_roll_from_values(first: u8, second: u8, use_double_dice: bool) ->
     }
 }
 
-/// 随机给玩家补充 1 次技能充能；1v1 可禁用 Swap 池。
+/// 随机给玩家补充 1 次技能充能；`allow_swap` 可用于测试或变体规则排除 Swap 池。
 pub fn grant_random_skill_charge(
     skill_roster: &mut SkillRoster,
     player_id: u8,
@@ -737,10 +756,46 @@ mod tests {
             motion_serial: 0,
         };
         assert!(is_swap_teammate_piece(1, 1, &teammate_piece));
+        assert!(is_legal_swap_target(
+            1,
+            1,
+            GameMode::TwoVsTwo,
+            &teammate_piece
+        ));
 
         teammate_piece.progress = HOME_ENTRY_PROGRESS + 1;
         assert!(!is_swap_teammate_piece(1, 1, &teammate_piece));
         assert!(!is_swap_teammate_piece(3, 1, &teammate_piece));
+
+        let mut enemy_piece = PieceState {
+            owner_player_id: 2,
+            team_id: 2,
+            status: PieceStatus::Active,
+            progress: HOME_ENTRY_PROGRESS,
+            shield: 0,
+            stack_shield: 0,
+            motion_serial: 0,
+        };
+        assert!(is_legal_swap_target(1, 1, GameMode::OneVsOne, &enemy_piece));
+        assert!(is_legal_swap_target(
+            1,
+            1,
+            GameMode::FreeForAll,
+            &enemy_piece
+        ));
+        assert!(!is_legal_swap_target(
+            1,
+            1,
+            GameMode::TwoVsTwo,
+            &enemy_piece
+        ));
+        enemy_piece.progress = HOME_ENTRY_PROGRESS + 1;
+        assert!(!is_legal_swap_target(
+            1,
+            1,
+            GameMode::OneVsOne,
+            &enemy_piece
+        ));
     }
 
     #[test]

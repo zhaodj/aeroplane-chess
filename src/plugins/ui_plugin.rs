@@ -13,9 +13,13 @@ use crate::gameplay::match_flow::{
 use crate::gameplay::skill_flow::{
     FINISH_BOUNCES_PER_SKILL_REWARD, PlayerSkillState, SkillRoster, can_use_skill_this_turn,
     finish_bounce_count, is_current_player_dash_move_piece, is_current_player_swap_piece,
-    is_legal_shield_target, is_legal_snipe_target, is_swap_teammate_piece, player_skill_state,
+    is_legal_shield_target, is_legal_snipe_target, is_legal_swap_target, player_skill_state,
 };
 use crate::gameplay::turn_flow::{TurnState, player_has_finished_all_pieces};
+use crate::i18n::{
+    Language, LanguageSettings, LocalizedText, TextKey, skill_name as i18n_skill_name,
+    skill_tip_body as i18n_skill_tip_body, skill_token as i18n_skill_token, text as i18n_text,
+};
 use crate::platform::{DeviceProfile, PointerInputState, PointerSource};
 use crate::plugins::effects_plugin::EffectRevealDelays;
 use crate::plugins::menu_plugin::{
@@ -474,13 +478,14 @@ struct SkillBoardAvailability {
     snipe_target: bool,
     dash_move_target: bool,
     active_self: bool,
-    active_teammate: bool,
+    swap_target: bool,
 }
 
 impl SkillBoardAvailability {
     fn from_query(
         current_player: u8,
         current_team: u8,
+        mode: GameMode,
         piece_query: &HudPieceQuery<'_, '_>,
     ) -> Self {
         let mut availability = Self::default();
@@ -491,8 +496,8 @@ impl SkillBoardAvailability {
             availability.dash_move_target |=
                 is_current_player_dash_move_piece(current_player, piece_state);
             availability.active_self |= is_current_player_swap_piece(current_player, piece_state);
-            availability.active_teammate |=
-                is_swap_teammate_piece(current_player, current_team, piece_state);
+            availability.swap_target |=
+                is_legal_swap_target(current_player, current_team, mode, piece_state);
         }
         availability
     }
@@ -505,7 +510,9 @@ fn spawn_hud(
     mut skill_tip: ResMut<SkillTipState>,
     player_roster: Res<PlayerRoster>,
     asset_server: Res<AssetServer>,
+    language_settings: Res<LanguageSettings>,
 ) {
+    let language = language_settings.language;
     hud_state.event_log_expanded = false;
     hud_state.skill_tip_action = None;
     *skill_tip = SkillTipState::default();
@@ -514,7 +521,9 @@ fn spawn_hud(
     event_log.entries.clear();
     event_log.last_turn_action_key = None;
     event_log.last_skill_action_key = None;
-    event_log.entries.push("Match started".to_string());
+    event_log
+        .entries
+        .push(i18n_text(language, TextKey::MatchStarted).to_string());
 
     commands
         .spawn((
@@ -566,7 +575,10 @@ fn spawn_hud(
                 BackgroundColor(skill_button_color(false, false)),
                 BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.20)),
                 ZIndex(43),
-                Name::new(format!("SharedSkillButton{}", skill_action_name(action))),
+                Name::new(format!(
+                    "SharedSkillButton{}",
+                    skill_action_name(action, language)
+                )),
                 SharedSkillButton { action },
                 HudEntity,
             ))
@@ -583,7 +595,7 @@ fn spawn_hud(
                     },
                     Name::new(format!(
                         "SharedSkillButtonIcon{}",
-                        skill_action_name(action)
+                        skill_action_name(action, language)
                     )),
                     SharedSkillButtonIcon { action },
                 ));
@@ -607,7 +619,7 @@ fn spawn_hud(
                         ZIndex(1),
                         Name::new(format!(
                             "SharedSkillButtonBadge{}",
-                            skill_action_name(action)
+                            skill_action_name(action, language)
                         )),
                         SharedSkillButtonBadge { action },
                     ))
@@ -622,7 +634,7 @@ fn spawn_hud(
                             TextLayout::justify(Justify::Center),
                             Name::new(format!(
                                 "SharedSkillButtonBadgeText{}",
-                                skill_action_name(action)
+                                skill_action_name(action, language)
                             )),
                             SharedSkillButtonText { action },
                         ));
@@ -648,13 +660,13 @@ fn spawn_hud(
                         ZIndex(3),
                         Name::new(format!(
                             "SharedSkillBlockMarker{}",
-                            skill_action_name(action)
+                            skill_action_name(action, language)
                         )),
                         SharedSkillBlockMarker,
                     ))
                     .with_children(|marker| {
                         marker.spawn((
-                            Text::new("LOCK"),
+                            Text::new(i18n_text(language, TextKey::SkillLocked)),
                             TextFont {
                                 font_size: FontSize::Px(8.2),
                                 ..default()
@@ -663,8 +675,11 @@ fn spawn_hud(
                             TextLayout::justify(Justify::Center),
                             Name::new(format!(
                                 "SharedSkillBlockMarkerText{}",
-                                skill_action_name(action)
+                                skill_action_name(action, language)
                             )),
+                            LocalizedText {
+                                key: TextKey::SkillLocked,
+                            },
                         ));
                     });
             });
@@ -777,7 +792,7 @@ fn spawn_hud(
                 SkillTipBody,
             ));
             panel.spawn((
-                Text::new("x"),
+                Text::new(i18n_text(language, TextKey::SkillTipClose)),
                 TextFont {
                     font_size: FontSize::Px(16.0),
                     ..default()
@@ -791,6 +806,9 @@ fn spawn_hud(
                 },
                 Name::new("SkillTipClose"),
                 SkillTipClose,
+                LocalizedText {
+                    key: TextKey::SkillTipClose,
+                },
             ));
         });
 
@@ -854,7 +872,7 @@ fn spawn_hud(
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Log"),
+                Text::new(i18n_text(language, TextKey::EventLog)),
                 TextFont {
                     font_size: FontSize::Px(16.0),
                     ..default()
@@ -863,6 +881,9 @@ fn spawn_hud(
                 TextLayout::justify(Justify::Center),
                 Name::new("EventLogToggleText"),
                 EventLogToggleText,
+                LocalizedText {
+                    key: TextKey::EventLog,
+                },
             ));
         });
 
@@ -903,7 +924,7 @@ fn spawn_hud(
                 ))
                 .with_children(|scroll_area| {
                     scroll_area.spawn((
-                        Text::new("Match started"),
+                        Text::new(i18n_text(language, TextKey::MatchStarted)),
                         TextFont {
                             font_size: FontSize::Px(13.0),
                             ..default()
@@ -1167,10 +1188,12 @@ fn update_hud_content(
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
     reveal_delays: Res<EffectRevealDelays>,
+    language_settings: Res<LanguageSettings>,
     mut hud_state: ResMut<PlayerHudState>,
     piece_query: HudPieceQuery,
     mut queries: HudContentQueries,
 ) {
+    let language = language_settings.language;
     for (entry, mut background, mut border) in &mut queries.entry_style_query {
         let is_current = entry.player_id == turn_state.current_player;
         let color = player_roster
@@ -1222,6 +1245,7 @@ fn update_hud_content(
             player,
             is_current,
             player_finished,
+            language,
         ));
         *text_color = TextColor(player_hud_badge_text_color(badge_text.kind, is_current));
     }
@@ -1253,6 +1277,7 @@ fn update_hud_content(
         *text = Text::new(finish_bounce_charge_bar_text(
             finish_bounce_progress,
             skills_enabled,
+            language,
         ));
         *text_color = TextColor(finish_bounce_charge_bar_text_color(skills_enabled));
     }
@@ -1265,6 +1290,7 @@ fn update_hud_content(
         board_availability = SkillBoardAvailability::from_query(
             player.state.player_id,
             player.state.team_id,
+            match_config.mode,
             &piece_query,
         );
     }
@@ -1387,12 +1413,13 @@ fn update_hud_content(
         ));
     }
     for mut text in &mut queries.board_roll_button_text_query {
-        *text = Text::new(roll_button_text(cancel_target_ready));
+        *text = Text::new(roll_button_text(cancel_target_ready, language));
     }
 }
 
 fn update_skill_tip_content(
     skill_tip: Res<SkillTipState>,
+    language_settings: Res<LanguageSettings>,
     windows: Query<&Window>,
     device_profile: Res<DeviceProfile>,
     mut panel_query: Query<(&mut Node, &mut Visibility), With<SkillTipPanel>>,
@@ -1406,6 +1433,7 @@ fn update_skill_tip_content(
         Or<(With<SkillTipTitle>, With<SkillTipBody>, With<SkillTipClose>)>,
     >,
 ) {
+    let language = language_settings.language;
     let Ok(window) = windows.single() else {
         return;
     };
@@ -1426,11 +1454,11 @@ fn update_skill_tip_content(
     for (mut text, title, body, close) in &mut text_query {
         if let Some(action) = visible_action {
             if title.is_some() {
-                *text = Text::new(skill_action_name(action));
+                *text = Text::new(skill_action_name(action, language));
             } else if body.is_some() {
-                *text = Text::new(skill_tip_body(action));
+                *text = Text::new(skill_tip_body(action, language));
             } else if close.is_some() {
-                *text = Text::new("x");
+                *text = Text::new(i18n_text(language, TextKey::SkillTipClose));
             }
         } else {
             *text = Text::new("");
@@ -1442,13 +1470,15 @@ fn update_event_log_content(
     mut event_log: ResMut<EventLogState>,
     turn_state: Res<TurnState>,
     skill_roster: Res<SkillRoster>,
+    language_settings: Res<LanguageSettings>,
     mut panel_visibility_query: EventLogPanelVisibilityQuery,
     mut toggle_text_query: EventLogToggleTextQuery,
     mut scroll_area_query: EventLogScrollAreaQuery,
     mut scrollbar_thumb_query: EventLogScrollbarThumbQuery,
     mut log_text_query: EventLogTextQuery,
 ) {
-    sync_event_log(&mut event_log, &turn_state, &skill_roster);
+    let language = language_settings.language;
+    sync_event_log(&mut event_log, &turn_state, &skill_roster, language);
     for mut visibility in &mut panel_visibility_query {
         *visibility = if event_log.expanded {
             Visibility::Visible
@@ -1457,9 +1487,16 @@ fn update_event_log_content(
         };
     }
     for mut text in &mut toggle_text_query {
-        *text = Text::new(if event_log.expanded { "Log -" } else { "Log +" });
+        *text = Text::new(i18n_text(
+            language,
+            if event_log.expanded {
+                TextKey::EventLogOpen
+            } else {
+                TextKey::EventLogClosed
+            },
+        ));
     }
-    let entries = format_event_log_entries(&event_log.entries);
+    let entries = format_event_log_entries(&event_log.entries, language);
     for mut text in &mut log_text_query {
         *text = Text::new(entries.clone());
     }
@@ -1480,6 +1517,7 @@ fn update_event_log_content(
 
 fn update_event_notice_content(
     turn_state: Res<TurnState>,
+    language_settings: Res<LanguageSettings>,
     mut panel_query: Query<
         (&mut Visibility, &mut BackgroundColor, &mut BorderColor),
         With<EventNoticePanel>,
@@ -1489,7 +1527,7 @@ fn update_event_notice_content(
     let notice = turn_state
         .last_action
         .as_deref()
-        .and_then(event_notice_text_from_action);
+        .and_then(|action| event_notice_text_from_action(action, language_settings.language));
     let active = notice.is_some();
 
     for (mut visibility, mut background, mut border) in &mut panel_query {
@@ -1958,6 +1996,7 @@ fn skill_ready_for_current_context(
     let board_availability = SkillBoardAvailability::from_query(
         current_profile.state.player_id,
         current_profile.state.team_id,
+        match_config.mode,
         piece_query,
     );
     player_skill_state(skill_roster, turn_state.current_player)
@@ -2313,14 +2352,8 @@ fn apply_rect_to_node(node: &mut Node, rect: ScreenRect) {
     node.height = Val::Px(rect.h);
 }
 
-fn skill_action_name(action: SkillUiAction) -> &'static str {
-    match action {
-        SkillUiAction::Dash => "Dash",
-        SkillUiAction::Snipe => "Snipe",
-        SkillUiAction::Swap => "Swap",
-        SkillUiAction::Shield => "Shield",
-        SkillUiAction::DoubleDice => "DoubleDice",
-    }
+fn skill_action_name(action: SkillUiAction, language: Language) -> &'static str {
+    i18n_skill_name(language, action)
 }
 
 fn skill_icon_asset_path(action: SkillUiAction) -> &'static str {
@@ -2333,22 +2366,8 @@ fn skill_icon_asset_path(action: SkillUiAction) -> &'static str {
     }
 }
 
-fn skill_tip_body(action: SkillUiAction) -> &'static str {
-    match action {
-        SkillUiAction::Dash => {
-            "After rolling, add +3 movement before choosing one movable aircraft."
-        }
-        SkillUiAction::Snipe => {
-            "Target an enemy aircraft on the public route. Shields absorb the hit first."
-        }
-        SkillUiAction::Swap => {
-            "In 2v2, swap positions with one teammate aircraft on the main route."
-        }
-        SkillUiAction::Shield => {
-            "Give one active friendly aircraft a shield, up to 2 layers. Shields block hits."
-        }
-        SkillUiAction::DoubleDice => "Arm the next roll with two dice, then choose one result.",
-    }
+fn skill_tip_body(action: SkillUiAction, language: Language) -> &'static str {
+    i18n_skill_tip_body(language, action)
 }
 
 fn skill_badge_text(charges: u8) -> String {
@@ -2435,10 +2454,14 @@ fn finish_bounce_charge_fill_width(count: u8, bar_width: f32) -> f32 {
     (bar_width * progress).clamp(0.0, bar_width)
 }
 
-fn finish_bounce_charge_bar_text(count: u8, active: bool) -> String {
+fn finish_bounce_charge_bar_text(count: u8, active: bool, language: Language) -> String {
     if active {
+        let label = match language {
+            Language::SimplifiedChinese => "折返充能",
+            Language::English => "Bounce Charge",
+        };
         format!(
-            "Bounce Charge {}/{}",
+            "{label} {}/{}",
             count.min(FINISH_BOUNCES_PER_SKILL_REWARD),
             FINISH_BOUNCES_PER_SKILL_REWARD
         )
@@ -2509,16 +2532,24 @@ fn player_hud_badge_text(
     player: &PlayerProfile,
     is_current: bool,
     player_finished: bool,
+    language: Language,
 ) -> String {
     match kind {
         PlayerHudBadgeKind::Player => {
+            let label = match language {
+                Language::SimplifiedChinese => player.state.player_id.to_string(),
+                Language::English => format!("P{}", player.state.player_id),
+            };
             if player_finished {
-                format!("P{}✓", player.state.player_id)
+                format!("{label}✓")
             } else {
-                format!("P{}", player.state.player_id)
+                label
             }
         }
-        PlayerHudBadgeKind::Team => format!("T{}", player.state.team_id),
+        PlayerHudBadgeKind::Team => match language {
+            Language::SimplifiedChinese => format!("队{}", player.state.team_id),
+            Language::English => format!("T{}", player.state.team_id),
+        },
         PlayerHudBadgeKind::Turn => {
             if is_current {
                 ">".to_string()
@@ -2561,38 +2592,57 @@ fn player_hud_badge_text_color(kind: PlayerHudBadgeKind, is_current: bool) -> Co
     }
 }
 
-fn roll_button_text(cancel_target_ready: bool) -> String {
+fn roll_button_text(cancel_target_ready: bool, language: Language) -> String {
     if cancel_target_ready {
-        return "X".to_string();
+        return i18n_text(language, TextKey::SkillTipClose).to_string();
     }
     String::new()
 }
 
-fn event_notice_text_from_action(action: &str) -> Option<String> {
+fn event_notice_text_from_action(action: &str, language: Language) -> Option<String> {
     let mut notice = None;
     for segment in action.split(';').flat_map(|part| part.split(", ")) {
         let segment = segment.trim();
-        if let Some(finish_bounce_notice) = format_finish_bounce_notice(segment) {
+        if let Some(finish_bounce_notice) = format_finish_bounce_notice(segment, language) {
             notice = Some(finish_bounce_notice);
         } else if let Some(event_note) = extract_event_note(segment) {
-            notice = Some(format_event_notice(event_note));
+            notice = Some(format_event_notice(event_note, language));
         }
     }
     notice
 }
 
-fn format_finish_bounce_notice(segment: &str) -> Option<String> {
+fn format_finish_bounce_notice(segment: &str, language: Language) -> Option<String> {
     let detail = segment.strip_prefix("finish bounce ")?;
     if let Some((progress, skill_detail)) = detail.split_once(": gained 1 ")
         && let Some(skill) = skill_detail.strip_suffix(" charge")
     {
-        return Some(format!("Finish bounce {progress}\n{skill} +1"));
+        return Some(match language {
+            Language::SimplifiedChinese => {
+                format!(
+                    "终点折返 {progress}\n{} +1",
+                    localized_skill_token(skill, language)
+                )
+            }
+            Language::English => {
+                format!(
+                    "Finish bounce {progress}\n{} +1",
+                    localized_skill_token(skill, language)
+                )
+            }
+        });
     }
 
-    Some(format!(
-        "Finish bounce {detail}\nSkill reward at {FINISH_BOUNCES_PER_SKILL_REWARD}/{}.",
-        FINISH_BOUNCES_PER_SKILL_REWARD
-    ))
+    Some(match language {
+        Language::SimplifiedChinese => format!(
+            "终点折返 {detail}\n累计到 {FINISH_BOUNCES_PER_SKILL_REWARD}/{} 奖励技能。",
+            FINISH_BOUNCES_PER_SKILL_REWARD
+        ),
+        Language::English => format!(
+            "Finish bounce {detail}\nReach {FINISH_BOUNCES_PER_SKILL_REWARD}/{} to gain a random skill.",
+            FINISH_BOUNCES_PER_SKILL_REWARD
+        ),
+    })
 }
 
 fn extract_event_note(segment: &str) -> Option<&str> {
@@ -2611,9 +2661,68 @@ fn extract_event_note(segment: &str) -> Option<&str> {
         .filter(|note| note.starts_with("event "))
 }
 
-fn format_event_notice(event_note: &str) -> String {
+fn format_event_notice(event_note: &str, language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => format_event_notice_zh(event_note),
+        Language::English => format_event_notice_en(event_note),
+    }
+}
+
+fn format_event_notice_zh(event_note: &str) -> String {
     if event_note == "event advance +2" {
-        return "Event: Advance +2\nMoved forward 2 spaces.".to_string();
+        return "事件：前进 +2\n额外前进 2 格。".to_string();
+    }
+
+    if let Some(detail) = event_note.strip_prefix("event GainShield: gained shield ") {
+        let shield = detail.trim().trim_start_matches('(').trim_end_matches(')');
+        return format!("事件：护盾 +1\n当前护盾：{shield}");
+    }
+
+    if let Some(skill) = event_note
+        .strip_prefix("event GainSkillCharge: gained 1 ")
+        .and_then(|detail| detail.strip_suffix(" charge"))
+    {
+        return format!(
+            "事件：技能充能\n{} +1",
+            localized_skill_token(skill, Language::SimplifiedChinese)
+        );
+    }
+
+    if let Some(player) =
+        event_note.strip_prefix("event DisableNextSkill: next skill turn disabled for ")
+    {
+        return format!(
+            "事件：技能干扰\n{} 下回合不能使用技能。",
+            localized_player_token(player, Language::SimplifiedChinese)
+        );
+    }
+
+    if let Some(piece_id) =
+        event_note.strip_prefix("event RemoveEnemyShield: removed shield from piece #")
+    {
+        return format!("事件：护盾破坏\n飞机 {piece_id} 失去 1 层护盾。");
+    }
+
+    match event_note {
+        "event fizzled: could not disable next skill turn" => {
+            "事件未生效\n没有可被干扰的技能回合。".to_string()
+        }
+        "event fizzled: no enemy shield to remove" => {
+            "事件未生效\n没有敌方护盾可移除。".to_string()
+        }
+        "event failed: selected enemy shield target disappeared" => {
+            "事件失败\n目标已经消失。".to_string()
+        }
+        _ => format!(
+            "事件\n{}",
+            event_note.strip_prefix("event ").unwrap_or(event_note)
+        ),
+    }
+}
+
+fn format_event_notice_en(event_note: &str) -> String {
+    if event_note == "event advance +2" {
+        return "Event: Advance +2\nMove forward 2 extra tiles.".to_string();
     }
 
     if let Some(detail) = event_note.strip_prefix("event GainShield: gained shield ") {
@@ -2625,30 +2734,36 @@ fn format_event_notice(event_note: &str) -> String {
         .strip_prefix("event GainSkillCharge: gained 1 ")
         .and_then(|detail| detail.strip_suffix(" charge"))
     {
-        return format!("Event: Skill charge\n{skill} +1");
+        return format!(
+            "Event: Skill Charge\n{} +1",
+            localized_skill_token(skill, Language::English)
+        );
     }
 
     if let Some(player) =
         event_note.strip_prefix("event DisableNextSkill: next skill turn disabled for ")
     {
-        return format!("Event: Skill jam\n{player} cannot use skills next turn.");
+        return format!(
+            "Event: Skill Jam\n{} cannot use skills next turn.",
+            localized_player_token(player, Language::English)
+        );
     }
 
     if let Some(piece_id) =
         event_note.strip_prefix("event RemoveEnemyShield: removed shield from piece #")
     {
-        return format!("Event: Shield break\nPiece #{piece_id} loses 1 shield.");
+        return format!("Event: Shield Break\nPiece {piece_id} loses 1 shield.");
     }
 
     match event_note {
         "event fizzled: could not disable next skill turn" => {
-            "Event fizzled\nNo skill turn could be disabled.".to_string()
+            "Event Fizzled\nNo skill turn could be jammed.".to_string()
         }
         "event fizzled: no enemy shield to remove" => {
-            "Event fizzled\nNo enemy shield to remove.".to_string()
+            "Event Fizzled\nNo enemy shield could be removed.".to_string()
         }
         "event failed: selected enemy shield target disappeared" => {
-            "Event failed\nTarget disappeared.".to_string()
+            "Event Failed\nThe target disappeared.".to_string()
         }
         _ => format!(
             "Event\n{}",
@@ -2661,6 +2776,7 @@ fn sync_event_log(
     event_log: &mut EventLogState,
     turn_state: &TurnState,
     skill_roster: &SkillRoster,
+    language: Language,
 ) {
     if let Some(action) = turn_state.last_action.as_ref() {
         let key = turn_state.last_action_serial;
@@ -2671,6 +2787,7 @@ fn sync_event_log(
                     turn_state.last_action_turn_index,
                     turn_state.last_action_player_id,
                     action,
+                    language,
                 ),
             );
             event_log.last_turn_action_key = Some(key);
@@ -2685,6 +2802,7 @@ fn sync_event_log(
                     skill_roster.last_skill_action_turn_index,
                     skill_roster.last_skill_action_player_id,
                     action,
+                    language,
                 ),
             );
             event_log.last_skill_action_key = Some(key);
@@ -2692,16 +2810,31 @@ fn sync_event_log(
     }
 }
 
-fn format_event_log_entry(turn_index: u32, player_id: Option<u8>, action: &str) -> String {
+fn format_event_log_entry(
+    turn_index: u32,
+    player_id: Option<u8>,
+    action: &str,
+    language: Language,
+) -> String {
+    let localized_action = player_id
+        .map(|player_id| strip_player_prefix(action, player_id))
+        .unwrap_or(action);
+    let localized_action = localize_action_text(localized_action, language);
     let Some(player_id) = player_id else {
-        return format!("T{}: {}", turn_index, action);
+        return match language {
+            Language::SimplifiedChinese => format!("第{}回合：{}", turn_index, localized_action),
+            Language::English => format!("Turn {turn_index}: {localized_action}"),
+        };
     };
-    format!(
-        "T{} P{}: {}",
-        turn_index,
-        player_id,
-        strip_player_prefix(action, player_id)
-    )
+    match language {
+        Language::SimplifiedChinese => {
+            format!(
+                "第{}回合 玩家{}：{}",
+                turn_index, player_id, localized_action
+            )
+        }
+        Language::English => format!("Turn {turn_index} P{player_id}: {localized_action}"),
+    }
 }
 
 fn strip_player_prefix(action: &str, player_id: u8) -> &str {
@@ -2724,12 +2857,474 @@ fn prune_event_log_entries(event_log: &mut EventLogState) {
     }
 }
 
-fn format_event_log_entries(entries: &[String]) -> String {
+fn format_event_log_entries(entries: &[String], language: Language) -> String {
     if entries.is_empty() {
-        "No events yet".to_string()
+        match language {
+            Language::SimplifiedChinese => "暂无事件",
+            Language::English => "No events",
+        }
+        .to_string()
     } else {
         entries.join("\n")
     }
+}
+
+fn localize_action_text(action: &str, language: Language) -> String {
+    action
+        .split(';')
+        .map(|part| {
+            let part = part.trim();
+            let localized_part = localize_action_segment(part, language);
+            if localized_part != part {
+                return localized_part;
+            }
+            part.split(", ")
+                .map(|segment| localize_action_segment(segment.trim(), language))
+                .collect::<Vec<_>>()
+                .join(match language {
+                    Language::SimplifiedChinese => "，",
+                    Language::English => ", ",
+                })
+        })
+        .collect::<Vec<_>>()
+        .join(match language {
+            Language::SimplifiedChinese => "；",
+            Language::English => "; ",
+        })
+}
+
+fn localize_action_segment(segment: &str, language: Language) -> String {
+    if language == Language::English {
+        return localize_action_segment_en(segment);
+    }
+    if let Some((roll, piece_id)) = segment
+        .strip_prefix("rolled ")
+        .and_then(|detail| detail.split_once(", launched piece #"))
+    {
+        return format!("掷出 {roll}，飞机 {piece_id} 起飞");
+    }
+    if let Some(roll) = segment.strip_prefix("rolled ") {
+        if roll.chars().all(|character| character.is_ascii_digit()) {
+            return format!("掷出 {roll}");
+        }
+    }
+    if let Some((roll, detail)) = segment
+        .strip_prefix("rolled ")
+        .and_then(|detail| detail.split_once(", moved piece #"))
+        && let Some((piece_id, target)) = detail.split_once(" to tile ")
+    {
+        return format!("掷出 {roll}，飞机 {piece_id} 移动到第 {target} 格");
+    }
+    if let Some((roll, _)) = segment
+        .strip_prefix("rolled ")
+        .and_then(|detail| detail.split_once(" but had no legal action"))
+    {
+        return format!("掷出 {roll}，没有可执行动作");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("sent piece #")
+        .and_then(|detail| detail.strip_suffix(" back to hangar"))
+    {
+        return format!("飞机 {piece_id} 返回停机坪");
+    }
+    if let Some(shield) = segment
+        .strip_prefix("gained shield ")
+        .map(|detail| detail.trim().trim_start_matches('(').trim_end_matches(')'))
+    {
+        return format!("获得护盾（{shield}）");
+    }
+    if let Some(progress) = segment.strip_prefix("finish bounce ") {
+        if let Some((progress, skill_detail)) = progress.split_once(": gained 1 ")
+            && let Some(skill) = skill_detail.strip_suffix(" charge")
+        {
+            return format!(
+                "终点折返 {progress}，{} +1",
+                localized_skill_token(skill, language)
+            );
+        }
+        return format!("终点折返 {progress}");
+    }
+    if let Some(event_note) = extract_event_note(segment) {
+        return format_event_notice_single_line(event_note, language);
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("Snipe hit piece #")
+        .and_then(|detail| detail.strip_suffix(" and removed a shield"))
+    {
+        return format!("狙击命中飞机 {piece_id}，移除 1 层护盾");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("Snipe hit piece #")
+        .and_then(|detail| detail.strip_suffix(" and broke the shared shield"))
+    {
+        return format!("狙击命中飞机 {piece_id}，击破共享护盾");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("Snipe sent piece #")
+        .and_then(|detail| detail.strip_suffix(" back to hangar"))
+    {
+        return format!("狙击将飞机 {piece_id} 送回停机坪");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("AI Snipe hit piece #")
+        .and_then(|detail| detail.strip_suffix(" and removed a shield"))
+    {
+        return format!("电脑狙击命中飞机 {piece_id}，移除 1 层护盾");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("AI Snipe hit piece #")
+        .and_then(|detail| detail.strip_suffix(" and broke the shared shield"))
+    {
+        return format!("电脑狙击命中飞机 {piece_id}，击破共享护盾");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("AI Snipe sent piece #")
+        .and_then(|detail| detail.strip_suffix(" back to hangar"))
+    {
+        return format!("电脑狙击将飞机 {piece_id} 送回停机坪");
+    }
+    if let Some((current_piece, teammate_piece)) = segment
+        .strip_prefix("Swap exchanged piece #")
+        .and_then(|detail| detail.split_once(" with teammate piece #"))
+    {
+        return format!("换位：飞机 {current_piece} 与队友飞机 {teammate_piece} 交换");
+    }
+    if let Some((current_piece, target_piece)) = segment
+        .strip_prefix("Swap exchanged piece #")
+        .and_then(|detail| detail.split_once(" with piece #"))
+    {
+        return format!("换位：飞机 {current_piece} 与飞机 {target_piece} 交换");
+    }
+    if let Some((current_piece, teammate_piece)) = segment
+        .strip_prefix("AI Swap exchanged piece #")
+        .and_then(|detail| detail.split_once(" with teammate piece #"))
+    {
+        return format!("电脑换位：飞机 {current_piece} 与队友飞机 {teammate_piece} 交换");
+    }
+    if let Some((current_piece, target_piece)) = segment
+        .strip_prefix("AI Swap exchanged piece #")
+        .and_then(|detail| detail.split_once(" with piece #"))
+    {
+        return format!("电脑换位：飞机 {current_piece} 与飞机 {target_piece} 交换");
+    }
+    if let Some((piece_id, shield)) = segment
+        .strip_prefix("used Shield on piece #")
+        .and_then(|detail| detail.split_once(" ("))
+    {
+        return format!(
+            "护盾：飞机 {piece_id} 获得护盾（{}）",
+            shield.trim_end_matches(')')
+        );
+    }
+    if let Some(detail) = segment.strip_prefix("resolved DoubleDice: rolled ")
+        && let Some((faces, chosen)) = detail.split_once(" and chose ")
+    {
+        return format!("双骰掷出 {faces}，选择 {chosen}");
+    }
+    if let Some(skill) = segment
+        .strip_prefix("(AI) armed ")
+        .and_then(|detail| detail.strip_suffix(" for launch pressure"))
+    {
+        return format!(
+            "电脑启用{}，帮助起飞",
+            localized_skill_token(skill, language)
+        );
+    }
+    if let Some(skill) = segment
+        .strip_prefix("(AI) armed ")
+        .and_then(|detail| detail.strip_suffix(" after roll for +3 movement"))
+    {
+        return format!(
+            "电脑启用{}，本回合移动 +3",
+            localized_skill_token(skill, language)
+        );
+    }
+    if let Some(skill) = segment
+        .strip_prefix("armed ")
+        .and_then(|detail| detail.strip_suffix(" for the next roll"))
+    {
+        return format!(
+            "已启用{}，用于下一次掷骰",
+            localized_skill_token(skill, language)
+        );
+    }
+    if let Some(skill) = segment
+        .strip_prefix("already has ")
+        .and_then(|detail| detail.strip_suffix(" armed"))
+    {
+        return format!("{}已经启用", localized_skill_token(skill, language));
+    }
+    if let Some(skill) = segment
+        .strip_prefix("has no ")
+        .and_then(|detail| detail.strip_suffix(" charges left"))
+    {
+        return format!("{}充能不足", localized_skill_token(skill, language));
+    }
+    if let Some(skill) = segment
+        .strip_prefix("armed ")
+        .and_then(|detail| detail.strip_suffix(" for +3 movement"))
+    {
+        return format!(
+            "已启用{}，本回合移动 +3",
+            localized_skill_token(skill, language)
+        );
+    }
+    if let Some(skill) = segment.strip_prefix("used ") {
+        return format!("使用{}", localized_skill_token(skill, language));
+    }
+    match segment {
+        "needs a movable piece to use Dash" => "需要有可移动飞机才能使用冲刺".to_string(),
+        "cannot use skills this turn (event lock)" => "本回合被干扰，不能使用技能".to_string(),
+        "already used a skill this turn" => "本回合已经使用过技能".to_string(),
+        "could not find a piece for Shield" => "没有可加护盾的飞机".to_string(),
+        "found no Snipe target" => "没有可狙击目标".to_string(),
+        "Swap is only available in 2v2" => "换位只在 2v2 模式可用".to_string(),
+        "found no teammate piece to Swap with" => "没有可换位的队友飞机".to_string(),
+        "found no target piece to Swap with" => "没有可换位目标".to_string(),
+        "needs a main route piece to use Swap" => "需要己方飞机在主航道上才能换位".to_string(),
+        "Skill not available in current phase" => "当前阶段不能使用技能".to_string(),
+        "Snipe selection cancelled" => "已取消狙击选择".to_string(),
+        "completed all pieces" => "所有飞机已到达终点".to_string(),
+        "skipped turn" => "跳过回合".to_string(),
+        "Snipe failed to resolve" => "狙击结算失败".to_string(),
+        "AI Snipe failed to resolve" => "电脑狙击结算失败".to_string(),
+        "Swap failed: current player's active piece not found" => {
+            "换位失败：未找到当前玩家的主航道飞机".to_string()
+        }
+        "Swap failed: teammate piece not found on main route" => {
+            "换位失败：未找到主航道上的队友飞机".to_string()
+        }
+        "Swap failed: target piece not found on main route" => {
+            "换位失败：未找到主航道上的目标飞机".to_string()
+        }
+        "AI Swap failed: current active piece not found" => {
+            "电脑换位失败：未找到当前主航道飞机".to_string()
+        }
+        "AI Swap failed: teammate piece not found on main route" => {
+            "电脑换位失败：未找到主航道上的队友飞机".to_string()
+        }
+        "AI Swap failed: target piece not found on main route" => {
+            "电脑换位失败：未找到主航道上的目标飞机".to_string()
+        }
+        _ => segment.to_string(),
+    }
+}
+
+fn localize_action_segment_en(segment: &str) -> String {
+    if let Some((roll, piece_id)) = segment
+        .strip_prefix("rolled ")
+        .and_then(|detail| detail.split_once(", launched piece #"))
+    {
+        return format!("rolled {roll}, launched piece #{piece_id}");
+    }
+    if let Some(roll) = segment.strip_prefix("rolled ") {
+        if roll.chars().all(|character| character.is_ascii_digit()) {
+            return format!("rolled {roll}");
+        }
+    }
+    if let Some((roll, detail)) = segment
+        .strip_prefix("rolled ")
+        .and_then(|detail| detail.split_once(", moved piece #"))
+        && let Some((piece_id, target)) = detail.split_once(" to tile ")
+    {
+        return format!("rolled {roll}, moved piece #{piece_id} to tile {target}");
+    }
+    if let Some((roll, _)) = segment
+        .strip_prefix("rolled ")
+        .and_then(|detail| detail.split_once(" but had no legal action"))
+    {
+        return format!("rolled {roll}, no legal action");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("sent piece #")
+        .and_then(|detail| detail.strip_suffix(" back to hangar"))
+    {
+        return format!("piece #{piece_id} returned to hangar");
+    }
+    if let Some(shield) = segment
+        .strip_prefix("gained shield ")
+        .map(|detail| detail.trim().trim_start_matches('(').trim_end_matches(')'))
+    {
+        return format!("gained shield ({shield})");
+    }
+    if let Some(progress) = segment.strip_prefix("finish bounce ") {
+        if let Some((progress, skill_detail)) = progress.split_once(": gained 1 ")
+            && let Some(skill) = skill_detail.strip_suffix(" charge")
+        {
+            return format!(
+                "finish bounce {progress}, {} +1",
+                localized_skill_token(skill, Language::English)
+            );
+        }
+        return format!("finish bounce {progress}");
+    }
+    if let Some(event_note) = extract_event_note(segment) {
+        return format_event_notice_single_line(event_note, Language::English);
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("Snipe hit piece #")
+        .and_then(|detail| detail.strip_suffix(" and removed a shield"))
+    {
+        return format!("Snipe hit piece #{piece_id}, removed 1 shield");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("Snipe hit piece #")
+        .and_then(|detail| detail.strip_suffix(" and broke the shared shield"))
+    {
+        return format!("Snipe hit piece #{piece_id}, broke shared shield");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("Snipe sent piece #")
+        .and_then(|detail| detail.strip_suffix(" back to hangar"))
+    {
+        return format!("Snipe sent piece #{piece_id} back to hangar");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("AI Snipe hit piece #")
+        .and_then(|detail| detail.strip_suffix(" and removed a shield"))
+    {
+        return format!("AI Snipe hit piece #{piece_id}, removed 1 shield");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("AI Snipe hit piece #")
+        .and_then(|detail| detail.strip_suffix(" and broke the shared shield"))
+    {
+        return format!("AI Snipe hit piece #{piece_id}, broke shared shield");
+    }
+    if let Some(piece_id) = segment
+        .strip_prefix("AI Snipe sent piece #")
+        .and_then(|detail| detail.strip_suffix(" back to hangar"))
+    {
+        return format!("AI Snipe sent piece #{piece_id} back to hangar");
+    }
+    if let Some((current_piece, teammate_piece)) = segment
+        .strip_prefix("Swap exchanged piece #")
+        .and_then(|detail| detail.split_once(" with teammate piece #"))
+    {
+        return format!(
+            "Swap exchanged piece #{current_piece} with teammate piece #{teammate_piece}"
+        );
+    }
+    if let Some((current_piece, target_piece)) = segment
+        .strip_prefix("Swap exchanged piece #")
+        .and_then(|detail| detail.split_once(" with piece #"))
+    {
+        return format!("Swap exchanged piece #{current_piece} with piece #{target_piece}");
+    }
+    if let Some((current_piece, teammate_piece)) = segment
+        .strip_prefix("AI Swap exchanged piece #")
+        .and_then(|detail| detail.split_once(" with teammate piece #"))
+    {
+        return format!(
+            "AI Swap exchanged piece #{current_piece} with teammate piece #{teammate_piece}"
+        );
+    }
+    if let Some((current_piece, target_piece)) = segment
+        .strip_prefix("AI Swap exchanged piece #")
+        .and_then(|detail| detail.split_once(" with piece #"))
+    {
+        return format!("AI Swap exchanged piece #{current_piece} with piece #{target_piece}");
+    }
+    if let Some((piece_id, shield)) = segment
+        .strip_prefix("used Shield on piece #")
+        .and_then(|detail| detail.split_once(" ("))
+    {
+        return format!(
+            "Shield: piece #{piece_id} gained shield ({})",
+            shield.trim_end_matches(')')
+        );
+    }
+    if let Some(detail) = segment.strip_prefix("resolved DoubleDice: rolled ")
+        && let Some((faces, chosen)) = detail.split_once(" and chose ")
+    {
+        return format!("DoubleDice rolled {faces}, chose {chosen}");
+    }
+    if let Some(skill) = segment
+        .strip_prefix("(AI) armed ")
+        .and_then(|detail| detail.strip_suffix(" for launch pressure"))
+    {
+        return format!(
+            "AI armed {} for launch pressure",
+            localized_skill_token(skill, Language::English)
+        );
+    }
+    if let Some(skill) = segment
+        .strip_prefix("(AI) armed ")
+        .and_then(|detail| detail.strip_suffix(" after roll for +3 movement"))
+    {
+        return format!(
+            "AI armed {} for +3 movement",
+            localized_skill_token(skill, Language::English)
+        );
+    }
+    if let Some(skill) = segment
+        .strip_prefix("armed ")
+        .and_then(|detail| detail.strip_suffix(" for the next roll"))
+    {
+        return format!(
+            "armed {} for the next roll",
+            localized_skill_token(skill, Language::English)
+        );
+    }
+    if let Some(skill) = segment
+        .strip_prefix("already has ")
+        .and_then(|detail| detail.strip_suffix(" armed"))
+    {
+        return format!(
+            "{} already armed",
+            localized_skill_token(skill, Language::English)
+        );
+    }
+    if let Some(skill) = segment
+        .strip_prefix("has no ")
+        .and_then(|detail| detail.strip_suffix(" charges left"))
+    {
+        return format!(
+            "{} has no charges left",
+            localized_skill_token(skill, Language::English)
+        );
+    }
+    if let Some(skill) = segment
+        .strip_prefix("armed ")
+        .and_then(|detail| detail.strip_suffix(" for +3 movement"))
+    {
+        return format!(
+            "armed {} for +3 movement",
+            localized_skill_token(skill, Language::English)
+        );
+    }
+    if let Some(skill) = segment.strip_prefix("used ") {
+        return format!("used {}", localized_skill_token(skill, Language::English));
+    }
+    match segment {
+        "completed all pieces" => "all pieces reached the goal".to_string(),
+        "skipped turn" => "skipped turn".to_string(),
+        _ => segment.to_string(),
+    }
+}
+
+fn format_event_notice_single_line(event_note: &str, language: Language) -> String {
+    format_event_notice(event_note, language).replace(
+        '\n',
+        match language {
+            Language::SimplifiedChinese => "，",
+            Language::English => ", ",
+        },
+    )
+}
+
+fn localized_skill_token(skill: &str, language: Language) -> &'static str {
+    i18n_skill_token(language, skill)
+}
+
+fn localized_player_token(player: &str, language: Language) -> String {
+    player
+        .strip_prefix('P')
+        .map(|id| match language {
+            Language::SimplifiedChinese => format!("玩家{id}"),
+            Language::English => format!("P{id}"),
+        })
+        .unwrap_or_else(|| player.to_string())
 }
 
 fn event_log_scroll_max_y(computed: &ComputedNode) -> f32 {
@@ -2767,7 +3362,7 @@ fn is_skill_button_ready(
     skills: &PlayerSkillState,
     can_use_skill: bool,
     phase: &GamePhase,
-    mode: GameMode,
+    _mode: GameMode,
     board_availability: SkillBoardAvailability,
 ) -> bool {
     if !can_use_skill {
@@ -2787,10 +3382,9 @@ fn is_skill_button_ready(
         }
         SkillUiAction::Swap => {
             matches!(phase, GamePhase::AwaitDice)
-                && mode == GameMode::TwoVsTwo
                 && skills.swap_charges > 0
                 && board_availability.active_self
-                && board_availability.active_teammate
+                && board_availability.swap_target
         }
         SkillUiAction::Shield => {
             matches!(phase, GamePhase::AwaitDice)
@@ -2853,9 +3447,14 @@ fn cleanup_hud(mut commands: Commands, query: Query<Entity, (With<HudEntity>, Wi
     }
 }
 
-fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
+fn spawn_result_screen(
+    mut commands: Commands,
+    match_result: Res<MatchResult>,
+    language_settings: Res<LanguageSettings>,
+) {
+    let language = language_settings.language;
     let winner = match_result.winner_team_id.unwrap_or_default();
-    let winner_players = format_winner_players(&match_result);
+    let winner_players = format_winner_players(&match_result, language);
     commands
         .spawn((
             Node {
@@ -2887,7 +3486,7 @@ fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
             ))
             .with_children(|panel| {
                 panel.spawn((
-                    Text::new("Match Result"),
+                    Text::new(i18n_text(language, TextKey::ResultTitle)),
                     TextFont {
                         font_size: FontSize::Px(34.0),
                         ..default()
@@ -2902,9 +3501,12 @@ fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
                         ..default()
                     },
                     Name::new("ResultTitle"),
+                    LocalizedText {
+                        key: TextKey::ResultTitle,
+                    },
                 ));
                 panel.spawn((
-                    Text::new(format!("Team {winner} wins\nPlayers: {winner_players}")),
+                    Text::new(format_winner_summary(winner, &winner_players, language)),
                     TextFont {
                         font_size: FontSize::Px(24.0),
                         ..default()
@@ -2923,13 +3525,15 @@ fn spawn_result_screen(mut commands: Commands, match_result: Res<MatchResult>) {
                 spawn_result_button(
                     panel,
                     result_button_local_rect(ResultAction::RestartMatch),
-                    "Restart Match",
+                    i18n_text(language, TextKey::RestartMatch),
+                    Some(TextKey::RestartMatch),
                     Color::srgba(0.42, 0.65, 0.88, 0.38),
                 );
                 spawn_result_button(
                     panel,
                     result_button_local_rect(ResultAction::MainMenu),
-                    "Main Menu",
+                    i18n_text(language, TextKey::MainMenu),
+                    Some(TextKey::MainMenu),
                     Color::srgba(0.72, 0.54, 0.44, 0.30),
                 );
             });
@@ -2976,6 +3580,7 @@ fn spawn_result_button(
     panel: &mut ChildSpawnerCommands<'_>,
     rect: ScreenRect,
     label: &str,
+    localized_key: Option<TextKey>,
     color: Color,
 ) {
     panel
@@ -2997,7 +3602,7 @@ fn spawn_result_button(
             Name::new(format!("ResultButton{label}")),
         ))
         .with_children(|button| {
-            button.spawn((
+            let mut text_entity = button.spawn((
                 Text::new(label),
                 TextFont {
                     font_size: FontSize::Px(18.0),
@@ -3007,17 +3612,30 @@ fn spawn_result_button(
                 TextLayout::justify(Justify::Center),
                 Name::new(format!("ResultButtonLabel{label}")),
             ));
+            if let Some(localized_key) = localized_key {
+                text_entity.insert(LocalizedText { key: localized_key });
+            }
         });
 }
 
-fn format_winner_players(match_result: &MatchResult) -> String {
+fn format_winner_summary(winner: u8, winner_players: &str, language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => format!("队伍 {winner} 获胜\n玩家：{winner_players}"),
+        Language::English => format!("Team {winner} wins\nPlayers: {winner_players}"),
+    }
+}
+
+fn format_winner_players(match_result: &MatchResult, language: Language) -> String {
     if match_result.winner_player_ids.is_empty() {
         return "-".to_string();
     }
     match_result
         .winner_player_ids
         .iter()
-        .map(|player_id| format!("P{player_id}"))
+        .map(|player_id| match language {
+            Language::SimplifiedChinese => format!("玩家{player_id}"),
+            Language::English => format!("P{player_id}"),
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -3302,23 +3920,83 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Player, player, true, false),
+            player_hud_badge_text(
+                PlayerHudBadgeKind::Player,
+                player,
+                true,
+                false,
+                Language::SimplifiedChinese,
+            ),
+            "1"
+        );
+        assert_eq!(
+            player_hud_badge_text(
+                PlayerHudBadgeKind::Team,
+                player,
+                true,
+                false,
+                Language::SimplifiedChinese,
+            ),
+            "队1"
+        );
+        assert_eq!(
+            player_hud_badge_text(
+                PlayerHudBadgeKind::Player,
+                player,
+                true,
+                false,
+                Language::English,
+            ),
             "P1"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Team, player, true, false),
+            player_hud_badge_text(
+                PlayerHudBadgeKind::Team,
+                player,
+                true,
+                false,
+                Language::English,
+            ),
             "T1"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, true, false),
+            player_hud_badge_text(
+                PlayerHudBadgeKind::Turn,
+                player,
+                true,
+                false,
+                Language::SimplifiedChinese,
+            ),
             ">"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, false, false),
+            player_hud_badge_text(
+                PlayerHudBadgeKind::Turn,
+                player,
+                false,
+                false,
+                Language::SimplifiedChinese,
+            ),
             "-"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Player, player, false, true),
+            player_hud_badge_text(
+                PlayerHudBadgeKind::Player,
+                player,
+                false,
+                true,
+                Language::SimplifiedChinese,
+            ),
+            "1✓"
+        );
+        assert_eq!(
+            player_hud_badge_text(
+                PlayerHudBadgeKind::Player,
+                player,
+                false,
+                true,
+                Language::English,
+            ),
             "P1✓"
         );
     }
@@ -3451,10 +4129,10 @@ mod tests {
         let mut system_state: SystemState<HudPieceQuery> = SystemState::new(&mut world);
         let query = system_state.get_mut(&mut world).unwrap();
 
-        let availability = SkillBoardAvailability::from_query(1, 1, &query);
+        let availability = SkillBoardAvailability::from_query(1, 1, GameMode::TwoVsTwo, &query);
 
         assert!(availability.active_self);
-        assert!(!availability.active_teammate);
+        assert!(!availability.swap_target);
     }
 
     #[test]
@@ -3499,7 +4177,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_button_requires_ready_source_and_teammate() {
+    fn swap_button_requires_ready_source_and_mode_valid_target() {
         let skills = PlayerSkillState {
             player_id: 1,
             dash_charges: 0,
@@ -3514,12 +4192,12 @@ mod tests {
         };
         let only_source = SkillBoardAvailability {
             active_self: true,
-            active_teammate: false,
+            swap_target: false,
             ..default()
         };
-        let source_and_teammate = SkillBoardAvailability {
+        let source_and_target = SkillBoardAvailability {
             active_self: true,
-            active_teammate: true,
+            swap_target: true,
             ..default()
         };
 
@@ -3537,7 +4215,15 @@ mod tests {
             true,
             &GamePhase::AwaitDice,
             GameMode::TwoVsTwo,
-            source_and_teammate,
+            source_and_target,
+        ));
+        assert!(is_skill_button_ready(
+            SkillUiAction::Swap,
+            &skills,
+            true,
+            &GamePhase::AwaitDice,
+            GameMode::OneVsOne,
+            source_and_target,
         ));
     }
 
@@ -3605,10 +4291,26 @@ mod tests {
     fn finish_bounce_charge_bar_formats_progress() {
         let bar_width = shared_skill_bar_width();
 
-        assert_eq!(finish_bounce_charge_bar_text(0, true), "Bounce Charge 0/2");
-        assert_eq!(finish_bounce_charge_bar_text(1, true), "Bounce Charge 1/2");
-        assert_eq!(finish_bounce_charge_bar_text(2, true), "Bounce Charge 2/2");
-        assert_eq!(finish_bounce_charge_bar_text(1, false), "");
+        assert_eq!(
+            finish_bounce_charge_bar_text(0, true, Language::SimplifiedChinese),
+            "折返充能 0/2"
+        );
+        assert_eq!(
+            finish_bounce_charge_bar_text(1, true, Language::SimplifiedChinese),
+            "折返充能 1/2"
+        );
+        assert_eq!(
+            finish_bounce_charge_bar_text(2, true, Language::SimplifiedChinese),
+            "折返充能 2/2"
+        );
+        assert_eq!(
+            finish_bounce_charge_bar_text(1, true, Language::English),
+            "Bounce Charge 1/2"
+        );
+        assert_eq!(
+            finish_bounce_charge_bar_text(1, false, Language::SimplifiedChinese),
+            ""
+        );
         assert_eq!(finish_bounce_charge_fill_width(0, bar_width), 0.0);
         assert_eq!(
             finish_bounce_charge_fill_width(1, bar_width),
@@ -3666,8 +4368,10 @@ mod tests {
     #[test]
     fn skill_tip_text_covers_every_skill() {
         for action in HUD_SKILL_ACTIONS {
-            assert!(!skill_action_name(action).is_empty());
-            assert!(skill_tip_body(action).len() > 24);
+            assert!(!skill_action_name(action, Language::SimplifiedChinese).is_empty());
+            assert!(!skill_action_name(action, Language::English).is_empty());
+            assert!(skill_tip_body(action, Language::SimplifiedChinese).len() > 24);
+            assert!(skill_tip_body(action, Language::English).len() > 24);
         }
     }
 
@@ -3838,8 +4542,9 @@ mod tests {
 
     #[test]
     fn roll_button_text_never_shows_roll_prompt_or_dice_values() {
-        assert_eq!(roll_button_text(false), "");
-        assert_eq!(roll_button_text(true), "X");
+        assert_eq!(roll_button_text(false, Language::SimplifiedChinese), "");
+        assert_eq!(roll_button_text(true, Language::SimplifiedChinese), "×");
+        assert_eq!(roll_button_text(true, Language::English), "x");
     }
 
     #[test]
@@ -3849,10 +4554,20 @@ mod tests {
         let mut skill_roster = SkillRoster::default();
 
         record_turn_action(&mut turn_state, "P1 rolled 4");
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
-        assert_eq!(event_log.entries, vec!["T1 P1: rolled 4"]);
+        assert_eq!(event_log.entries, vec!["第1回合 玩家1：掷出 4"]);
 
         record_skill_action(
             &mut skill_roster,
@@ -3860,11 +4575,16 @@ mod tests {
             1,
             "P1 used Shield",
         );
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
         assert_eq!(
             event_log.entries,
-            vec!["T1 P1: rolled 4", "T1 P1: used Shield"]
+            vec!["第1回合 玩家1：掷出 4", "第1回合 玩家1：使用护盾"]
         );
     }
 
@@ -3880,49 +4600,76 @@ mod tests {
             1,
             "Snipe selection cancelled",
         );
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
-        assert_eq!(event_log.entries, vec!["T1 P1: Snipe selection cancelled"]);
+        assert_eq!(event_log.entries, vec!["第1回合 玩家1：已取消狙击选择"]);
     }
 
     #[test]
     fn event_notice_formats_tile_event_actions() {
         assert_eq!(
-            event_notice_text_from_action("rolled 3, moved piece #1 to tile 5; event advance +2"),
-            Some("Event: Advance +2\nMoved forward 2 spaces.".to_string())
+            event_notice_text_from_action(
+                "rolled 3, moved piece #1 to tile 5; event advance +2",
+                Language::SimplifiedChinese,
+            ),
+            Some("事件：前进 +2\n额外前进 2 格。".to_string())
         );
         assert_eq!(
             event_notice_text_from_action(
-                "rolled 4, moved piece #1 to tile 9; event GainShield: gained shield (2)"
+                "rolled 3, moved piece #1 to tile 5; event advance +2",
+                Language::English,
             ),
-            Some("Event: Shield +1\nCurrent shield: 2".to_string())
+            Some("Event: Advance +2\nMove forward 2 extra tiles.".to_string())
         );
         assert_eq!(
             event_notice_text_from_action(
-                "rolled 2, moved piece #1 to tile 3; jumped to next same-color tile 6, pre-jump event tile 0: event GainSkillCharge: gained 1 Dash charge"
+                "rolled 4, moved piece #1 to tile 9; event GainShield: gained shield (2)",
+                Language::SimplifiedChinese,
             ),
-            Some("Event: Skill charge\nDash +1".to_string())
-        );
-        assert_eq!(
-            event_notice_text_from_action("rolled 2, moved piece #1 to tile 55; finish bounce 1/2"),
-            Some("Finish bounce 1/2\nSkill reward at 2/2.".to_string())
+            Some("事件：护盾 +1\n当前护盾：2".to_string())
         );
         assert_eq!(
             event_notice_text_from_action(
-                "rolled 2, moved piece #1 to tile 55; finish bounce 2/2: gained 1 Shield charge"
+                "rolled 2, moved piece #1 to tile 3; jumped to next same-color tile 6, pre-jump event tile 0: event GainSkillCharge: gained 1 Dash charge",
+                Language::SimplifiedChinese,
             ),
-            Some("Finish bounce 2/2\nShield +1".to_string())
+            Some("事件：技能充能\n冲刺 +1".to_string())
+        );
+        assert_eq!(
+            event_notice_text_from_action(
+                "rolled 2, moved piece #1 to tile 55; finish bounce 1/2",
+                Language::SimplifiedChinese,
+            ),
+            Some("终点折返 1/2\n累计到 2/2 奖励技能。".to_string())
+        );
+        assert_eq!(
+            event_notice_text_from_action(
+                "rolled 2, moved piece #1 to tile 55; finish bounce 2/2: gained 1 Shield charge",
+                Language::SimplifiedChinese,
+            ),
+            Some("终点折返 2/2\n护盾 +1".to_string())
         );
     }
 
     #[test]
     fn event_notice_ignores_non_event_actions() {
         assert_eq!(
-            event_notice_text_from_action("rolled 4, moved piece #1 to tile 9"),
+            event_notice_text_from_action(
+                "rolled 4, moved piece #1 to tile 9",
+                Language::SimplifiedChinese,
+            ),
             None
         );
         assert_eq!(
-            event_notice_text_from_action("P1 used Shield on piece #1"),
+            event_notice_text_from_action(
+                "P1 used Shield on piece #1",
+                Language::SimplifiedChinese
+            ),
             None
         );
     }
@@ -3934,24 +4681,39 @@ mod tests {
         let skill_roster = SkillRoster::default();
 
         record_turn_action(&mut turn_state, "P1 rolled 1 but had no legal action");
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
         turn_state.turn_index += 1;
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
         assert_eq!(
             event_log.entries,
-            vec!["T1 P1: rolled 1 but had no legal action"]
+            vec!["第1回合 玩家1：掷出 1，没有可执行动作"]
         );
 
         record_turn_action(&mut turn_state, "P1 rolled 1 but had no legal action");
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
         assert_eq!(
             event_log.entries,
             vec![
-                "T1 P1: rolled 1 but had no legal action",
-                "T2 P1: rolled 1 but had no legal action"
+                "第1回合 玩家1：掷出 1，没有可执行动作",
+                "第2回合 玩家1：掷出 1，没有可执行动作"
             ]
         );
     }
@@ -3968,12 +4730,25 @@ mod tests {
             1,
             "P1 armed Dash for +3 movement",
         );
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
         turn_state.turn_index += 1;
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
-        assert_eq!(event_log.entries, vec!["T1 P1: armed Dash for +3 movement"]);
+        assert_eq!(
+            event_log.entries,
+            vec!["第1回合 玩家1：已启用冲刺，本回合移动 +3"]
+        );
 
         record_skill_action(
             &mut skill_roster,
@@ -3981,13 +4756,18 @@ mod tests {
             1,
             "P1 armed Dash for +3 movement",
         );
-        sync_event_log(&mut event_log, &turn_state, &skill_roster);
+        sync_event_log(
+            &mut event_log,
+            &turn_state,
+            &skill_roster,
+            Language::SimplifiedChinese,
+        );
 
         assert_eq!(
             event_log.entries,
             vec![
-                "T1 P1: armed Dash for +3 movement",
-                "T2 P1: armed Dash for +3 movement"
+                "第1回合 玩家1：已启用冲刺，本回合移动 +3",
+                "第2回合 玩家1：已启用冲刺，本回合移动 +3"
             ]
         );
     }
@@ -4016,8 +4796,15 @@ mod tests {
             finished: true,
         };
 
-        assert_eq!(format_winner_players(&result), "P1, P3");
-        assert_eq!(format_winner_players(&MatchResult::default()), "-");
+        assert_eq!(
+            format_winner_players(&result, Language::SimplifiedChinese),
+            "玩家1, 玩家3"
+        );
+        assert_eq!(format_winner_players(&result, Language::English), "P1, P3");
+        assert_eq!(
+            format_winner_players(&MatchResult::default(), Language::SimplifiedChinese),
+            "-"
+        );
     }
 
     #[test]

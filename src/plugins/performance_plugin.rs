@@ -1,6 +1,7 @@
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 
+use crate::i18n::{Language, LanguageSettings};
 use crate::states::AppState;
 
 /// 性能调试插件：提供可开关的 FPS 显示。
@@ -83,7 +84,7 @@ fn spawn_fps_display(mut commands: Commands) {
         ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new("FPS --"),
+                Text::new(fps_display_text(None, LanguageSettings::default().language)),
                 TextFont {
                     font_size: FontSize::Px(14.0),
                     ..default()
@@ -98,6 +99,7 @@ fn spawn_fps_display(mut commands: Commands) {
 
 fn update_fps_display(
     settings: Res<PerformanceSettings>,
+    language_settings: Res<LanguageSettings>,
     app_state: Res<State<AppState>>,
     diagnostics: Res<DiagnosticsStore>,
     time: Res<Time>,
@@ -130,7 +132,7 @@ fn update_fps_display(
     }
 
     update_smoke_fps_metric(smoothed_fps);
-    let label = fps_display_text(smoothed_fps);
+    let label = fps_display_text(smoothed_fps, language_settings.language);
     for mut text in &mut text_query {
         *text = Text::new(label.clone());
     }
@@ -155,10 +157,14 @@ fn update_smoke_fps_metric(fps: Option<f64>) {
 #[cfg(not(target_arch = "wasm32"))]
 fn update_smoke_fps_metric(_fps: Option<f64>) {}
 
-fn fps_display_text(fps: Option<f64>) -> String {
+fn fps_display_text(fps: Option<f64>, language: Language) -> String {
+    let prefix = match language {
+        Language::SimplifiedChinese => "帧率",
+        Language::English => "FPS",
+    };
     fps.map_or_else(
-        || "FPS --".to_owned(),
-        |value| format!("FPS {:>3}", value.round().clamp(0.0, 999.0) as u16),
+        || format!("{prefix} --"),
+        |value| format!("{prefix} {:>3}", value.round().clamp(0.0, 999.0) as u16),
     )
 }
 
@@ -170,11 +176,16 @@ fn fps_display_refresh_due(refresh_state: &mut FpsDisplayRefreshState) -> bool {
     refresh_state.timer.just_finished()
 }
 
-pub fn fps_toggle_label(settings: &PerformanceSettings) -> &'static str {
-    if settings.show_fps {
-        "FPS On"
-    } else {
-        "FPS Off"
+pub fn fps_toggle_label(settings: &PerformanceSettings, language: Language) -> &'static str {
+    fps_toggle_label_for_language(settings.show_fps, language)
+}
+
+pub fn fps_toggle_label_for_language(show_fps: bool, language: Language) -> &'static str {
+    match (language, show_fps) {
+        (Language::SimplifiedChinese, true) => "帧率开",
+        (Language::SimplifiedChinese, false) => "帧率关",
+        (Language::English, true) => "FPS On",
+        (Language::English, false) => "FPS Off",
     }
 }
 
@@ -194,16 +205,35 @@ mod tests {
     #[test]
     fn fps_label_tracks_toggle_state() {
         let mut settings = PerformanceSettings { show_fps: false };
-        assert_eq!(fps_toggle_label(&settings), "FPS Off");
+        assert_eq!(
+            fps_toggle_label(&settings, Language::SimplifiedChinese),
+            "帧率关"
+        );
+        assert_eq!(fps_toggle_label(&settings, Language::English), "FPS Off");
         settings.toggle_fps();
-        assert_eq!(fps_toggle_label(&settings), "FPS On");
+        assert_eq!(
+            fps_toggle_label(&settings, Language::SimplifiedChinese),
+            "帧率开"
+        );
+        assert_eq!(fps_toggle_label(&settings, Language::English), "FPS On");
     }
 
     #[test]
     fn fps_display_text_is_stable_width_and_clamped() {
-        assert_eq!(fps_display_text(None), "FPS --");
-        assert_eq!(fps_display_text(Some(59.6)), "FPS  60");
-        assert_eq!(fps_display_text(Some(1500.0)), "FPS 999");
+        assert_eq!(
+            fps_display_text(None, Language::SimplifiedChinese),
+            "帧率 --"
+        );
+        assert_eq!(
+            fps_display_text(Some(59.6), Language::SimplifiedChinese),
+            "帧率  60"
+        );
+        assert_eq!(
+            fps_display_text(Some(1500.0), Language::SimplifiedChinese),
+            "帧率 999"
+        );
+        assert_eq!(fps_display_text(None, Language::English), "FPS --");
+        assert_eq!(fps_display_text(Some(59.6), Language::English), "FPS  60");
     }
 
     #[test]
