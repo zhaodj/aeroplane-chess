@@ -9,6 +9,7 @@ pub struct PerformancePlugin;
 impl Plugin for PerformancePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PerformanceSettings>()
+            .init_resource::<FpsDisplayRefreshState>()
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(Startup, spawn_fps_display)
             .add_systems(Update, update_fps_display);
@@ -37,10 +38,26 @@ impl Default for PerformanceSettings {
 #[derive(Component)]
 struct FpsDisplay;
 
+#[derive(Debug, Resource)]
+struct FpsDisplayRefreshState {
+    timer: Timer,
+    initialized: bool,
+}
+
+impl Default for FpsDisplayRefreshState {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(FPS_DISPLAY_REFRESH_SECS, TimerMode::Repeating),
+            initialized: false,
+        }
+    }
+}
+
 const FPS_DISPLAY_LEFT: f32 = 16.0;
 const FPS_DISPLAY_TOP: f32 = 60.0;
 const FPS_DISPLAY_W: f32 = 128.0;
 const FPS_DISPLAY_H: f32 = 30.0;
+const FPS_DISPLAY_REFRESH_SECS: f32 = 1.0;
 
 fn spawn_fps_display(mut commands: Commands) {
     commands
@@ -83,13 +100,14 @@ fn update_fps_display(
     settings: Res<PerformanceSettings>,
     app_state: Res<State<AppState>>,
     diagnostics: Res<DiagnosticsStore>,
+    time: Res<Time>,
+    mut refresh_state: ResMut<FpsDisplayRefreshState>,
     mut container_query: Query<&mut Visibility, (With<FpsDisplay>, Without<Text>)>,
     mut text_query: Query<&mut Text, (With<FpsDisplay>, With<Text>)>,
 ) {
     let smoothed_fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|fps| fps.smoothed());
-    update_smoke_fps_metric(smoothed_fps);
 
     let visible = settings.show_fps && !matches!(app_state.get(), AppState::Boot);
     for mut visibility in &mut container_query {
@@ -101,9 +119,17 @@ fn update_fps_display(
     }
 
     if !visible {
+        refresh_state.initialized = false;
+        refresh_state.timer.reset();
         return;
     }
 
+    refresh_state.timer.tick(time.delta());
+    if !fps_display_refresh_due(&mut refresh_state) {
+        return;
+    }
+
+    update_smoke_fps_metric(smoothed_fps);
     let label = fps_display_text(smoothed_fps);
     for mut text in &mut text_query {
         *text = Text::new(label.clone());
@@ -136,6 +162,14 @@ fn fps_display_text(fps: Option<f64>) -> String {
     )
 }
 
+fn fps_display_refresh_due(refresh_state: &mut FpsDisplayRefreshState) -> bool {
+    if !refresh_state.initialized {
+        refresh_state.initialized = true;
+        return true;
+    }
+    refresh_state.timer.just_finished()
+}
+
 pub fn fps_toggle_label(settings: &PerformanceSettings) -> &'static str {
     if settings.show_fps {
         "FPS On"
@@ -147,6 +181,7 @@ pub fn fps_toggle_label(settings: &PerformanceSettings) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn fps_default_follows_build_profile() {
@@ -169,5 +204,19 @@ mod tests {
         assert_eq!(fps_display_text(None), "FPS --");
         assert_eq!(fps_display_text(Some(59.6)), "FPS  60");
         assert_eq!(fps_display_text(Some(1500.0)), "FPS 999");
+    }
+
+    #[test]
+    fn fps_display_refreshes_immediately_then_once_per_second() {
+        let mut refresh_state = FpsDisplayRefreshState::default();
+
+        assert!(fps_display_refresh_due(&mut refresh_state));
+        assert!(!fps_display_refresh_due(&mut refresh_state));
+
+        refresh_state.timer.tick(Duration::from_millis(999));
+        assert!(!fps_display_refresh_due(&mut refresh_state));
+
+        refresh_state.timer.tick(Duration::from_millis(1));
+        assert!(fps_display_refresh_due(&mut refresh_state));
     }
 }

@@ -18,7 +18,10 @@ use crate::gameplay::skill_flow::{
 use crate::gameplay::turn_flow::{TurnState, player_has_finished_all_pieces};
 use crate::platform::{DeviceProfile, PointerInputState, PointerSource};
 use crate::plugins::effects_plugin::EffectRevealDelays;
-use crate::plugins::menu_plugin::{SoundSettingsOverlayState, global_settings_entry_screen_rect};
+use crate::plugins::menu_plugin::{
+    SoundSettingsOverlayState, global_settings_entry_screen_rect,
+    sound_settings_overlay_blocks_input,
+};
 use crate::plugins::piece_plugin::PieceId;
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
 use crate::plugins::turn_plugin::TurnUiRequest;
@@ -40,6 +43,7 @@ impl Plugin for UiPlugin {
                     handle_event_log_scroll,
                     update_player_hud_layout,
                     update_hud_content,
+                    update_finish_bounce_charge_bar_layout,
                     update_skill_tip_content,
                     update_event_log_content,
                     update_event_notice_content,
@@ -81,7 +85,6 @@ struct PlayerHudEntry {
 enum PlayerHudBadgeKind {
     Player,
     Team,
-    FinishBounce,
     Turn,
 }
 
@@ -119,6 +122,15 @@ struct SharedSkillButtonText {
 
 #[derive(Component)]
 struct SharedSkillBlockMarker;
+
+#[derive(Component)]
+struct FinishBounceChargeBar;
+
+#[derive(Component)]
+struct FinishBounceChargeFill;
+
+#[derive(Component)]
+struct FinishBounceChargeText;
 
 #[derive(Component)]
 struct SkillTipPanel;
@@ -287,6 +299,31 @@ type SharedSkillButtonTextQuery<'w, 's> = Query<
 >;
 type SharedSkillBlockMarkerQuery<'w, 's> =
     Query<'w, 's, &'static mut Visibility, With<SharedSkillBlockMarker>>;
+type FinishBounceChargeFillQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Node, &'static mut BackgroundColor),
+    (
+        With<FinishBounceChargeFill>,
+        Without<FinishBounceChargeBar>,
+        Without<PlayerHudEntry>,
+        Without<PlayerHudBadge>,
+        Without<SharedSkillButton>,
+        Without<SharedSkillButtonBadge>,
+        Without<BoardRollButton>,
+    ),
+>;
+type FinishBounceChargeTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Text, &'static mut TextColor),
+    (
+        With<FinishBounceChargeText>,
+        Without<PlayerHudBadgeText>,
+        Without<SharedSkillButtonText>,
+        Without<BoardRollButtonText>,
+    ),
+>;
 type BoardRollButtonQuery<'w, 's> = Query<
     'w,
     's,
@@ -330,6 +367,8 @@ struct HudContentQueries<'w, 's> {
     skill_button_badge_query: SharedSkillButtonBadgeQuery<'w, 's>,
     skill_button_text_query: SharedSkillButtonTextQuery<'w, 's>,
     skill_block_marker_query: SharedSkillBlockMarkerQuery<'w, 's>,
+    finish_bounce_charge_fill_query: FinishBounceChargeFillQuery<'w, 's>,
+    finish_bounce_charge_text_query: FinishBounceChargeTextQuery<'w, 's>,
     board_roll_button_query: BoardRollButtonQuery<'w, 's>,
     board_roll_button_text_query: BoardRollButtonTextQuery<'w, 's>,
 }
@@ -342,7 +381,6 @@ const HUD_BADGE_H: f32 = 28.0;
 const HUD_BADGE_GAP: f32 = 3.0;
 const HUD_BADGE_PLAYER_W: f32 = 34.0;
 const HUD_BADGE_TEAM_W: f32 = 28.0;
-const HUD_BADGE_FINISH_BOUNCE_W: f32 = 44.0;
 const HUD_BADGE_TURN_W: f32 = 28.0;
 const SKILL_BUTTON_SIZE: f32 = 54.0;
 const SKILL_ICON_SIZE: f32 = 42.0;
@@ -351,6 +389,9 @@ const SKILL_BADGE_H: f32 = 20.0;
 const SKILL_BLOCK_MARKER_W: f32 = 31.0;
 const SKILL_BLOCK_MARKER_H: f32 = 14.0;
 const SKILL_BUTTON_GAP: f32 = 8.0;
+const FINISH_BOUNCE_CHARGE_BAR_H: f32 = 18.0;
+const FINISH_BOUNCE_CHARGE_BAR_GAP: f32 = 6.0;
+const FINISH_BOUNCE_CHARGE_BAR_TEXT_SIZE: f32 = 11.0;
 const SKILL_TIP_W: f32 = 326.0;
 const SKILL_TIP_H: f32 = 118.0;
 const SKILL_TIP_GAP: f32 = 10.0;
@@ -388,10 +429,9 @@ const HUD_SKILL_ACTIONS: [SkillUiAction; 5] = [
     SkillUiAction::Shield,
     SkillUiAction::DoubleDice,
 ];
-const PLAYER_HUD_BADGES: [PlayerHudBadgeKind; 4] = [
+const PLAYER_HUD_BADGES: [PlayerHudBadgeKind; 3] = [
     PlayerHudBadgeKind::Player,
     PlayerHudBadgeKind::Team,
-    PlayerHudBadgeKind::FinishBounce,
     PlayerHudBadgeKind::Turn,
 ];
 
@@ -634,6 +674,63 @@ fn spawn_hud(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
+                width: Val::Px(shared_skill_bar_width()),
+                height: Val::Px(FINISH_BOUNCE_CHARGE_BAR_H),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                overflow: Overflow::clip(),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(finish_bounce_charge_bar_track_color()),
+            BorderColor::all(finish_bounce_charge_bar_border_color()),
+            Visibility::Hidden,
+            ZIndex(42),
+            Name::new("FinishBounceChargeBar"),
+            FinishBounceChargeBar,
+            HudEntity,
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    width: Val::Px(0.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(finish_bounce_charge_bar_fill_color(Color::WHITE)),
+                Name::new("FinishBounceChargeFill"),
+                FinishBounceChargeFill,
+            ));
+            bar.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(FINISH_BOUNCE_CHARGE_BAR_TEXT_SIZE),
+                    ..default()
+                },
+                TextColor(finish_bounce_charge_bar_text_color(false)),
+                TextLayout::justify(Justify::Center),
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                ZIndex(1),
+                Name::new("FinishBounceChargeText"),
+                FinishBounceChargeText,
+            ));
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
                 width: Val::Px(SKILL_TIP_W),
                 height: Val::Px(SKILL_TIP_H),
                 border: UiRect::all(Val::Px(1.0)),
@@ -861,7 +958,7 @@ fn spawn_hud(
                     flex_direction: FlexDirection::Row,
                     column_gap: Val::Px(HUD_BADGE_GAP),
                     align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
+                    justify_content: player_hud_badge_justify_content(player.seat),
                     padding: UiRect::all(Val::Px(0.0)),
                     ..default()
                 },
@@ -1034,6 +1131,30 @@ fn update_player_hud_layout(
         };
         let rect = player_hud_entry_rect(window_width, window_height, *device_profile, player.seat);
         apply_rect_to_node(&mut node, rect);
+        node.justify_content = player_hud_badge_justify_content(player.seat);
+    }
+}
+
+fn update_finish_bounce_charge_bar_layout(
+    windows: Query<&Window>,
+    device_profile: Res<DeviceProfile>,
+    match_config: Res<MatchConfig>,
+    mut bar_query: Query<
+        (&mut Node, &mut Visibility),
+        (With<FinishBounceChargeBar>, Without<FinishBounceChargeFill>),
+    >,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let rect = finish_bounce_charge_bar_rect(window.width(), window.height(), *device_profile);
+    for (mut node, mut visibility) in &mut bar_query {
+        apply_rect_to_node(&mut node, rect);
+        *visibility = if match_config.rule_set.skills_enabled() {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
     }
 }
 
@@ -1101,8 +1222,6 @@ fn update_hud_content(
             player,
             is_current,
             player_finished,
-            finish_bounce_count(&skill_roster, badge_text.player_id),
-            match_config.rule_set.skills_enabled(),
         ));
         *text_color = TextColor(player_hud_badge_text_color(badge_text.kind, is_current));
     }
@@ -1115,6 +1234,29 @@ fn update_hud_content(
         player.state.control == PlayerControl::Human && !match_result.finished
     });
     let skills_enabled = match_config.rule_set.skills_enabled();
+    let finish_bounce_progress = if skills_enabled {
+        finish_bounce_count(&skill_roster, turn_state.current_player)
+    } else {
+        0
+    };
+    let current_player_color = current_profile
+        .map(|player| player.color)
+        .unwrap_or(Color::srgb(0.58, 0.64, 0.74));
+    for (mut node, mut background) in &mut queries.finish_bounce_charge_fill_query {
+        node.width = Val::Px(finish_bounce_charge_fill_width(
+            finish_bounce_progress,
+            shared_skill_bar_width(),
+        ));
+        *background = BackgroundColor(finish_bounce_charge_bar_fill_color(current_player_color));
+    }
+    for (mut text, mut text_color) in &mut queries.finish_bounce_charge_text_query {
+        *text = Text::new(finish_bounce_charge_bar_text(
+            finish_bounce_progress,
+            skills_enabled,
+        ));
+        *text_color = TextColor(finish_bounce_charge_bar_text_color(skills_enabled));
+    }
+
     let mut can_use_skill = false;
     let mut board_availability = SkillBoardAvailability::default();
     if skills_enabled && let Some(player) = current_profile {
@@ -1422,8 +1564,7 @@ fn handle_skill_tip_input(
     mut skill_tip: ResMut<SkillTipState>,
     mut skill_ui_request: ResMut<SkillUiRequest>,
 ) {
-    if overlay_state.open
-        || overlay_state.input_captured
+    if sound_settings_overlay_blocks_input(&overlay_state)
         || match_result.finished
         || !match_config.rule_set.skills_enabled()
     {
@@ -1603,7 +1744,7 @@ fn handle_player_hud_click(
     mut skill_ui_request: ResMut<SkillUiRequest>,
     mut turn_ui_request: ResMut<TurnUiRequest>,
 ) {
-    if overlay_state.open || overlay_state.input_captured || match_result.finished {
+    if sound_settings_overlay_blocks_input(&overlay_state) || match_result.finished {
         return;
     }
     let Some(cursor) = pointer.just_pressed_position() else {
@@ -2020,28 +2161,58 @@ fn skill_action_index(action: SkillUiAction) -> usize {
         .unwrap_or_default()
 }
 
+fn shared_skill_bar_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> ScreenRect {
+    let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
+    let total_width = shared_skill_bar_width();
+    let total_height =
+        SKILL_BUTTON_SIZE + FINISH_BOUNCE_CHARGE_BAR_GAP + FINISH_BOUNCE_CHARGE_BAR_H;
+    let start_x = (board.x + (board.w - total_width) * 0.5).clamp(
+        HUD_EDGE_MARGIN,
+        (window_width - total_width - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+    );
+    let y = (board.y + board.h + HUD_EDGE_MARGIN).clamp(
+        HUD_EDGE_MARGIN,
+        (window_height - total_height - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+    );
+    ScreenRect {
+        x: start_x,
+        y,
+        w: total_width,
+        h: SKILL_BUTTON_SIZE,
+    }
+}
+
 pub(crate) fn shared_skill_button_rect(
     window_width: f32,
     window_height: f32,
     device_profile: DeviceProfile,
     action: SkillUiAction,
 ) -> ScreenRect {
-    let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
-    let total_width = shared_skill_bar_width();
-    let start_x = (board.x + (board.w - total_width) * 0.5).clamp(
-        HUD_EDGE_MARGIN,
-        (window_width - total_width - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
-    );
+    let bar = shared_skill_bar_rect(window_width, window_height, device_profile);
     let index = skill_action_index(action) as f32;
-    let y = (board.y + board.h + HUD_EDGE_MARGIN).clamp(
-        HUD_EDGE_MARGIN,
-        (window_height - SKILL_BUTTON_SIZE - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
-    );
     ScreenRect {
-        x: start_x + index * (SKILL_BUTTON_SIZE + SKILL_BUTTON_GAP),
-        y,
+        x: bar.x + index * (SKILL_BUTTON_SIZE + SKILL_BUTTON_GAP),
+        y: bar.y,
         w: SKILL_BUTTON_SIZE,
         h: SKILL_BUTTON_SIZE,
+    }
+}
+
+fn finish_bounce_charge_bar_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> ScreenRect {
+    let skill_bar = shared_skill_bar_rect(window_width, window_height, device_profile);
+    ScreenRect {
+        x: skill_bar.x,
+        y: skill_bar.y + skill_bar.h + FINISH_BOUNCE_CHARGE_BAR_GAP,
+        w: skill_bar.w,
+        h: FINISH_BOUNCE_CHARGE_BAR_H,
     }
 }
 
@@ -2238,6 +2409,44 @@ fn skill_block_marker_border_color() -> Color {
     Color::srgba(0.98, 0.72, 0.72, 0.92)
 }
 
+fn finish_bounce_charge_bar_track_color() -> Color {
+    Color::srgba(0.08, 0.12, 0.18, 0.30)
+}
+
+fn finish_bounce_charge_bar_border_color() -> Color {
+    Color::srgba(0.96, 0.98, 1.0, 0.42)
+}
+
+fn finish_bounce_charge_bar_fill_color(player_color: Color) -> Color {
+    player_color.mix(&Color::WHITE, 0.24).with_alpha(0.82)
+}
+
+fn finish_bounce_charge_bar_text_color(active: bool) -> Color {
+    if active {
+        Color::srgba(0.98, 0.99, 1.0, 0.96)
+    } else {
+        Color::srgba(0.76, 0.80, 0.88, 0.70)
+    }
+}
+
+fn finish_bounce_charge_fill_width(count: u8, bar_width: f32) -> f32 {
+    let threshold = FINISH_BOUNCES_PER_SKILL_REWARD.max(1);
+    let progress = count.min(threshold) as f32 / threshold as f32;
+    (bar_width * progress).clamp(0.0, bar_width)
+}
+
+fn finish_bounce_charge_bar_text(count: u8, active: bool) -> String {
+    if active {
+        format!(
+            "Bounce Charge {}/{}",
+            count.min(FINISH_BOUNCES_PER_SKILL_REWARD),
+            FINISH_BOUNCES_PER_SKILL_REWARD
+        )
+    } else {
+        String::new()
+    }
+}
+
 fn skill_charge(action: SkillUiAction, skills: &PlayerSkillState) -> u8 {
     match action {
         SkillUiAction::Dash => skills.dash_charges,
@@ -2252,21 +2461,31 @@ fn player_hud_badge_width(kind: PlayerHudBadgeKind) -> f32 {
     match kind {
         PlayerHudBadgeKind::Player => HUD_BADGE_PLAYER_W,
         PlayerHudBadgeKind::Team => HUD_BADGE_TEAM_W,
-        PlayerHudBadgeKind::FinishBounce => HUD_BADGE_FINISH_BOUNCE_W,
         PlayerHudBadgeKind::Turn => HUD_BADGE_TURN_W,
     }
 }
 
-fn player_hud_badges_for_seat(seat: PlayerSeat) -> [PlayerHudBadgeKind; 4] {
+fn player_hud_badges_for_seat(seat: PlayerSeat) -> [PlayerHudBadgeKind; 3] {
     match seat {
         PlayerSeat::Blue | PlayerSeat::Green => PLAYER_HUD_BADGES,
         PlayerSeat::Red | PlayerSeat::Yellow => [
             PlayerHudBadgeKind::Turn,
-            PlayerHudBadgeKind::FinishBounce,
             PlayerHudBadgeKind::Team,
             PlayerHudBadgeKind::Player,
         ],
     }
+}
+
+fn player_hud_badge_justify_content(seat: PlayerSeat) -> JustifyContent {
+    if player_hud_badges_align_to_left(seat) {
+        JustifyContent::FlexStart
+    } else {
+        JustifyContent::FlexEnd
+    }
+}
+
+fn player_hud_badges_align_to_left(seat: PlayerSeat) -> bool {
+    matches!(seat, PlayerSeat::Blue | PlayerSeat::Green)
 }
 
 fn player_hud_badges_total_width() -> f32 {
@@ -2281,7 +2500,6 @@ fn player_hud_badge_name(kind: PlayerHudBadgeKind) -> &'static str {
     match kind {
         PlayerHudBadgeKind::Player => "Player",
         PlayerHudBadgeKind::Team => "Team",
-        PlayerHudBadgeKind::FinishBounce => "FinishBounce",
         PlayerHudBadgeKind::Turn => "Turn",
     }
 }
@@ -2291,8 +2509,6 @@ fn player_hud_badge_text(
     player: &PlayerProfile,
     is_current: bool,
     player_finished: bool,
-    finish_bounces: u8,
-    show_finish_bounces: bool,
 ) -> String {
     match kind {
         PlayerHudBadgeKind::Player => {
@@ -2303,13 +2519,6 @@ fn player_hud_badge_text(
             }
         }
         PlayerHudBadgeKind::Team => format!("T{}", player.state.team_id),
-        PlayerHudBadgeKind::FinishBounce => {
-            if show_finish_bounces {
-                format!("B{finish_bounces}/{FINISH_BOUNCES_PER_SKILL_REWARD}")
-            } else {
-                "B-".to_string()
-            }
-        }
         PlayerHudBadgeKind::Turn => {
             if is_current {
                 ">".to_string()
@@ -2331,8 +2540,6 @@ fn player_hud_badge_color(
             .with_alpha(if is_current { 1.0 } else { 0.94 }),
         PlayerHudBadgeKind::Team if is_current => Color::srgba(0.98, 0.99, 1.0, 0.98),
         PlayerHudBadgeKind::Team => Color::srgba(0.90, 0.94, 0.98, 0.82),
-        PlayerHudBadgeKind::FinishBounce if is_current => Color::srgba(0.98, 0.99, 1.0, 0.98),
-        PlayerHudBadgeKind::FinishBounce => Color::srgba(0.90, 0.94, 0.98, 0.82),
         PlayerHudBadgeKind::Turn if is_current => Color::srgba(0.12, 0.18, 0.26, 0.92),
         PlayerHudBadgeKind::Turn => Color::srgba(0.78, 0.82, 0.88, 0.54),
     }
@@ -2751,7 +2958,7 @@ fn handle_result_click(
     overlay_state: Res<SoundSettingsOverlayState>,
     mut next_app_state: ResMut<NextState<AppState>>,
 ) {
-    if overlay_state.open || overlay_state.input_captured {
+    if sound_settings_overlay_blocks_input(&overlay_state) {
         return;
     }
     let Some(cursor) = pointer.just_pressed_position() else {
@@ -2912,6 +3119,21 @@ mod tests {
         PlayerRoster::from_players(players)
     }
 
+    fn player_hud_badge_cluster_rect(entry: ScreenRect, seat: PlayerSeat) -> ScreenRect {
+        let w = player_hud_badges_total_width();
+        let x = if player_hud_badges_align_to_left(seat) {
+            entry.x
+        } else {
+            entry.x + entry.w - w
+        };
+        ScreenRect {
+            x,
+            y: entry.y + (entry.h - HUD_BADGE_H) * 0.5,
+            w,
+            h: HUD_BADGE_H,
+        }
+    }
+
     #[test]
     fn player_hud_entries_align_outside_hangar_edges() {
         let profile = test_profile(1280.0, 720.0);
@@ -2936,6 +3158,53 @@ mod tests {
         for (entry, hangar) in [(p1, blue), (p2, red), (p3, green), (p4, yellow)] {
             assert!(!entry.overlaps(hangar));
         }
+    }
+
+    #[test]
+    fn visible_player_hud_badges_align_to_outer_hangar_edges() {
+        for (width, height) in [(1280.0, 720.0), (1366.0, 1024.0), (1840.0, 2800.0)] {
+            let profile = test_profile(width, height);
+            let board = gameplay_board_screen_rect(width, height, profile);
+            for seat in PlayerSeat::ALL {
+                let hangar = seat_hangar_screen_rect(board, seat);
+                let entry = player_hud_entry_rect(width, height, profile, seat);
+                let badges = player_hud_badge_cluster_rect(entry, seat);
+                match seat {
+                    PlayerSeat::Blue | PlayerSeat::Green => {
+                        assert!(
+                            (badges.x - hangar.x).abs() < 0.001,
+                            "{seat:?} badges should align to hangar left edge at {width}x{height}"
+                        );
+                    }
+                    PlayerSeat::Red | PlayerSeat::Yellow => {
+                        assert!(
+                            (badges.x + badges.w - (hangar.x + hangar.w)).abs() < 0.001,
+                            "{seat:?} badges should align to hangar right edge at {width}x{height}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn player_hud_badge_alignment_matches_seat_side() {
+        assert_eq!(
+            player_hud_badge_justify_content(PlayerSeat::Blue),
+            JustifyContent::FlexStart
+        );
+        assert_eq!(
+            player_hud_badge_justify_content(PlayerSeat::Green),
+            JustifyContent::FlexStart
+        );
+        assert_eq!(
+            player_hud_badge_justify_content(PlayerSeat::Red),
+            JustifyContent::FlexEnd
+        );
+        assert_eq!(
+            player_hud_badge_justify_content(PlayerSeat::Yellow),
+            JustifyContent::FlexEnd
+        );
     }
 
     #[test]
@@ -3009,7 +3278,6 @@ mod tests {
             player_hud_badges_for_seat(PlayerSeat::Red),
             [
                 PlayerHudBadgeKind::Turn,
-                PlayerHudBadgeKind::FinishBounce,
                 PlayerHudBadgeKind::Team,
                 PlayerHudBadgeKind::Player,
             ]
@@ -3018,7 +3286,6 @@ mod tests {
             player_hud_badges_for_seat(PlayerSeat::Yellow),
             [
                 PlayerHudBadgeKind::Turn,
-                PlayerHudBadgeKind::FinishBounce,
                 PlayerHudBadgeKind::Team,
                 PlayerHudBadgeKind::Player,
             ]
@@ -3035,45 +3302,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Player, player, true, false, 1, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Player, player, true, false),
             "P1"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Team, player, true, false, 1, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Team, player, true, false),
             "T1"
         );
         assert_eq!(
-            player_hud_badge_text(
-                PlayerHudBadgeKind::FinishBounce,
-                player,
-                true,
-                false,
-                1,
-                true
-            ),
-            "B1/2"
-        );
-        assert_eq!(
-            player_hud_badge_text(
-                PlayerHudBadgeKind::FinishBounce,
-                player,
-                true,
-                false,
-                1,
-                false
-            ),
-            "B-"
-        );
-        assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, true, false, 1, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, true, false),
             ">"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, false, false, 1, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Turn, player, false, false),
             "-"
         );
         assert_eq!(
-            player_hud_badge_text(PlayerHudBadgeKind::Player, player, false, true, 1, true),
+            player_hud_badge_text(PlayerHudBadgeKind::Player, player, false, true),
             "P1✓"
         );
     }
@@ -3335,6 +3580,42 @@ mod tests {
         assert_eq!(first.w, first.h);
         assert!(first.y >= board.y + board.h);
         assert!((bar_center - (board.x + board.w * 0.5)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn finish_bounce_charge_bar_matches_skill_bar_width_below_buttons() {
+        let width = 720.0;
+        let height = 1280.0;
+        let profile = test_profile(width, height);
+        let first = shared_skill_button_rect(width, height, profile, SkillUiAction::Dash);
+        let last = shared_skill_button_rect(width, height, profile, SkillUiAction::DoubleDice);
+        let charge_bar = finish_bounce_charge_bar_rect(width, height, profile);
+
+        assert_eq!(charge_bar.w, shared_skill_bar_width());
+        assert_eq!(charge_bar.h, FINISH_BOUNCE_CHARGE_BAR_H);
+        assert!((charge_bar.x - first.x).abs() < f32::EPSILON);
+        assert!((charge_bar.x + charge_bar.w - (last.x + last.w)).abs() < f32::EPSILON);
+        assert_eq!(
+            charge_bar.y,
+            first.y + SKILL_BUTTON_SIZE + FINISH_BOUNCE_CHARGE_BAR_GAP
+        );
+    }
+
+    #[test]
+    fn finish_bounce_charge_bar_formats_progress() {
+        let bar_width = shared_skill_bar_width();
+
+        assert_eq!(finish_bounce_charge_bar_text(0, true), "Bounce Charge 0/2");
+        assert_eq!(finish_bounce_charge_bar_text(1, true), "Bounce Charge 1/2");
+        assert_eq!(finish_bounce_charge_bar_text(2, true), "Bounce Charge 2/2");
+        assert_eq!(finish_bounce_charge_bar_text(1, false), "");
+        assert_eq!(finish_bounce_charge_fill_width(0, bar_width), 0.0);
+        assert_eq!(
+            finish_bounce_charge_fill_width(1, bar_width),
+            bar_width * 0.5
+        );
+        assert_eq!(finish_bounce_charge_fill_width(2, bar_width), bar_width);
+        assert_eq!(finish_bounce_charge_fill_width(9, bar_width), bar_width);
     }
 
     #[test]

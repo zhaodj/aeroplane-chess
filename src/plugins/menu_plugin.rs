@@ -55,6 +55,10 @@ pub struct SoundSettingsOverlayState {
     pub input_captured: bool,
 }
 
+pub fn sound_settings_overlay_blocks_input(overlay_state: &SoundSettingsOverlayState) -> bool {
+    overlay_state.open || overlay_state.input_captured
+}
+
 #[derive(Resource, Default)]
 /// 配置页当前已渲染的布局 key；模式或窗口尺寸变化后用于重建 UI。
 struct ModeSelectRenderState {
@@ -113,6 +117,22 @@ enum SoundSettingsValueKind {
 /// 声音设置页百分比文本节点。
 struct SoundSettingsValueText {
     kind: SoundSettingsValueKind,
+}
+
+#[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
+struct SoundSettingsToggleTrack {
+    kind: SoundSettingsValueKind,
+}
+
+#[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
+struct SoundSettingsToggleThumb {
+    kind: SoundSettingsValueKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SettingsToggleVisualState {
+    active: bool,
+    label: &'static str,
 }
 
 #[derive(Clone, Copy, Component, Debug)]
@@ -233,6 +253,18 @@ const SOUND_VALUE_W: f32 = 100.0;
 const SOUND_MUTE_TOP: f32 = SOUND_PANEL_TOP + SOUND_ROW_GAP * 2.0;
 const SOUND_TOGGLE_W: f32 = 184.0;
 const SOUND_BACK_TOP: f32 = 488.0;
+
+const SETTINGS_TOGGLE_TRACK_W: f32 = 64.0;
+const SETTINGS_TOGGLE_TRACK_H: f32 = 34.0;
+const SETTINGS_TOGGLE_THUMB: f32 = 26.0;
+const SETTINGS_TOGGLE_PADDING: f32 = 4.0;
+const SETTINGS_TOGGLE_TEXT_GAP: f32 = 14.0;
+const SETTINGS_TOGGLE_ACTIVE_TRACK: Color = Color::srgb(0.14, 0.39, 0.82);
+const SETTINGS_TOGGLE_ACTIVE_BORDER: Color = Color::srgba(0.08, 0.23, 0.55, 0.24);
+const SETTINGS_TOGGLE_INACTIVE_TRACK: Color = Color::srgb(0.78, 0.82, 0.88);
+const SETTINGS_TOGGLE_INACTIVE_BORDER: Color = Color::srgba(0.25, 0.31, 0.40, 0.18);
+const SETTINGS_TOGGLE_THUMB_COLOR: Color = Color::srgb(1.0, 1.0, 1.0);
+const SETTINGS_TOGGLE_THUMB_BORDER: Color = Color::srgba(0.12, 0.18, 0.28, 0.16);
 
 const SECTION_LABEL_X: f32 = 96.0;
 const OPTION_LEFT: f32 = 336.0;
@@ -431,43 +463,60 @@ fn spawn_global_sound_toggle_row(
         Name::new(format!("GlobalSoundLabel{label}")),
     ));
 
+    let rect = ClickRect {
+        x: GLOBAL_SOUND_CONTROL_LEFT,
+        y: top,
+        w: GLOBAL_SOUND_TOGGLE_W,
+        h: GLOBAL_SOUND_BUTTON,
+    };
+    let state = global_sound_toggle_initial_state(value_kind);
     panel
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(GLOBAL_SOUND_CONTROL_LEFT),
-                top: Val::Px(top),
-                width: Val::Px(GLOBAL_SOUND_TOGGLE_W),
-                height: Val::Px(GLOBAL_SOUND_BUTTON),
-                border: UiRect::all(Val::Px(1.0)),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
+                left: Val::Px(rect.x),
+                top: Val::Px(rect.y),
+                width: Val::Px(rect.w),
+                height: Val::Px(rect.h),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.55, 0.70, 0.88, 0.22)),
-            BorderColor::all(Color::srgba(0.22, 0.30, 0.42, 0.24)),
-            Name::new(format!("GlobalSoundButton{label}")),
+            Name::new(format!("GlobalSoundToggle{label}")),
         ))
-        .with_children(|button| {
-            button.spawn((
-                Text::new(global_sound_toggle_initial_label(value_kind)),
-                TextFont {
-                    font_size: FontSize::Px(18.0),
-                    ..default()
-                },
-                TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                TextLayout::justify(Justify::Center),
-                SoundSettingsValueText { kind: value_kind },
-                Name::new(format!("GlobalSound{label}Value")),
-            ));
+        .with_children(|toggle| {
+            spawn_settings_toggle_visual(
+                toggle,
+                value_kind,
+                state,
+                rect.w,
+                rect.h,
+                18.0,
+                &format!("GlobalSound{label}"),
+            );
         });
 }
 
-fn global_sound_toggle_initial_label(value_kind: SoundSettingsValueKind) -> &'static str {
+fn global_sound_toggle_initial_state(
+    value_kind: SoundSettingsValueKind,
+) -> SettingsToggleVisualState {
     match value_kind {
-        SoundSettingsValueKind::Mute => "Sound On",
-        SoundSettingsValueKind::Fps => "FPS On",
-        SoundSettingsValueKind::Music | SoundSettingsValueKind::Effects => "",
+        SoundSettingsValueKind::Mute => SettingsToggleVisualState {
+            active: false,
+            label: "Sound On",
+        },
+        SoundSettingsValueKind::Fps => SettingsToggleVisualState {
+            active: cfg!(debug_assertions),
+            label: if cfg!(debug_assertions) {
+                "FPS On"
+            } else {
+                "FPS Off"
+            },
+        },
+        SoundSettingsValueKind::Music | SoundSettingsValueKind::Effects => {
+            SettingsToggleVisualState {
+                active: false,
+                label: "",
+            }
+        }
     }
 }
 
@@ -612,6 +661,15 @@ fn update_global_sound_overlay(
     >,
     mut modal_query: Query<&mut Visibility, (With<GlobalSoundModal>, Without<GlobalSoundEntry>)>,
     mut value_query: Query<(&SoundSettingsValueText, &mut Text)>,
+    mut toggle_track_query: Query<(
+        &SoundSettingsToggleTrack,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
+    mut toggle_thumb_query: Query<
+        (&SoundSettingsToggleThumb, &mut Node),
+        Without<GlobalSoundEntry>,
+    >,
 ) {
     let visible_on_page = !matches!(app_state.get(), AppState::Boot);
     let entry_visibility = if visible_on_page {
@@ -643,9 +701,32 @@ fn update_global_sound_overlay(
         *text = Text::new(match value_text.kind {
             SoundSettingsValueKind::Music => format_volume_percent(audio_settings.music_volume),
             SoundSettingsValueKind::Effects => format_volume_percent(audio_settings.effects_volume),
-            SoundSettingsValueKind::Mute => format_mute_label(&audio_settings).to_owned(),
-            SoundSettingsValueKind::Fps => fps_toggle_label(&performance_settings).to_owned(),
+            SoundSettingsValueKind::Mute | SoundSettingsValueKind::Fps => {
+                global_settings_toggle_state(
+                    value_text.kind,
+                    &audio_settings,
+                    &performance_settings,
+                )
+                .map_or_else(String::new, |state| state.label.to_owned())
+            }
         });
+    }
+    for (track, mut background, mut border) in &mut toggle_track_query {
+        let Some(state) =
+            global_settings_toggle_state(track.kind, &audio_settings, &performance_settings)
+        else {
+            continue;
+        };
+        *background = BackgroundColor(settings_toggle_track_color(state.active));
+        *border = BorderColor::all(settings_toggle_track_border_color(state.active));
+    }
+    for (thumb, mut node) in &mut toggle_thumb_query {
+        let Some(state) =
+            global_settings_toggle_state(thumb.kind, &audio_settings, &performance_settings)
+        else {
+            continue;
+        };
+        node.left = Val::Px(settings_toggle_thumb_left(state.active));
     }
 }
 
@@ -657,6 +738,7 @@ fn handle_global_sound_overlay_input(
         return;
     }
     if keyboard.just_pressed(KeyCode::Escape) || keyboard.just_pressed(KeyCode::Backspace) {
+        overlay_state.input_captured = true;
         overlay_state.open = false;
     }
 }
@@ -678,6 +760,7 @@ fn handle_global_sound_overlay_click(
     };
 
     if overlay_state.open {
+        overlay_state.input_captured = true;
         if let Some(action) = global_sound_action_at(cursor, window) {
             match apply_global_sound_action(
                 action,
@@ -702,6 +785,7 @@ fn handle_global_sound_overlay_click(
 
     if global_sound_entry_rect(window).contains(cursor) {
         overlay_state.open = true;
+        overlay_state.input_captured = true;
     }
 }
 
@@ -1200,14 +1284,8 @@ fn spawn_sound_toggle(commands: &mut Commands, top: f32, audio_settings: &AudioS
                 top: Val::Px(rect.y),
                 width: Val::Px(rect.w),
                 height: Val::Px(rect.h),
-                border: UiRect::all(Val::Px(fitted_box_border(rect.h))),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                padding: UiRect::horizontal(Val::Px(fitted_box_padding(rect.h))),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.53, 0.77, 0.96, 0.26)),
-            BorderColor::all(Color::srgba(0.16, 0.22, 0.32, 0.20)),
             ClickRect { ..rect },
             SoundSettingsOption {
                 action: SoundSettingsAction::ToggleMute,
@@ -1216,19 +1294,15 @@ fn spawn_sound_toggle(commands: &mut Commands, top: f32, audio_settings: &AudioS
             MenuEntity,
         ))
         .with_children(|parent| {
-            parent.spawn((
-                Text::new(format_mute_label(audio_settings)),
-                TextFont {
-                    font_size: FontSize::Px(24.0),
-                    ..default()
-                },
-                TextColor(MODE_SELECT_UNSELECTED_TEXT),
-                TextLayout::justify(Justify::Center),
-                SoundSettingsValueText {
-                    kind: SoundSettingsValueKind::Mute,
-                },
-                Name::new("SoundSettingsMuteValue"),
-            ));
+            spawn_settings_toggle_visual(
+                parent,
+                SoundSettingsValueKind::Mute,
+                sound_settings_toggle_state(audio_settings),
+                rect.w,
+                rect.h,
+                22.0,
+                "SoundSettingsMute",
+            );
         });
 }
 
@@ -1675,6 +1749,126 @@ fn fitted_box_padding(box_height: f32) -> f32 {
     (box_height * 0.16).clamp(2.0, 6.0)
 }
 
+fn spawn_settings_toggle_visual(
+    parent: &mut ChildSpawnerCommands<'_>,
+    kind: SoundSettingsValueKind,
+    state: SettingsToggleVisualState,
+    root_width: f32,
+    root_height: f32,
+    requested_font_size: f32,
+    name_prefix: &str,
+) {
+    let track_top = ((root_height - SETTINGS_TOGGLE_TRACK_H) * 0.5).max(0.0);
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(track_top),
+                width: Val::Px(SETTINGS_TOGGLE_TRACK_W),
+                height: Val::Px(SETTINGS_TOGGLE_TRACK_H),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BackgroundColor(settings_toggle_track_color(state.active)),
+            BorderColor::all(settings_toggle_track_border_color(state.active)),
+            SoundSettingsToggleTrack { kind },
+            Name::new(format!("{name_prefix}Track")),
+        ))
+        .with_children(|track| {
+            track.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(settings_toggle_thumb_left(state.active)),
+                    top: Val::Px(SETTINGS_TOGGLE_PADDING),
+                    width: Val::Px(SETTINGS_TOGGLE_THUMB),
+                    height: Val::Px(SETTINGS_TOGGLE_THUMB),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BackgroundColor(SETTINGS_TOGGLE_THUMB_COLOR),
+                BorderColor::all(SETTINGS_TOGGLE_THUMB_BORDER),
+                SoundSettingsToggleThumb { kind },
+                Name::new(format!("{name_prefix}Thumb")),
+            ));
+        });
+
+    let status_left = SETTINGS_TOGGLE_TRACK_W + SETTINGS_TOGGLE_TEXT_GAP;
+    let status_width = (root_width - status_left).max(1.0);
+    let font_size =
+        fitted_box_label_font_size(requested_font_size, status_width, root_height, state.label);
+    parent.spawn((
+        Text::new(state.label),
+        TextFont {
+            font_size: FontSize::Px(font_size),
+            ..default()
+        },
+        TextColor(MODE_SELECT_UNSELECTED_TEXT),
+        TextLayout::justify(Justify::Center),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(status_left),
+            top: Val::Px(settings_toggle_status_top(root_height, font_size)),
+            width: Val::Px(status_width),
+            ..default()
+        },
+        SoundSettingsValueText { kind },
+        Name::new(format!("{name_prefix}Value")),
+    ));
+}
+
+fn settings_toggle_status_top(root_height: f32, font_size: f32) -> f32 {
+    ((root_height - font_size) * 0.5 - 1.0).max(0.0)
+}
+
+fn settings_toggle_thumb_left(active: bool) -> f32 {
+    if active {
+        SETTINGS_TOGGLE_TRACK_W - SETTINGS_TOGGLE_THUMB - SETTINGS_TOGGLE_PADDING
+    } else {
+        SETTINGS_TOGGLE_PADDING
+    }
+}
+
+fn settings_toggle_track_color(active: bool) -> Color {
+    if active {
+        SETTINGS_TOGGLE_ACTIVE_TRACK
+    } else {
+        SETTINGS_TOGGLE_INACTIVE_TRACK
+    }
+}
+
+fn settings_toggle_track_border_color(active: bool) -> Color {
+    if active {
+        SETTINGS_TOGGLE_ACTIVE_BORDER
+    } else {
+        SETTINGS_TOGGLE_INACTIVE_BORDER
+    }
+}
+
+fn sound_settings_toggle_state(audio_settings: &AudioSettings) -> SettingsToggleVisualState {
+    SettingsToggleVisualState {
+        active: audio_settings.muted,
+        label: format_mute_label(audio_settings),
+    }
+}
+
+fn global_settings_toggle_state(
+    value_kind: SoundSettingsValueKind,
+    audio_settings: &AudioSettings,
+    performance_settings: &PerformanceSettings,
+) -> Option<SettingsToggleVisualState> {
+    match value_kind {
+        SoundSettingsValueKind::Mute => Some(sound_settings_toggle_state(audio_settings)),
+        SoundSettingsValueKind::Fps => Some(SettingsToggleVisualState {
+            active: performance_settings.show_fps,
+            label: fps_toggle_label(performance_settings),
+        }),
+        SoundSettingsValueKind::Music | SoundSettingsValueKind::Effects => None,
+    }
+}
+
 fn sound_settings_content(audio_settings: &AudioSettings) -> String {
     format!(
         "{}   |   Music {}   |   Effects {}",
@@ -1809,7 +2003,7 @@ fn handle_main_menu_input(
     mut next_state: ResMut<NextState<AppState>>,
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
 ) {
-    if overlay_state.open {
+    if sound_settings_overlay_blocks_input(&overlay_state) {
         return;
     }
 
@@ -1829,7 +2023,7 @@ fn handle_main_menu_click(
     start_query: Query<&ClickRect, With<MainMenuStartArea>>,
 ) {
     // 鼠标主操作：点击开始进入配置；设置弹层由全局 Settings 入口打开。
-    if overlay_state.input_captured {
+    if sound_settings_overlay_blocks_input(&overlay_state) {
         return;
     }
     let Some(cursor) = pointer.just_pressed_position() else {
@@ -1848,6 +2042,12 @@ fn update_sound_settings_text(
     audio_settings: Res<AudioSettings>,
     mut summary_query: Query<&mut Text, (With<SoundSettingsText>, Without<SoundSettingsValueText>)>,
     mut value_query: SoundSettingsValueQuery,
+    mut toggle_track_query: Query<(
+        &SoundSettingsToggleTrack,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
+    mut toggle_thumb_query: Query<(&SoundSettingsToggleThumb, &mut Node)>,
 ) {
     if !audio_settings.is_changed() {
         return;
@@ -1864,6 +2064,20 @@ fn update_sound_settings_text(
             SoundSettingsValueKind::Mute => format_mute_label(&audio_settings).to_owned(),
             SoundSettingsValueKind::Fps => "FPS --".to_owned(),
         });
+    }
+    let state = sound_settings_toggle_state(&audio_settings);
+    for (track, mut background, mut border) in &mut toggle_track_query {
+        if track.kind != SoundSettingsValueKind::Mute {
+            continue;
+        }
+        *background = BackgroundColor(settings_toggle_track_color(state.active));
+        *border = BorderColor::all(settings_toggle_track_border_color(state.active));
+    }
+    for (thumb, mut node) in &mut toggle_thumb_query {
+        if thumb.kind != SoundSettingsValueKind::Mute {
+            continue;
+        }
+        node.left = Val::Px(settings_toggle_thumb_left(state.active));
     }
 }
 
@@ -1924,7 +2138,7 @@ fn handle_mode_select_input(
     mut next_state: ResMut<NextState<AppState>>,
     overlay_state: Res<SoundSettingsOverlayState>,
 ) {
-    if overlay_state.open {
+    if sound_settings_overlay_blocks_input(&overlay_state) {
         return;
     }
 
@@ -2021,7 +2235,7 @@ fn handle_mode_select_click(
     query: Query<(&ClickRect, &ModeSelectOption)>,
 ) {
     // 鼠标主操作：点击命中对应配置项并立即生效。
-    if overlay_state.input_captured {
+    if sound_settings_overlay_blocks_input(&overlay_state) {
         return;
     }
     let Some(cursor) = pointer.just_pressed_position() else {
@@ -2293,6 +2507,41 @@ mod tests {
     }
 
     #[test]
+    fn open_sound_overlay_blocks_lower_input_even_before_capture_flag_updates() {
+        assert!(sound_settings_overlay_blocks_input(
+            &SoundSettingsOverlayState {
+                open: true,
+                input_captured: false,
+            }
+        ));
+        assert!(sound_settings_overlay_blocks_input(
+            &SoundSettingsOverlayState {
+                open: false,
+                input_captured: true,
+            }
+        ));
+        assert!(!sound_settings_overlay_blocks_input(
+            &SoundSettingsOverlayState {
+                open: false,
+                input_captured: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn global_sound_overlay_system_initializes_without_query_conflicts() {
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin)
+            .init_state::<AppState>()
+            .init_resource::<AudioSettings>()
+            .init_resource::<PerformanceSettings>()
+            .init_resource::<SoundSettingsOverlayState>()
+            .add_systems(Update, update_global_sound_overlay);
+
+        app.update();
+    }
+
+    #[test]
     fn sound_settings_actions_adjust_independent_channels() {
         let mut audio_settings = AudioSettings {
             music_volume: 0.5,
@@ -2442,6 +2691,73 @@ mod tests {
         audio_settings.toggle_mute();
         assert_eq!(format_mute_label(&audio_settings), "Muted");
         assert!(sound_settings_content(&audio_settings).starts_with("Muted"));
+    }
+
+    #[test]
+    fn settings_toggle_thumb_moves_between_track_edges() {
+        let off_left = settings_toggle_thumb_left(false);
+        let on_left = settings_toggle_thumb_left(true);
+
+        assert_eq!(off_left, SETTINGS_TOGGLE_PADDING);
+        assert!(on_left > off_left);
+        assert_eq!(
+            on_left + SETTINGS_TOGGLE_THUMB + SETTINGS_TOGGLE_PADDING,
+            SETTINGS_TOGGLE_TRACK_W
+        );
+    }
+
+    #[test]
+    fn settings_toggle_state_tracks_mute_and_fps() {
+        let mut audio_settings = AudioSettings {
+            music_volume: 0.5,
+            effects_volume: 0.5,
+            muted: false,
+        };
+        let mut performance_settings = PerformanceSettings { show_fps: false };
+
+        assert_eq!(
+            global_settings_toggle_state(
+                SoundSettingsValueKind::Mute,
+                &audio_settings,
+                &performance_settings,
+            ),
+            Some(SettingsToggleVisualState {
+                active: false,
+                label: "Sound On",
+            })
+        );
+        assert_eq!(
+            global_settings_toggle_state(
+                SoundSettingsValueKind::Fps,
+                &audio_settings,
+                &performance_settings,
+            ),
+            Some(SettingsToggleVisualState {
+                active: false,
+                label: "FPS Off",
+            })
+        );
+
+        audio_settings.toggle_mute();
+        performance_settings.toggle_fps();
+        assert_eq!(
+            global_settings_toggle_state(
+                SoundSettingsValueKind::Mute,
+                &audio_settings,
+                &performance_settings,
+            )
+            .map(|state| state.active),
+            Some(true)
+        );
+        assert_eq!(
+            global_settings_toggle_state(
+                SoundSettingsValueKind::Fps,
+                &audio_settings,
+                &performance_settings,
+            )
+            .map(|state| state.label),
+            Some("FPS On")
+        );
     }
 
     #[test]

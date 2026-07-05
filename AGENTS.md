@@ -26,6 +26,7 @@
 - 先检查 `git status --short`。如果存在用户未提交改动，只在确实需要的文件上工作，不回滚用户改动。
 - 规则变更优先落在 `domain` 或 `gameplay`，表现变更优先落在 `plugins`/`ui`。
 - 涉及玩法规则调整时，必须同步更新 `docs/rules-spec.md`，让实现、测试和规则文档保持一致。
+- 涉及 HUD/菜单/棋盘布局调整时，必须同步补充几何回归测试，优先校验实际可见元素的边线、避让和对齐关系，而不是只校验透明容器。
 - 不把 `target/`、`dist/`、`platforms/android/app/build/`、`platforms/android/app/src/main/jniLibs/` 作为源文件修改。
 - 需要改资源生成逻辑时，优先改 `scripts/`，再显式重生成对应资源。
 - 文档中旧版本信息可能滞后，依赖版本以 `Cargo.toml` 和 lockfile 为准。

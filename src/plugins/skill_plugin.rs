@@ -16,7 +16,7 @@ use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::effects_plugin::{
     EffectRevealDelays, PieceMotionEffects, TARGETED_MISSILE_REVEAL_DURATION, VisualEffectQueue,
 };
-use crate::plugins::menu_plugin::SoundSettingsOverlayState;
+use crate::plugins::menu_plugin::{SoundSettingsOverlayState, sound_settings_overlay_blocks_input};
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
 use crate::states::{AppState, GamePhase};
@@ -656,7 +656,7 @@ fn handle_human_snipe_click(
     {
         return;
     }
-    if overlay_state.input_captured || !pointer.just_pressed() {
+    if sound_settings_overlay_blocks_input(&overlay_state) || !pointer.just_pressed() {
         return;
     };
     let Some(pointer_position) = pointer.just_pressed_position() else {
