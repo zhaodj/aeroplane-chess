@@ -232,6 +232,7 @@ type PlayerHudBadgeStyleQuery<'w, 's> = Query<
         &'static PlayerHudBadge,
         &'static mut BackgroundColor,
         &'static mut BorderColor,
+        &'static mut Visibility,
     ),
     (
         Without<PlayerHudEntry>,
@@ -386,6 +387,7 @@ const HUD_BADGE_GAP: f32 = 3.0;
 const HUD_BADGE_PLAYER_W: f32 = 34.0;
 const HUD_BADGE_TEAM_W: f32 = 28.0;
 const HUD_BADGE_TURN_W: f32 = 28.0;
+const HUD_TURN_INDICATOR_STEP_SECS: f32 = 0.34;
 const SKILL_BUTTON_SIZE: f32 = 54.0;
 const SKILL_ICON_SIZE: f32 = 42.0;
 const SKILL_BADGE_W: f32 = 20.0;
@@ -1189,11 +1191,14 @@ fn update_hud_content(
     match_result: Res<MatchResult>,
     reveal_delays: Res<EffectRevealDelays>,
     language_settings: Res<LanguageSettings>,
+    time: Res<Time>,
     mut hud_state: ResMut<PlayerHudState>,
     piece_query: HudPieceQuery,
     mut queries: HudContentQueries,
 ) {
     let language = language_settings.language;
+    let elapsed_secs = time.elapsed_secs();
+    let turn_indicator_pulse = player_hud_turn_indicator_pulse(elapsed_secs);
     for (entry, mut background, mut border) in &mut queries.entry_style_query {
         let is_current = entry.player_id == turn_state.current_player;
         let color = player_roster
@@ -1214,7 +1219,7 @@ fn update_hud_content(
         });
     }
 
-    for (badge, mut background, mut border) in &mut queries.badge_style_query {
+    for (badge, mut background, mut border, mut visibility) in &mut queries.badge_style_query {
         let is_current = badge.player_id == turn_state.current_player;
         let color = player_roster
             .players
@@ -1222,8 +1227,18 @@ fn update_hud_content(
             .find(|player| player.state.player_id == badge.player_id)
             .map(|player| player.color)
             .unwrap_or(Color::srgb(0.78, 0.82, 0.89));
-        *background = BackgroundColor(player_hud_badge_color(badge.kind, color, is_current));
-        *border = BorderColor::all(player_hud_badge_border_color(badge.kind, is_current));
+        *visibility = player_hud_badge_visibility(badge.kind, is_current);
+        *background = BackgroundColor(player_hud_badge_color(
+            badge.kind,
+            color,
+            is_current,
+            turn_indicator_pulse,
+        ));
+        *border = BorderColor::all(player_hud_badge_border_color(
+            badge.kind,
+            is_current,
+            turn_indicator_pulse,
+        ));
     }
 
     for (badge_text, mut text, mut text_color) in &mut queries.badge_text_query {
@@ -1246,8 +1261,13 @@ fn update_hud_content(
             is_current,
             player_finished,
             language,
+            elapsed_secs,
         ));
-        *text_color = TextColor(player_hud_badge_text_color(badge_text.kind, is_current));
+        *text_color = TextColor(player_hud_badge_text_color(
+            badge_text.kind,
+            is_current,
+            turn_indicator_pulse,
+        ));
     }
 
     let current_profile = player_roster
@@ -2533,6 +2553,7 @@ fn player_hud_badge_text(
     is_current: bool,
     player_finished: bool,
     language: Language,
+    elapsed_secs: f32,
 ) -> String {
     match kind {
         PlayerHudBadgeKind::Player => {
@@ -2550,20 +2571,37 @@ fn player_hud_badge_text(
             Language::SimplifiedChinese => format!("队{}", player.state.team_id),
             Language::English => format!("T{}", player.state.team_id),
         },
-        PlayerHudBadgeKind::Turn => {
-            if is_current {
-                ">".to_string()
-            } else {
-                "-".to_string()
-            }
-        }
+        PlayerHudBadgeKind::Turn => player_hud_turn_indicator_text(is_current, elapsed_secs),
     }
+}
+
+fn player_hud_badge_visibility(kind: PlayerHudBadgeKind, is_current: bool) -> Visibility {
+    if kind == PlayerHudBadgeKind::Turn && !is_current {
+        Visibility::Hidden
+    } else {
+        Visibility::Visible
+    }
+}
+
+fn player_hud_turn_indicator_text(is_current: bool, elapsed_secs: f32) -> String {
+    if !is_current {
+        return String::new();
+    }
+    match ((elapsed_secs / HUD_TURN_INDICATOR_STEP_SECS).floor() as usize) % 3 {
+        1 => ">>".to_string(),
+        _ => ">".to_string(),
+    }
+}
+
+fn player_hud_turn_indicator_pulse(elapsed_secs: f32) -> f32 {
+    ((elapsed_secs * std::f32::consts::TAU).sin() * 0.5 + 0.5).clamp(0.0, 1.0)
 }
 
 fn player_hud_badge_color(
     kind: PlayerHudBadgeKind,
     player_color: Color,
     is_current: bool,
+    turn_indicator_pulse: f32,
 ) -> Color {
     match kind {
         PlayerHudBadgeKind::Player => player_color
@@ -2571,23 +2609,38 @@ fn player_hud_badge_color(
             .with_alpha(if is_current { 1.0 } else { 0.94 }),
         PlayerHudBadgeKind::Team if is_current => Color::srgba(0.98, 0.99, 1.0, 0.98),
         PlayerHudBadgeKind::Team => Color::srgba(0.90, 0.94, 0.98, 0.82),
-        PlayerHudBadgeKind::Turn if is_current => Color::srgba(0.12, 0.18, 0.26, 0.92),
-        PlayerHudBadgeKind::Turn => Color::srgba(0.78, 0.82, 0.88, 0.54),
+        PlayerHudBadgeKind::Turn if is_current => {
+            Color::srgba(0.10, 0.16, 0.24, 0.82 + 0.16 * turn_indicator_pulse)
+        }
+        PlayerHudBadgeKind::Turn => Color::srgba(0.78, 0.82, 0.88, 0.0),
     }
 }
 
-fn player_hud_badge_border_color(kind: PlayerHudBadgeKind, is_current: bool) -> Color {
+fn player_hud_badge_border_color(
+    kind: PlayerHudBadgeKind,
+    is_current: bool,
+    turn_indicator_pulse: f32,
+) -> Color {
     match (kind, is_current) {
-        (PlayerHudBadgeKind::Turn, true) => Color::srgba(0.02, 0.05, 0.08, 0.98),
+        (PlayerHudBadgeKind::Turn, true) => {
+            Color::srgba(0.02, 0.05, 0.08, 0.78 + 0.20 * turn_indicator_pulse)
+        }
+        (PlayerHudBadgeKind::Turn, false) => Color::srgba(0.10, 0.16, 0.24, 0.0),
         (_, true) => Color::srgba(0.04, 0.09, 0.16, 0.86),
         _ => Color::srgba(0.10, 0.16, 0.24, 0.26),
     }
 }
 
-fn player_hud_badge_text_color(kind: PlayerHudBadgeKind, is_current: bool) -> Color {
+fn player_hud_badge_text_color(
+    kind: PlayerHudBadgeKind,
+    is_current: bool,
+    turn_indicator_pulse: f32,
+) -> Color {
     match (kind, is_current) {
-        (PlayerHudBadgeKind::Turn, true) => Color::WHITE,
-        (PlayerHudBadgeKind::Turn, false) => Color::srgba(0.10, 0.16, 0.24, 0.40),
+        (PlayerHudBadgeKind::Turn, true) => {
+            Color::srgba(1.0, 1.0, 1.0, 0.82 + 0.18 * turn_indicator_pulse)
+        }
+        (PlayerHudBadgeKind::Turn, false) => Color::srgba(0.10, 0.16, 0.24, 0.0),
         _ => Color::srgb(0.07, 0.11, 0.17),
     }
 }
@@ -3926,6 +3979,7 @@ mod tests {
                 true,
                 false,
                 Language::SimplifiedChinese,
+                0.0,
             ),
             "1"
         );
@@ -3936,6 +3990,7 @@ mod tests {
                 true,
                 false,
                 Language::SimplifiedChinese,
+                0.0,
             ),
             "队1"
         );
@@ -3946,6 +4001,7 @@ mod tests {
                 true,
                 false,
                 Language::English,
+                0.0,
             ),
             "P1"
         );
@@ -3956,6 +4012,7 @@ mod tests {
                 true,
                 false,
                 Language::English,
+                0.0,
             ),
             "T1"
         );
@@ -3966,6 +4023,7 @@ mod tests {
                 true,
                 false,
                 Language::SimplifiedChinese,
+                0.0,
             ),
             ">"
         );
@@ -3976,8 +4034,9 @@ mod tests {
                 false,
                 false,
                 Language::SimplifiedChinese,
+                0.0,
             ),
-            "-"
+            ""
         );
         assert_eq!(
             player_hud_badge_text(
@@ -3986,6 +4045,7 @@ mod tests {
                 false,
                 true,
                 Language::SimplifiedChinese,
+                0.0,
             ),
             "1✓"
         );
@@ -3996,9 +4056,37 @@ mod tests {
                 false,
                 true,
                 Language::English,
+                0.0,
             ),
             "P1✓"
         );
+    }
+
+    #[test]
+    fn turn_badge_hides_non_current_and_animates_current_marker() {
+        assert_eq!(
+            player_hud_badge_visibility(PlayerHudBadgeKind::Turn, false),
+            Visibility::Hidden
+        );
+        assert_eq!(
+            player_hud_badge_visibility(PlayerHudBadgeKind::Turn, true),
+            Visibility::Visible
+        );
+        assert_eq!(
+            player_hud_turn_indicator_text(false, HUD_TURN_INDICATOR_STEP_SECS),
+            ""
+        );
+        assert_eq!(player_hud_turn_indicator_text(true, 0.0), ">");
+        assert_eq!(
+            player_hud_turn_indicator_text(true, HUD_TURN_INDICATOR_STEP_SECS),
+            ">>"
+        );
+
+        let low = player_hud_turn_indicator_pulse(0.75);
+        let high = player_hud_turn_indicator_pulse(0.25);
+        assert!((0.0..=1.0).contains(&low));
+        assert!((0.0..=1.0).contains(&high));
+        assert!(high > low);
     }
 
     #[test]
