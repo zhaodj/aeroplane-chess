@@ -238,6 +238,7 @@ type PlayerHudBadgeStyleQuery<'w, 's> = Query<
         Without<PlayerHudEntry>,
         Without<SharedSkillButton>,
         Without<SharedSkillButtonBadge>,
+        Without<SharedSkillBlockMarker>,
         Without<BoardRollButton>,
     ),
 >;

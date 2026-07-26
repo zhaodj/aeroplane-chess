@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 560" role="img" aria-labelledby="title desc">
+  <title id="title">Aeroplane Chess</title>
+  <desc id="desc">Aeroplane Chess logo lockup with the simplified four-color airplane mark and wordmark.</desc>
+  <rect width="1800" height="560" fill="none" />
+  <svg x="30" y="30" width="500" height="500" viewBox="0 0 1024 1024" aria-hidden="true">
+    <use href="aeroplane-chess-icon.svg#brand-mark" />
+  </svg>
+  <g fill="#102f57" font-family="Avenir Next, Inter, Helvetica, Arial, sans-serif">
+    <text x="600" y="300" font-size="112" font-weight="800" letter-spacing="-3">Aeroplane</text>
+    <text x="606" y="412" font-size="104" font-weight="600" letter-spacing="8">CHESS</text>
+  </g>
+</svg>

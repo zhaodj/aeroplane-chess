@@ -1,3 +1,4 @@
+use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use bevy::winit::WinitSettings;
@@ -7,10 +8,15 @@ use crate::plugins::AeroplaneChessPlugins;
 use crate::states::{AppState, GamePhase};
 
 pub fn run() {
-    let default_plugins = DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(platform::primary_window()),
-        ..default()
-    });
+    let default_plugins = DefaultPlugins
+        .set(AssetPlugin {
+            meta_check: AssetMetaCheck::Never,
+            ..default()
+        })
+        .set(WindowPlugin {
+            primary_window: Some(platform::primary_window()),
+            ..default()
+        });
 
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.92, 0.95, 1.0)))

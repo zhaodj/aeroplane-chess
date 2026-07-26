@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Aeroplane Chess</title>
+  <desc id="desc">A simplified four-color aeroplane chess board with a centered airplane.</desc>
+  <defs>
+    <clipPath id="board-clip">
+      <rect x="30" y="30" width="964" height="964" rx="174" />
+    </clipPath>
+  </defs>
+
+  <g id="brand-mark">
+    <rect width="1024" height="1024" rx="186" fill="#102f57" />
+
+    <g clip-path="url(#board-clip)">
+      <rect x="30" y="30" width="964" height="964" fill="#fff8e8" />
+
+      <path d="M30 30H512V512H30Z" fill="#ef403d" />
+      <path d="M512 30H994V512H512Z" fill="#f6b91a" />
+      <path d="M30 512H512V994H30Z" fill="#2f78d4" />
+      <path d="M512 512H994V994H512Z" fill="#3ba653" />
+
+      <path d="M424 30H600V994H424Z" fill="#fff8e8" />
+      <path d="M30 424H994V600H30Z" fill="#fff8e8" />
+
+      <g fill="#fff8e8" stroke="#102f57" stroke-width="18" stroke-linejoin="round">
+        <rect x="108" y="108" width="228" height="228" rx="54" />
+        <rect x="688" y="108" width="228" height="228" rx="54" />
+        <rect x="108" y="688" width="228" height="228" rx="54" />
+        <rect x="688" y="688" width="228" height="228" rx="54" />
+      </g>
+
+      <g fill="#ef403d">
+        <circle cx="170" cy="170" r="30" />
+        <circle cx="274" cy="170" r="30" />
+        <circle cx="170" cy="274" r="30" />
+        <circle cx="274" cy="274" r="30" />
+      </g>
+
+      <g fill="#f6b91a">
+        <circle cx="750" cy="170" r="30" />
+        <circle cx="854" cy="170" r="30" />
+        <circle cx="750" cy="274" r="30" />
+        <circle cx="854" cy="274" r="30" />
+      </g>
+
+      <g fill="#2f78d4">
+        <circle cx="170" cy="750" r="30" />
+        <circle cx="274" cy="750" r="30" />
+        <circle cx="170" cy="854" r="30" />
+        <circle cx="274" cy="854" r="30" />
+      </g>
+
+      <g fill="#3ba653">
+        <circle cx="750" cy="750" r="30" />
+        <circle cx="854" cy="750" r="30" />
+        <circle cx="750" cy="854" r="30" />
+        <circle cx="854" cy="854" r="30" />
+      </g>
+
+      <g fill="#ef403d">
+        <circle cx="512" cy="150" r="19" />
+        <circle cx="512" cy="210" r="19" />
+        <circle cx="512" cy="270" r="19" />
+      </g>
+      <g fill="#2f78d4">
+        <circle cx="150" cy="512" r="19" />
+        <circle cx="210" cy="512" r="19" />
+        <circle cx="270" cy="512" r="19" />
+      </g>
+      <g fill="#f6b91a">
+        <circle cx="754" cy="512" r="19" />
+        <circle cx="814" cy="512" r="19" />
+        <circle cx="874" cy="512" r="19" />
+      </g>
+      <g fill="#3ba653">
+        <circle cx="512" cy="754" r="19" />
+        <circle cx="512" cy="814" r="19" />
+        <circle cx="512" cy="874" r="19" />
+      </g>
+
+      <g fill="#ef403d">
+        <path d="M512 118 484 86h18V52h20v34h18Z" />
+      </g>
+      <g fill="#3ba653">
+        <path d="m512 906 28 32h-18v34h-20v-34h-18Z" />
+      </g>
+      <g fill="#2f78d4">
+        <path d="M120 512 88 484v18H54v20h34v18Z" />
+      </g>
+      <g fill="#f6b91a">
+        <path d="m904 512 32-28v18h34v20h-34v18Z" />
+      </g>
+
+      <circle cx="512" cy="512" r="210" fill="#fff8e8" stroke="#102f57" stroke-width="18" />
+      <path d="M512 512V302A210 210 0 0 1 722 512Z" fill="#f6b91a" />
+      <path d="M512 512H722A210 210 0 0 1 512 722Z" fill="#3ba653" />
+      <path d="M512 512V722A210 210 0 0 1 302 512Z" fill="#2f78d4" />
+      <path d="M512 512H302A210 210 0 0 1 512 302Z" fill="#ef403d" />
+      <circle cx="512" cy="512" r="210" fill="none" stroke="#102f57" stroke-width="18" />
+
+      <g id="left-wing" stroke="#102f57" stroke-width="18" stroke-linejoin="round" stroke-linecap="round">
+        <path d="M470 476 330 540Q312 550 318 574 322 586 340 588l122 14 24-70Z" fill="#fff8e8" />
+        <path d="M470 476 330 540Q312 550 318 574 322 586 340 588l122 14 14-50Z" fill="#ef403d" stroke="none" />
+      </g>
+      <use href="#left-wing" transform="translate(1024 0) scale(-1 1)" />
+
+      <g id="left-star" fill="#102f57">
+        <circle cx="402" cy="552" r="31" />
+        <path d="m402 528 7 16 18 2-13 12 4 18-16-9-16 9 4-18-13-12 18-2Z" fill="#fff8e8" />
+      </g>
+      <use href="#left-star" transform="translate(1024 0) scale(-1 1)" />
+
+      <g id="left-engine" fill="#ef403d" stroke="#102f57" stroke-width="14" stroke-linejoin="round">
+        <path d="M464 474q-18 0-18 18v25h36v-25q0-18-18-18Z" />
+      </g>
+      <use href="#left-engine" transform="translate(1024 0) scale(-1 1)" />
+
+      <path d="m486 592-22 58q-6 18 10 28l38-26 38 26q16-10 10-28l-22-58Z" fill="#ef403d" stroke="#102f57" stroke-width="18" stroke-linejoin="round" />
+      <path d="M512 334C484 366 474 420 476 470L486 600 512 684 538 600 548 470C550 420 540 366 512 334Z" fill="#fff8e8" stroke="#102f57" stroke-width="18" stroke-linejoin="round" />
+      <path d="M512 334C493 360 486 382 484 407L512 432 540 407C538 382 531 360 512 334Z" fill="#ef403d" stroke="#102f57" stroke-width="14" stroke-linejoin="round" />
+      <path d="M512 395C493 413 489 439 490 463L512 480 534 463C535 439 531 413 512 395Z" fill="#1477e8" stroke="#102f57" stroke-width="14" stroke-linejoin="round" />
+      <path d="M505 604h14l8 50-15 20-15-20Z" fill="#ef403d" />
+    </g>
+
+  </g>
+</svg>
