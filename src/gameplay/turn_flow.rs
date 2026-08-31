@@ -47,10 +47,33 @@ pub struct TurnState {
     pub pending_roll_display: Option<PendingRollDisplay>,
     pub pending_double_dice_choice: Option<PendingDoubleDiceChoice>,
     pub last_piece_effect: Option<PieceEffectNotice>,
+    pub last_event_notice: Option<EventNotice>,
     pub last_action: Option<String>,
     pub last_action_player_id: Option<u8>,
     pub last_action_turn_index: u32,
     pub last_action_serial: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// 最近一次随机事件的结构化表现数据，供 HUD、日志和动效使用。
+pub struct EventNotice {
+    pub actor_player_id: u8,
+    pub target_player_id: Option<u8>,
+    pub target_piece_id: Option<u8>,
+    pub kind: TileEventKind,
+    pub detail: EventNoticeDetail,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventNoticeDetail {
+    GainShield { current_shield: u8 },
+    GainSkillCharge { skill: &'static str },
+    AdvanceTwo,
+    DisableNextSkill,
+    RemoveEnemyShield { remaining_shield: u8 },
+    FizzledNoSkillTarget,
+    FizzledNoEnemyShield,
+    FailedTargetDisappeared,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +112,7 @@ impl TurnState {
             pending_roll_display: None,
             pending_double_dice_choice: None,
             last_piece_effect: None,
+            last_event_notice: None,
             last_action: None,
             last_action_player_id: None,
             last_action_turn_index: 0,
@@ -114,6 +138,7 @@ impl TurnState {
 
 /// 记录一次行动日志事件，并保留其发生时的回合号。
 pub fn record_turn_action(turn_state: &mut TurnState, action: impl Into<String>) {
+    turn_state.last_event_notice = None;
     turn_state.last_action = Some(action.into());
     turn_state.last_action_player_id = Some(turn_state.current_player);
     turn_state.last_action_turn_index = turn_state.turn_index;
@@ -239,6 +264,7 @@ struct MoveRouteEffects {
 struct TileEventOutcome {
     kind: TileEventKind,
     note: String,
+    notice: EventNotice,
     attacker_still_landed: bool,
 }
 
@@ -661,6 +687,7 @@ pub fn execute_action(
     );
     let mut notes = Vec::new();
     let mut piece_effect_notice = None;
+    let mut event_notice = None;
     let mut jump_source_event_tile_for_action = None;
     let route_effects = move_route_effects_for_action(
         &action,
@@ -732,6 +759,7 @@ pub fn execute_action(
             state.skill_roster,
             &mut notes,
             &mut piece_effect_notice,
+            &mut event_notice,
         );
         if attacker_still_landed {
             apply_team_stack(
@@ -774,6 +802,7 @@ pub fn execute_action(
         describe_action(&action, roll_value, &notes),
     );
     state.turn_state.last_piece_effect = piece_effect_notice;
+    state.turn_state.last_event_notice = event_notice;
     clear_pending_input(state.input_state);
 
     if state.match_result.finished {
@@ -1594,6 +1623,7 @@ fn apply_post_collision_tile_effects(
     skill_roster: &mut SkillRoster,
     notes: &mut Vec<String>,
     piece_effect_notice: &mut Option<PieceEffectNotice>,
+    event_notice: &mut Option<EventNotice>,
 ) -> bool {
     if resources.board_layout.route_len() == 0 {
         return true;
@@ -1633,6 +1663,7 @@ fn apply_post_collision_tile_effects(
             ) else {
                 return true;
             };
+            *event_notice = Some(event_outcome.notice);
             notes.push(event_outcome.note);
             event_outcome.attacker_still_landed
         }
@@ -1652,6 +1683,7 @@ fn apply_post_collision_tile_effects(
             skill_roster,
             notes,
         ) {
+            *event_notice = Some(event_outcome.notice);
             notes.push(format!(
                 "pre-jump event tile {source_tile_index}: {}",
                 event_outcome.note
@@ -2189,22 +2221,39 @@ fn apply_event_kind_effect(
         return None;
     }
 
+    let actor_player_id = owner_player_id_for_action(action, piece_query)?;
+
     match event_kind {
         TileEventKind::GainShield => {
             let shield = modify_piece_shield(action, piece_query, 1)?;
             Some(TileEventOutcome {
                 kind: event_kind,
                 note: format!("event {event_kind:?}: gained shield ({shield})"),
+                notice: EventNotice {
+                    actor_player_id,
+                    target_player_id: Some(actor_player_id),
+                    target_piece_id: Some(action.piece_id()),
+                    kind: event_kind,
+                    detail: EventNoticeDetail::GainShield {
+                        current_shield: shield,
+                    },
+                },
                 attacker_still_landed: true,
             })
         }
         TileEventKind::GainSkillCharge => {
-            let owner_player_id = owner_player_id_for_action(action, piece_query)?;
-            let charged = grant_random_skill_charge(skill_roster, owner_player_id, true)
+            let charged = grant_random_skill_charge(skill_roster, actor_player_id, true)
                 .unwrap_or("UnknownSkill");
             Some(TileEventOutcome {
                 kind: event_kind,
                 note: format!("event {event_kind:?}: gained 1 {charged} charge"),
+                notice: EventNotice {
+                    actor_player_id,
+                    target_player_id: Some(actor_player_id),
+                    target_piece_id: None,
+                    kind: event_kind,
+                    detail: EventNoticeDetail::GainSkillCharge { skill: charged },
+                },
                 attacker_still_landed: true,
             })
         }
@@ -2235,23 +2284,43 @@ fn apply_event_kind_effect(
             Some(TileEventOutcome {
                 kind: event_kind,
                 note: "event advance +2".to_string(),
+                notice: EventNotice {
+                    actor_player_id,
+                    target_player_id: Some(actor_player_id),
+                    target_piece_id: Some(action.piece_id()),
+                    kind: event_kind,
+                    detail: EventNoticeDetail::AdvanceTwo,
+                },
                 attacker_still_landed,
             })
         }
         TileEventKind::DisableNextSkill => {
-            let owner_player_id = owner_player_id_for_action(action, piece_query)?;
-            if disable_next_skill_turn(skill_roster, owner_player_id) {
+            if disable_next_skill_turn(skill_roster, actor_player_id) {
                 Some(TileEventOutcome {
                     kind: event_kind,
                     note: format!(
-                        "event {event_kind:?}: next skill turn disabled for P{owner_player_id}"
+                        "event {event_kind:?}: next skill turn disabled for P{actor_player_id}"
                     ),
+                    notice: EventNotice {
+                        actor_player_id,
+                        target_player_id: Some(actor_player_id),
+                        target_piece_id: None,
+                        kind: event_kind,
+                        detail: EventNoticeDetail::DisableNextSkill,
+                    },
                     attacker_still_landed: true,
                 })
             } else {
                 Some(TileEventOutcome {
                     kind: event_kind,
                     note: "event fizzled: could not disable next skill turn".to_string(),
+                    notice: EventNotice {
+                        actor_player_id,
+                        target_player_id: Some(actor_player_id),
+                        target_piece_id: None,
+                        kind: event_kind,
+                        detail: EventNoticeDetail::FizzledNoSkillTarget,
+                    },
                     attacker_still_landed: true,
                 })
             }
@@ -2280,6 +2349,13 @@ fn apply_event_kind_effect(
                 return Some(TileEventOutcome {
                     kind: event_kind,
                     note: "event fizzled: no enemy shield to remove".to_string(),
+                    notice: EventNotice {
+                        actor_player_id,
+                        target_player_id: None,
+                        target_piece_id: None,
+                        kind: event_kind,
+                        detail: EventNoticeDetail::FizzledNoEnemyShield,
+                    },
                     attacker_still_landed: true,
                 });
             }
@@ -2290,18 +2366,34 @@ fn apply_event_kind_effect(
                     continue;
                 }
                 piece_state.shield -= 1;
+                let target_player_id = piece_state.owner_player_id;
+                let remaining_shield = piece_state.shield;
                 return Some(TileEventOutcome {
                     kind: event_kind,
                     note: format!(
                         "event {event_kind:?}: removed shield from piece #{}",
                         piece_id.0
                     ),
+                    notice: EventNotice {
+                        actor_player_id,
+                        target_player_id: Some(target_player_id),
+                        target_piece_id: Some(piece_id.0),
+                        kind: event_kind,
+                        detail: EventNoticeDetail::RemoveEnemyShield { remaining_shield },
+                    },
                     attacker_still_landed: true,
                 });
             }
             Some(TileEventOutcome {
                 kind: event_kind,
                 note: "event failed: selected enemy shield target disappeared".to_string(),
+                notice: EventNotice {
+                    actor_player_id,
+                    target_player_id: None,
+                    target_piece_id: Some(target_piece_id),
+                    kind: event_kind,
+                    detail: EventNoticeDetail::FailedTargetDisappeared,
+                },
                 attacker_still_landed: true,
             })
         }
@@ -2562,6 +2654,7 @@ mod tests {
                 faces: [2, 6],
             }),
             last_piece_effect: None,
+            last_event_notice: None,
             last_action: None,
             last_action_player_id: None,
             last_action_turn_index: 0,
@@ -3224,6 +3317,7 @@ mod tests {
             pending_roll_display: None,
             pending_double_dice_choice: None,
             last_piece_effect: None,
+            last_event_notice: None,
             last_action: None,
             last_action_player_id: None,
             last_action_turn_index: 0,
@@ -5141,6 +5235,7 @@ mod tests {
         let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
         let mut piece_effect_notice = None;
+        let mut event_notice = None;
 
         let attacker_still_landed = apply_post_collision_tile_effects(
             &PlannedAction::Move {
@@ -5157,6 +5252,7 @@ mod tests {
             &mut skill_roster,
             &mut notes,
             &mut piece_effect_notice,
+            &mut event_notice,
         );
 
         assert!(attacker_still_landed);
@@ -5218,6 +5314,7 @@ mod tests {
         let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
         let mut piece_effect_notice = None;
+        let mut event_notice = None;
         assert!(apply_post_collision_tile_effects(
             &PlannedAction::Move {
                 piece_id: 1,
@@ -5233,6 +5330,7 @@ mod tests {
             &mut skill_roster,
             &mut notes,
             &mut piece_effect_notice,
+            &mut event_notice,
         ));
         let shield = query
             .iter_mut()
@@ -5413,6 +5511,7 @@ mod tests {
         let mut query = system_state.get_mut(&mut world).unwrap();
         let mut notes = Vec::new();
         let mut piece_effect_notice = None;
+        let mut event_notice = None;
 
         let attacker_still_landed = apply_post_collision_tile_effects(
             &PlannedAction::Move {
@@ -5429,6 +5528,7 @@ mod tests {
             &mut skill_roster,
             &mut notes,
             &mut piece_effect_notice,
+            &mut event_notice,
         );
 
         assert!(attacker_still_landed);
@@ -5557,6 +5657,13 @@ mod tests {
             Some(TileEventOutcome {
                 kind: TileEventKind::AdvanceTwo,
                 note: "event advance +2".to_string(),
+                notice: EventNotice {
+                    actor_player_id: 1,
+                    target_player_id: Some(1),
+                    target_piece_id: Some(1),
+                    kind: TileEventKind::AdvanceTwo,
+                    detail: EventNoticeDetail::AdvanceTwo,
+                },
                 attacker_still_landed: true,
             })
         );
@@ -5644,6 +5751,13 @@ mod tests {
             Some(TileEventOutcome {
                 kind: TileEventKind::AdvanceTwo,
                 note: "event advance +2".to_string(),
+                notice: EventNotice {
+                    actor_player_id: 1,
+                    target_player_id: Some(1),
+                    target_piece_id: Some(1),
+                    kind: TileEventKind::AdvanceTwo,
+                    detail: EventNoticeDetail::AdvanceTwo,
+                },
                 attacker_still_landed: true,
             })
         );
@@ -5758,6 +5872,13 @@ mod tests {
             Some(TileEventOutcome {
                 kind: TileEventKind::AdvanceTwo,
                 note: "event advance +2".to_string(),
+                notice: EventNotice {
+                    actor_player_id: 1,
+                    target_player_id: Some(1),
+                    target_piece_id: Some(1),
+                    kind: TileEventKind::AdvanceTwo,
+                    detail: EventNoticeDetail::AdvanceTwo,
+                },
                 attacker_still_landed: false,
             })
         );

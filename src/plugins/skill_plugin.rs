@@ -72,6 +72,7 @@ impl SkillUiRequest {
 pub struct SkillTargetState {
     candidate_piece_ids: Vec<u8>,
     pub prompt: Option<String>,
+    action: Option<SkillUiAction>,
     active: bool,
 }
 
@@ -84,6 +85,11 @@ impl SkillTargetState {
     /// 是否处于“等待技能目标选择”状态。
     pub fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// 当前等待确认目标的技能类型。
+    pub fn action(&self) -> Option<SkillUiAction> {
+        self.action
     }
 }
 
@@ -117,7 +123,7 @@ struct HumanSkillInputParams<'w, 's> {
 }
 
 #[derive(SystemParam)]
-struct SnipeTargetParams<'w, 's> {
+struct SkillTargetParams<'w, 's> {
     match_config: Res<'w, MatchConfig>,
     game_phase: Res<'w, State<GamePhase>>,
     turn_state: Res<'w, TurnState>,
@@ -139,8 +145,8 @@ impl Plugin for SkillPlugin {
                 (
                     sync_skill_turn_state,
                     handle_human_skill_input,
-                    handle_human_snipe_key_select,
-                    handle_human_snipe_click,
+                    handle_human_skill_target_key_select,
+                    handle_human_skill_target_click,
                     update_skill_smoke_state,
                 )
                     .run_if(in_state(AppState::InGame)),
@@ -279,10 +285,11 @@ fn handle_human_skill_input(
 
     match action {
         SkillUiAction::Shield if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
-            let Some(target_piece_id) = preferred_shield_target_for_full_query(
+            let targets = collect_shield_targets_for_full_query(
                 params.turn_state.current_player,
                 &params.piece_query,
-            ) else {
+            );
+            if targets.is_empty() {
                 record_skill_action(
                     &mut params.skill_roster,
                     params.turn_state.turn_index,
@@ -293,38 +300,26 @@ fn handle_human_skill_input(
                     ),
                 );
                 return;
-            };
+            }
 
-            if !spend_shield_charge(&mut params.skill_roster, params.turn_state.current_player) {
-                record_skill_action(
-                    &mut params.skill_roster,
-                    params.turn_state.turn_index,
+            if targets.len() == 1 {
+                resolve_shield_target(
+                    targets[0],
                     params.turn_state.current_player,
-                    format!(
-                        "P{} has no Shield charges left",
-                        params.turn_state.current_player
-                    ),
+                    params.turn_state.turn_index,
+                    &mut params.skill_roster,
+                    &mut params.effect_queue,
+                    &mut params.piece_query,
                 );
                 return;
             }
 
-            if let Some(target_world) = piece_world_position(target_piece_id, &params.piece_query) {
-                params.effect_queue.shield_flash(target_world);
-            }
-            if let Some(shield_value) =
-                apply_shield_to_piece_for_full_query(target_piece_id, &mut params.piece_query)
-            {
-                mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
-                record_skill_action(
-                    &mut params.skill_roster,
-                    params.turn_state.turn_index,
-                    params.turn_state.current_player,
-                    format!(
-                        "P{} used Shield on piece #{} ({})",
-                        params.turn_state.current_player, target_piece_id, shield_value
-                    ),
-                );
-            }
+            params.target_state.candidate_piece_ids = targets;
+            params.target_state.action = Some(SkillUiAction::Shield);
+            params.target_state.prompt =
+                Some(shield_target_prompt(params.language_settings.language));
+            params.target_state.active = true;
+            params.next_phase.set(GamePhase::ResolveSkillEffect);
         }
         SkillUiAction::Snipe if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
             let Some(current_team_id) = params
@@ -396,6 +391,7 @@ fn handle_human_skill_input(
 
             mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
             params.target_state.candidate_piece_ids = targets;
+            params.target_state.action = Some(SkillUiAction::Snipe);
             params.target_state.prompt =
                 Some(snipe_target_prompt(params.language_settings.language));
             params.target_state.active = true;
@@ -566,11 +562,26 @@ fn snipe_target_prompt(language: Language) -> String {
     }
 }
 
-/// Snipe 目标选择的键盘分支（数字键 + Esc 取消）。
-fn handle_human_snipe_key_select(
+fn shield_target_prompt(language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => "点击高亮飞机加盾，或取消。".to_string(),
+        Language::English => "Tap a highlighted aircraft to shield it, or cancel.".to_string(),
+    }
+}
+
+fn skill_target_cancelled_message(action: SkillUiAction) -> &'static str {
+    match action {
+        SkillUiAction::Shield => "Shield selection cancelled",
+        SkillUiAction::Snipe => "Snipe selection cancelled",
+        _ => "Skill target selection cancelled",
+    }
+}
+
+/// 技能目标选择的键盘分支（数字键 + Esc 取消）。
+fn handle_human_skill_target_key_select(
     keyboard: Res<ButtonInput<KeyCode>>,
     overlay_state: Res<SoundSettingsOverlayState>,
-    mut params: SnipeTargetParams,
+    mut params: SkillTargetParams,
 ) {
     if !params.match_config.rule_set.skills_enabled() {
         let _ = params.skill_ui_request.take_cancel_target();
@@ -585,12 +596,16 @@ fn handle_human_snipe_key_select(
         return;
     }
 
+    let Some(target_action) = params.target_state.action() else {
+        return;
+    };
+
     if keyboard.just_pressed(KeyCode::Escape) || params.skill_ui_request.take_cancel_target() {
         record_skill_action(
             &mut params.skill_roster,
             params.turn_state.turn_index,
             params.turn_state.current_player,
-            "Snipe selection cancelled",
+            skill_target_cancelled_message(target_action),
         );
         clear_target_state(&mut params.target_state);
         params.next_phase.set(GamePhase::AwaitDice);
@@ -611,34 +626,33 @@ fn handle_human_snipe_key_select(
     };
 
     let target_piece_id = params.target_state.candidate_piece_ids[selection];
-    if let Some(target_world) = piece_world_position(target_piece_id, &params.piece_query) {
-        params
-            .effect_queue
-            .hud_skill_missile(SkillUiAction::Snipe, target_world);
+    match target_action {
+        SkillUiAction::Shield => resolve_shield_target(
+            target_piece_id,
+            params.turn_state.current_player,
+            params.turn_state.turn_index,
+            &mut params.skill_roster,
+            &mut params.effect_queue,
+            &mut params.piece_query,
+        ),
+        SkillUiAction::Snipe => resolve_snipe_target(
+            target_piece_id,
+            params.turn_state.current_player,
+            params.turn_state.turn_index,
+            &mut params.skill_roster,
+            &mut params.effect_queue,
+            &mut params.reveal_delays,
+            &mut params.motion_effects,
+            &mut params.piece_query,
+        ),
+        _ => return,
     }
-    if piece_personal_shield(target_piece_id, &params.piece_query).unwrap_or_default() > 0 {
-        params
-            .reveal_delays
-            .delay_shield_loss(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
-    }
-    if snipe_will_send_to_hangar(target_piece_id, &params.piece_query) {
-        params
-            .motion_effects
-            .delay_piece_motion(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
-    }
-    let message = execute_snipe(target_piece_id, &mut params.piece_query);
-    record_skill_action(
-        &mut params.skill_roster,
-        params.turn_state.turn_index,
-        params.turn_state.current_player,
-        message,
-    );
     clear_target_state(&mut params.target_state);
     params.next_phase.set(GamePhase::AwaitDice);
 }
 
-/// Snipe 目标选择的鼠标分支（点击高亮目标棋子）。
-fn handle_human_snipe_click(
+/// 技能目标选择的鼠标分支（点击高亮目标棋子）。
+fn handle_human_skill_target_click(
     pointer: Res<PointerInputState>,
     device_profile: Res<DeviceProfile>,
     windows: Query<&Window>,
@@ -646,12 +660,16 @@ fn handle_human_snipe_click(
     overlay_state: Res<SoundSettingsOverlayState>,
     player_roster: Res<PlayerRoster>,
     hud_state: Res<PlayerHudState>,
-    mut params: SnipeTargetParams,
+    mut params: SkillTargetParams,
 ) {
     if !params.match_config.rule_set.skills_enabled() {
         clear_target_state(&mut params.target_state);
         return;
     }
+
+    let Some(target_action) = params.target_state.action() else {
+        return;
+    };
 
     if !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
         || !params.target_state.is_active()
@@ -709,28 +727,27 @@ fn handle_human_snipe_click(
     let Some(target_piece_id) = selected_piece_id else {
         return;
     };
-    if let Some(target_world) = piece_world_position(target_piece_id, &params.piece_query) {
-        params
-            .effect_queue
-            .hud_skill_missile(SkillUiAction::Snipe, target_world);
+    match target_action {
+        SkillUiAction::Shield => resolve_shield_target(
+            target_piece_id,
+            params.turn_state.current_player,
+            params.turn_state.turn_index,
+            &mut params.skill_roster,
+            &mut params.effect_queue,
+            &mut params.piece_query,
+        ),
+        SkillUiAction::Snipe => resolve_snipe_target(
+            target_piece_id,
+            params.turn_state.current_player,
+            params.turn_state.turn_index,
+            &mut params.skill_roster,
+            &mut params.effect_queue,
+            &mut params.reveal_delays,
+            &mut params.motion_effects,
+            &mut params.piece_query,
+        ),
+        _ => return,
     }
-    if piece_personal_shield(target_piece_id, &params.piece_query).unwrap_or_default() > 0 {
-        params
-            .reveal_delays
-            .delay_shield_loss(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
-    }
-    if snipe_will_send_to_hangar(target_piece_id, &params.piece_query) {
-        params
-            .motion_effects
-            .delay_piece_motion(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
-    }
-    let message = execute_snipe(target_piece_id, &mut params.piece_query);
-    record_skill_action(
-        &mut params.skill_roster,
-        params.turn_state.turn_index,
-        params.turn_state.current_player,
-        message,
-    );
     clear_target_state(&mut params.target_state);
     params.next_phase.set(GamePhase::AwaitDice);
 }
@@ -739,19 +756,121 @@ fn handle_human_snipe_click(
 fn clear_target_state(target_state: &mut SkillTargetState) {
     target_state.candidate_piece_ids.clear();
     target_state.prompt = None;
+    target_state.action = None;
     target_state.active = false;
 }
 
-/// 选择 Shield 目标：仅允许己方 Active 且未满盾棋子。
-fn preferred_shield_target_for_full_query(
+/// 收集 Shield 目标：仅允许己方 Active 且未满个人护盾的棋子。
+fn collect_shield_targets_for_full_query(
     player_id: u8,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-) -> Option<u8> {
-    piece_query
+) -> Vec<u8> {
+    let mut targets = piece_query
         .iter()
         .filter(|(_, _, piece_state, _)| is_legal_shield_target(player_id, piece_state))
         .map(|(piece_id, _, _, _)| piece_id.0)
-        .min()
+        .collect::<Vec<_>>();
+    targets.sort_unstable();
+    targets
+}
+
+enum ShieldTargetResult {
+    Applied(u8),
+    NoCharge,
+    NoLongerLegal,
+}
+
+fn apply_shield_target(
+    player_id: u8,
+    target_piece_id: u8,
+    skill_roster: &mut SkillRoster,
+    effect_queue: &mut VisualEffectQueue,
+    piece_query: &mut SkillPieceQuery<'_, '_>,
+) -> ShieldTargetResult {
+    let target_is_legal = piece_query.iter().any(|(piece_id, _, piece_state, _)| {
+        piece_id.0 == target_piece_id && is_legal_shield_target(player_id, piece_state)
+    });
+    if !target_is_legal {
+        return ShieldTargetResult::NoLongerLegal;
+    }
+
+    if !spend_shield_charge(skill_roster, player_id) {
+        return ShieldTargetResult::NoCharge;
+    }
+
+    let target_world = piece_world_position(target_piece_id, piece_query);
+    let Some(shield_value) = apply_shield_to_piece_for_full_query(target_piece_id, piece_query)
+    else {
+        return ShieldTargetResult::NoLongerLegal;
+    };
+
+    if let Some(target_world) = target_world {
+        effect_queue.shield_flash(target_world);
+    }
+    mark_skill_used(skill_roster, player_id);
+    ShieldTargetResult::Applied(shield_value)
+}
+
+fn resolve_shield_target(
+    target_piece_id: u8,
+    player_id: u8,
+    turn_index: u32,
+    skill_roster: &mut SkillRoster,
+    effect_queue: &mut VisualEffectQueue,
+    piece_query: &mut SkillPieceQuery<'_, '_>,
+) {
+    match apply_shield_target(
+        player_id,
+        target_piece_id,
+        skill_roster,
+        effect_queue,
+        piece_query,
+    ) {
+        ShieldTargetResult::Applied(shield_value) => record_skill_action(
+            skill_roster,
+            turn_index,
+            player_id,
+            format!(
+                "P{} used Shield on piece #{} ({})",
+                player_id, target_piece_id, shield_value
+            ),
+        ),
+        ShieldTargetResult::NoCharge => record_skill_action(
+            skill_roster,
+            turn_index,
+            player_id,
+            format!("P{} has no Shield charges left", player_id),
+        ),
+        ShieldTargetResult::NoLongerLegal => record_skill_action(
+            skill_roster,
+            turn_index,
+            player_id,
+            format!("P{} Shield target is no longer available", player_id),
+        ),
+    }
+}
+
+fn resolve_snipe_target(
+    target_piece_id: u8,
+    player_id: u8,
+    turn_index: u32,
+    skill_roster: &mut SkillRoster,
+    effect_queue: &mut VisualEffectQueue,
+    reveal_delays: &mut EffectRevealDelays,
+    motion_effects: &mut PieceMotionEffects,
+    piece_query: &mut SkillPieceQuery<'_, '_>,
+) {
+    if let Some(target_world) = piece_world_position(target_piece_id, piece_query) {
+        effect_queue.hud_skill_missile(SkillUiAction::Snipe, target_world);
+    }
+    if piece_personal_shield(target_piece_id, piece_query).unwrap_or_default() > 0 {
+        reveal_delays.delay_shield_loss(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
+    }
+    if snipe_will_send_to_hangar(target_piece_id, piece_query) {
+        motion_effects.delay_piece_motion(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
+    }
+    let message = execute_snipe(target_piece_id, piece_query);
+    record_skill_action(skill_roster, turn_index, player_id, message);
 }
 
 fn piece_world_position(
@@ -962,6 +1081,7 @@ fn execute_swap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gameplay::skill_flow::PlayerSkillState;
     use crate::gameplay::turn_flow::HOME_ENTRY_PROGRESS;
     use bevy::ecs::system::SystemState;
 
@@ -975,6 +1095,98 @@ mod tests {
 
         assert!(request.take_cancel_target());
         assert!(!request.take_cancel_target());
+    }
+
+    #[test]
+    fn shield_target_collection_returns_all_legal_targets_in_piece_order() {
+        let mut world = World::new();
+        for (piece_id, owner_player_id, status, shield) in [
+            (7, 1, crate::domain::piece::PieceStatus::Active, 0),
+            (2, 1, crate::domain::piece::PieceStatus::Active, 1),
+            (
+                4,
+                1,
+                crate::domain::piece::PieceStatus::Active,
+                MAX_PIECE_SHIELD,
+            ),
+            (1, 1, crate::domain::piece::PieceStatus::InHangar, 0),
+            (3, 2, crate::domain::piece::PieceStatus::Active, 0),
+        ] {
+            world.spawn((
+                PieceId(piece_id),
+                HangarSlot(Vec2::ZERO),
+                PieceState {
+                    owner_player_id,
+                    team_id: owner_player_id,
+                    status,
+                    progress: 5,
+                    shield,
+                    stack_shield: 0,
+                    motion_serial: 0,
+                },
+                Transform::default(),
+            ));
+        }
+
+        let mut system_state: SystemState<SkillPieceQuery<'_, '_>> = SystemState::new(&mut world);
+        let query = system_state.get_mut(&mut world).unwrap();
+
+        assert_eq!(collect_shield_targets_for_full_query(1, &query), vec![2, 7]);
+    }
+
+    #[test]
+    fn shield_target_applies_only_after_selected_target_is_confirmed() {
+        let mut world = World::new();
+        for piece_id in [1, 2] {
+            world.spawn((
+                PieceId(piece_id),
+                HangarSlot(Vec2::ZERO),
+                PieceState {
+                    owner_player_id: 1,
+                    team_id: 1,
+                    status: crate::domain::piece::PieceStatus::Active,
+                    progress: piece_id,
+                    shield: 0,
+                    stack_shield: 0,
+                    motion_serial: 0,
+                },
+                Transform::from_xyz(piece_id as f32, 0.0, 0.0),
+            ));
+        }
+
+        let mut skill_roster = SkillRoster {
+            players: vec![PlayerSkillState {
+                player_id: 1,
+                dash_charges: 0,
+                dash_armed: false,
+                snipe_charges: 0,
+                swap_charges: 0,
+                shield_charges: 1,
+                double_dice_charges: 0,
+                double_dice_armed: false,
+                skip_next_skill_turn: false,
+                skill_blocked_this_turn: false,
+            }],
+            active_turn_player: Some(1),
+            ..default()
+        };
+        let mut effect_queue = VisualEffectQueue::default();
+        let mut system_state: SystemState<SkillPieceQuery<'_, '_>> = SystemState::new(&mut world);
+        let mut query = system_state.get_mut(&mut world).unwrap();
+
+        assert!(matches!(
+            apply_shield_target(1, 2, &mut skill_roster, &mut effect_queue, &mut query,),
+            ShieldTargetResult::Applied(1)
+        ));
+        assert_eq!(skill_roster.players[0].shield_charges, 0);
+        assert!(skill_roster.skill_used_this_turn);
+
+        let states = query
+            .iter_mut()
+            .map(|(piece_id, _, piece_state, _)| (piece_id.0, piece_state.shield))
+            .collect::<Vec<_>>();
+        assert_eq!(states, vec![(1, 0), (2, 1)]);
+        assert_eq!(effect_queue.pending_count(), 1);
     }
 
     #[test]

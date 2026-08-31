@@ -55,6 +55,15 @@ pub struct HangarSlot(pub Vec2);
 /// 棋子基础颜色缓存（高亮结束后恢复原色用）。
 struct PieceBaseColor(pub Color);
 
+#[derive(Component, Clone, Copy, Debug, Eq, PartialEq)]
+/// 棋子朝向对应的逻辑位置快照；护盾变化不应触发重新转向。
+struct PieceFacingState {
+    owner_player_id: u8,
+    status: PieceStatus,
+    progress: u8,
+    initialized: bool,
+}
+
 #[derive(Component)]
 /// 棋子可见图形根节点：叠放错位只作用在这里，不污染逻辑 Transform。
 struct PieceVisual {
@@ -409,6 +418,12 @@ fn spawn_pieces(
                         shield: 0,
                         stack_shield: 0,
                         motion_serial: 0,
+                    },
+                    PieceFacingState {
+                        owner_player_id: player.state.player_id,
+                        status: PieceStatus::InHangar,
+                        progress: 0,
+                        initialized: false,
                     },
                     Name::new(format!(
                         "Piece_P{}_{}",
@@ -1698,6 +1713,7 @@ fn update_piece_highlight(
             &PieceBaseColor,
             &mut Sprite,
             &mut Transform,
+            &mut PieceFacingState,
         ),
         With<PieceEntity>,
     >,
@@ -1726,15 +1742,25 @@ fn update_piece_highlight(
     let skill_candidates = skill_target_state.candidate_piece_ids();
     let mut visual_states = Vec::new();
 
-    for (piece_id, piece_state, _base_color, mut sprite, mut transform) in &mut query {
+    for (piece_id, piece_state, _base_color, mut sprite, mut transform, mut facing_state) in
+        &mut query
+    {
         sprite.color = Color::srgba(1.0, 1.0, 1.0, 0.0);
-        if let Some(rotation) = facing_rotation_for_piece(
-            *piece_state,
-            transform.translation,
-            &board_layout,
-            &player_roster,
-        ) {
-            transform.rotation = rotation;
+        if piece_facing_needs_update(*facing_state, *piece_state) {
+            if let Some(rotation) = facing_rotation_for_piece(
+                *piece_state,
+                transform.translation,
+                &board_layout,
+                &player_roster,
+            ) {
+                transform.rotation = rotation;
+            }
+            *facing_state = PieceFacingState {
+                owner_player_id: piece_state.owner_player_id,
+                status: piece_state.status,
+                progress: piece_state.progress,
+                initialized: true,
+            };
         }
 
         let visual_state = piece_interaction_visual_state(
@@ -1788,6 +1814,13 @@ fn update_piece_highlight(
             PieceInteractionVisualState::Disabled,
         );
     }
+}
+
+fn piece_facing_needs_update(facing_state: PieceFacingState, piece_state: PieceState) -> bool {
+    !facing_state.initialized
+        || facing_state.owner_player_id != piece_state.owner_player_id
+        || facing_state.status != piece_state.status
+        || facing_state.progress != piece_state.progress
 }
 
 fn piece_interaction_visual_state(
@@ -1908,6 +1941,23 @@ mod tests {
             next_facing_target(piece_state, &board_layout, &player_roster),
             world_position_for_piece(1, 1, PieceStatus::Active, &board_layout, &player_roster)
         );
+    }
+
+    #[test]
+    fn shield_change_does_not_trigger_piece_facing_update() {
+        let facing_state = PieceFacingState {
+            owner_player_id: 1,
+            status: PieceStatus::Active,
+            progress: 7,
+            initialized: true,
+        };
+        let mut piece_state = piece_state(1, PieceStatus::Active, 7);
+        piece_state.shield = 1;
+
+        assert!(!piece_facing_needs_update(facing_state, piece_state));
+
+        piece_state.progress = 8;
+        assert!(piece_facing_needs_update(facing_state, piece_state));
     }
 
     #[test]

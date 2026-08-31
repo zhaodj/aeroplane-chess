@@ -15,7 +15,9 @@ use crate::gameplay::skill_flow::{
     finish_bounce_count, is_current_player_dash_move_piece, is_current_player_swap_piece,
     is_legal_shield_target, is_legal_snipe_target, is_legal_swap_target, player_skill_state,
 };
-use crate::gameplay::turn_flow::{TurnState, player_has_finished_all_pieces};
+use crate::gameplay::turn_flow::{
+    EventNotice, EventNoticeDetail, TurnState, player_has_finished_all_pieces,
+};
 use crate::i18n::{
     Language, LanguageSettings, LocalizedText, TextKey, skill_name as i18n_skill_name,
     skill_tip_body as i18n_skill_tip_body, skill_token as i18n_skill_token, text as i18n_text,
@@ -156,6 +158,12 @@ struct BoardRollButtonText;
 
 #[derive(Component)]
 struct EventNoticePanel;
+
+#[derive(Component)]
+struct EventNoticeActorBadge;
+
+#[derive(Component)]
+struct EventNoticeActorText;
 
 #[derive(Component)]
 struct EventNoticeText;
@@ -408,6 +416,10 @@ const SKILL_TIP_HOVER_HIDE_SECS: f32 = 0.36;
 const SKILL_TIP_PRESS_CANCEL_DISTANCE: f32 = 18.0;
 const BOARD_ROLL_BUTTON_W: f32 = 64.0;
 const BOARD_ROLL_BUTTON_H: f32 = 64.0;
+const EVENT_NOTICE_PANEL_PADDING: f32 = 8.0;
+const EVENT_NOTICE_ACTOR_W: f32 = 64.0;
+const EVENT_NOTICE_CONTENT_GAP: f32 = 8.0;
+const EVENT_NOTICE_ACTOR_TEXT_SIZE: f32 = 10.0;
 const EVENT_LOG_TOGGLE_W: f32 = 92.0;
 const EVENT_LOG_TOGGLE_H: f32 = 36.0;
 const EVENT_LOG_PANEL_W: f32 = 360.0;
@@ -823,9 +835,11 @@ fn spawn_hud(
                 height: Val::Px(SKILL_BUTTON_SIZE),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(8.0)),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(EVENT_NOTICE_CONTENT_GAP),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                padding: UiRect::horizontal(Val::Px(10.0)),
+                padding: UiRect::all(Val::Px(EVENT_NOTICE_PANEL_PADDING)),
                 ..default()
             },
             BackgroundColor(event_notice_panel_color(false)),
@@ -837,21 +851,64 @@ fn spawn_hud(
             HudEntity,
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Text::new(""),
-                TextFont {
-                    font_size: FontSize::Px(13.0),
-                    ..default()
-                },
-                TextColor(event_notice_text_color(false)),
-                TextLayout::justify(Justify::Center),
-                Node {
-                    width: Val::Percent(100.0),
-                    ..default()
-                },
-                Name::new("EventNoticeText"),
-                EventNoticeText,
-            ));
+            panel
+                .spawn((
+                    Node {
+                        width: Val::Px(EVENT_NOTICE_ACTOR_W),
+                        height: Val::Percent(100.0),
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(6.0)),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        padding: UiRect::horizontal(Val::Px(3.0)),
+                        ..default()
+                    },
+                    BackgroundColor(event_notice_actor_color(false, Color::WHITE)),
+                    BorderColor::all(event_notice_actor_border_color(false)),
+                    Name::new("EventNoticeActorBadge"),
+                    EventNoticeActorBadge,
+                ))
+                .with_children(|badge| {
+                    badge.spawn((
+                        Text::new(""),
+                        TextFont {
+                            font_size: FontSize::Px(EVENT_NOTICE_ACTOR_TEXT_SIZE),
+                            ..default()
+                        },
+                        TextColor(event_notice_actor_text_color(false)),
+                        TextLayout::justify(Justify::Center),
+                        Name::new("EventNoticeActorText"),
+                        EventNoticeActorText,
+                    ));
+                });
+            panel
+                .spawn((
+                    Node {
+                        flex_grow: 1.0,
+                        height: Val::Percent(100.0),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    Name::new("EventNoticeBody"),
+                ))
+                .with_children(|body| {
+                    body.spawn((
+                        Text::new(""),
+                        TextFont {
+                            font_size: FontSize::Px(12.5),
+                            ..default()
+                        },
+                        TextColor(event_notice_text_color(false)),
+                        TextLayout::justify(Justify::Left),
+                        Node {
+                            width: Val::Percent(100.0),
+                            ..default()
+                        },
+                        Name::new("EventNoticeText"),
+                        EventNoticeText,
+                    ));
+                });
         });
 
     commands
@@ -1538,18 +1595,62 @@ fn update_event_log_content(
 
 fn update_event_notice_content(
     turn_state: Res<TurnState>,
+    player_roster: Res<PlayerRoster>,
     language_settings: Res<LanguageSettings>,
     mut panel_query: Query<
         (&mut Visibility, &mut BackgroundColor, &mut BorderColor),
-        With<EventNoticePanel>,
+        (With<EventNoticePanel>, Without<EventNoticeActorBadge>),
     >,
-    mut text_query: Query<(&mut Text, &mut TextColor), With<EventNoticeText>>,
+    mut actor_badge_query: Query<
+        (&mut BackgroundColor, &mut BorderColor),
+        (With<EventNoticeActorBadge>, Without<EventNoticePanel>),
+    >,
+    mut actor_text_query: Query<
+        (&mut Text, &mut TextColor),
+        (With<EventNoticeActorText>, Without<EventNoticeText>),
+    >,
+    mut text_query: Query<
+        (&mut Text, &mut TextColor),
+        (With<EventNoticeText>, Without<EventNoticeActorText>),
+    >,
 ) {
-    let notice = turn_state
+    let language = language_settings.language;
+    let structured_notice = turn_state.last_event_notice;
+    let fallback_notice = turn_state
         .last_action
         .as_deref()
-        .and_then(|action| event_notice_text_from_action(action, language_settings.language));
+        .and_then(|action| finish_bounce_notice_from_action(action, language));
+    let has_fallback_notice = fallback_notice.is_some();
+    let notice = structured_notice
+        .map(|event| format_structured_event_notice(&event, language))
+        .or(fallback_notice);
     let active = notice.is_some();
+
+    let actor_player_id = structured_notice
+        .map(|event| event.actor_player_id)
+        .or_else(|| {
+            turn_state
+                .last_action_player_id
+                .filter(|_| has_fallback_notice)
+        });
+    let actor_color = actor_player_id
+        .and_then(|player_id| player_profile(&player_roster, player_id))
+        .map(|player| player.color)
+        .unwrap_or(Color::WHITE);
+
+    for (mut background, mut border) in &mut actor_badge_query {
+        *background = BackgroundColor(event_notice_actor_color(active, actor_color));
+        *border = BorderColor::all(event_notice_actor_border_color(active));
+    }
+
+    for (mut text, mut text_color) in &mut actor_text_query {
+        *text = Text::new(
+            actor_player_id
+                .map(|player_id| event_notice_actor_text(player_id, language))
+                .unwrap_or_default(),
+        );
+        *text_color = TextColor(event_notice_actor_text_color(active));
+    }
 
     for (mut visibility, mut background, mut border) in &mut panel_query {
         *visibility = if active {
@@ -2653,6 +2754,96 @@ fn roll_button_text(cancel_target_ready: bool, language: Language) -> String {
     String::new()
 }
 
+fn finish_bounce_notice_from_action(action: &str, language: Language) -> Option<String> {
+    action
+        .split(';')
+        .flat_map(|part| part.split(", "))
+        .map(str::trim)
+        .find_map(|segment| format_finish_bounce_notice(segment, language))
+}
+
+fn format_structured_event_notice(notice: &EventNotice, language: Language) -> String {
+    match notice.detail {
+        EventNoticeDetail::GainShield { current_shield } => match language {
+            Language::SimplifiedChinese => {
+                format!("事件：护盾 +1\n当前护盾：{current_shield}")
+            }
+            Language::English => format!("Event: Shield +1\nCurrent shield: {current_shield}"),
+        },
+        EventNoticeDetail::GainSkillCharge { skill } => match language {
+            Language::SimplifiedChinese => format!(
+                "事件：技能充能\n{} +1",
+                localized_skill_token(skill, Language::SimplifiedChinese)
+            ),
+            Language::English => format!(
+                "Event: Skill Charge\n{} +1",
+                localized_skill_token(skill, Language::English)
+            ),
+        },
+        EventNoticeDetail::AdvanceTwo => match language {
+            Language::SimplifiedChinese => "事件：前进 +2\n额外前进 2 格。".to_string(),
+            Language::English => "Event: Advance +2\nMove forward 2 extra tiles.".to_string(),
+        },
+        EventNoticeDetail::DisableNextSkill => {
+            let target_player_id = notice.target_player_id.unwrap_or(notice.actor_player_id);
+            match language {
+                Language::SimplifiedChinese => format!(
+                    "事件：技能干扰\n{} 下回合不能使用技能。",
+                    localized_player_id(target_player_id, Language::SimplifiedChinese)
+                ),
+                Language::English => format!(
+                    "Event: Skill Jam\n{} cannot use skills next turn.",
+                    localized_player_id(target_player_id, Language::English)
+                ),
+            }
+        }
+        EventNoticeDetail::RemoveEnemyShield { remaining_shield } => {
+            let target_player_id = notice.target_player_id.unwrap_or_default();
+            let target_piece_id = notice.target_piece_id.unwrap_or_default();
+            match language {
+                Language::SimplifiedChinese => format!(
+                    "事件：护盾破坏\n{} 的飞机 {} 护盾剩余 {} 层。",
+                    localized_player_id(target_player_id, Language::SimplifiedChinese),
+                    target_piece_id,
+                    remaining_shield
+                ),
+                Language::English => format!(
+                    "Event: Shield Break\n{}'s piece {} has {} shield left.",
+                    localized_player_id(target_player_id, Language::English),
+                    target_piece_id,
+                    remaining_shield
+                ),
+            }
+        }
+        EventNoticeDetail::FizzledNoSkillTarget => match language {
+            Language::SimplifiedChinese => "事件未生效\n没有可被干扰的技能回合。".to_string(),
+            Language::English => "Event Fizzled\nNo skill turn could be jammed.".to_string(),
+        },
+        EventNoticeDetail::FizzledNoEnemyShield => match language {
+            Language::SimplifiedChinese => "事件未生效\n没有敌方护盾可移除。".to_string(),
+            Language::English => "Event Fizzled\nNo enemy shield could be removed.".to_string(),
+        },
+        EventNoticeDetail::FailedTargetDisappeared => match language {
+            Language::SimplifiedChinese => "事件失败\n目标已经消失。".to_string(),
+            Language::English => "Event Failed\nThe target disappeared.".to_string(),
+        },
+    }
+}
+
+fn event_notice_actor_text(player_id: u8, language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => format!("玩家{player_id}\n触发"),
+        Language::English => format!("P{player_id}\nTRIGGER"),
+    }
+}
+
+fn localized_player_id(player_id: u8, language: Language) -> String {
+    match language {
+        Language::SimplifiedChinese => format!("玩家{player_id}"),
+        Language::English => format!("P{player_id}"),
+    }
+}
+
 fn event_notice_text_from_action(action: &str, language: Language) -> Option<String> {
     let mut notice = None;
     for segment in action.split(';').flat_map(|part| part.split(", ")) {
@@ -3495,6 +3686,30 @@ fn event_notice_text_color(active: bool) -> Color {
     }
 }
 
+fn event_notice_actor_color(active: bool, player_color: Color) -> Color {
+    if active {
+        player_color.mix(&Color::WHITE, 0.16).with_alpha(0.96)
+    } else {
+        Color::srgba(0.78, 0.84, 0.91, 0.0)
+    }
+}
+
+fn event_notice_actor_border_color(active: bool) -> Color {
+    if active {
+        Color::srgba(0.04, 0.09, 0.16, 0.54)
+    } else {
+        Color::srgba(0.04, 0.09, 0.16, 0.0)
+    }
+}
+
+fn event_notice_actor_text_color(active: bool) -> Color {
+    if active {
+        Color::srgb(0.07, 0.11, 0.17)
+    } else {
+        Color::srgba(0.07, 0.11, 0.17, 0.0)
+    }
+}
+
 fn cleanup_hud(mut commands: Commands, query: Query<Entity, (With<HudEntity>, Without<ChildOf>)>) {
     for entity in &query {
         commands.entity(entity).despawn();
@@ -3759,6 +3974,7 @@ fn cleanup_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::event::TileEventKind;
     use crate::domain::piece::PieceStatus;
     use crate::domain::rules::LaunchRule;
     use crate::gameplay::ai::AiDifficulty;
@@ -4425,6 +4641,74 @@ mod tests {
         assert!((notice.x + notice.w - (last.x + last.w)).abs() < f32::EPSILON);
         assert!((notice.x + notice.w * 0.5 - (board.x + board.w * 0.5)).abs() < f32::EPSILON);
         assert!((notice.y + notice.h + HUD_EDGE_MARGIN - board.y).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn event_notice_actor_chip_and_body_fit_inside_panel() {
+        let panel = event_notice_panel_rect(720.0, 1280.0, test_profile(720.0, 1280.0));
+        let actor_chip_width = EVENT_NOTICE_ACTOR_W;
+        let body_width = panel.w
+            - EVENT_NOTICE_PANEL_PADDING * 2.0
+            - actor_chip_width
+            - EVENT_NOTICE_CONTENT_GAP;
+
+        assert!(actor_chip_width >= 44.0);
+        assert!(body_width >= 180.0);
+        assert!(
+            EVENT_NOTICE_PANEL_PADDING * 2.0 + actor_chip_width + body_width
+                <= panel.w + f32::EPSILON
+        );
+        assert!(panel.y >= HUD_EDGE_MARGIN);
+        assert!(panel.y + panel.h <= 1280.0 - HUD_EDGE_MARGIN + f32::EPSILON);
+    }
+
+    #[test]
+    fn structured_event_notice_formats_actor_and_target_separately() {
+        let notice = EventNotice {
+            actor_player_id: 2,
+            target_player_id: Some(1),
+            target_piece_id: Some(3),
+            kind: TileEventKind::RemoveEnemyShield,
+            detail: EventNoticeDetail::RemoveEnemyShield {
+                remaining_shield: 0,
+            },
+        };
+
+        assert_eq!(
+            event_notice_actor_text(notice.actor_player_id, Language::SimplifiedChinese),
+            "玩家2\n触发"
+        );
+        assert_eq!(
+            format_structured_event_notice(&notice, Language::SimplifiedChinese),
+            "事件：护盾破坏\n玩家1 的飞机 3 护盾剩余 0 层。"
+        );
+        assert_eq!(
+            format_structured_event_notice(&notice, Language::English),
+            "Event: Shield Break\nP1's piece 3 has 0 shield left."
+        );
+    }
+
+    #[test]
+    fn event_notice_actor_color_follows_triggering_player_color() {
+        let blue = PlayerSeat::Blue.to_color();
+        let red = PlayerSeat::Red.to_color();
+
+        assert_ne!(
+            event_notice_actor_color(true, blue),
+            event_notice_actor_color(true, red)
+        );
+        assert_eq!(event_notice_actor_color(false, blue).alpha(), 0.0);
+    }
+
+    #[test]
+    fn event_notice_system_initializes_without_query_conflicts() {
+        let mut app = App::new();
+        app.init_resource::<TurnState>()
+            .insert_resource(test_roster())
+            .init_resource::<LanguageSettings>()
+            .add_systems(Update, update_event_notice_content);
+
+        app.update();
     }
 
     #[test]
