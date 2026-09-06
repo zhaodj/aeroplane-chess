@@ -1,4 +1,5 @@
 use bevy::app::AppExit;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
@@ -11,7 +12,7 @@ use crate::i18n::{
     Language, LanguageSettings, LocalizedText, TextKey, ai_difficulty_label as i18n_ai_label,
     launch_rule_label, mode_label, rule_set_label, text,
 };
-use crate::platform::PointerInputState;
+use crate::platform::{DeviceProfile, PointerInputState};
 use crate::plugins::audio_plugin::AudioSettings;
 use crate::plugins::performance_plugin::{
     PerformanceSettings, fps_toggle_label, fps_toggle_label_for_language,
@@ -31,9 +32,11 @@ impl Plugin for MenuPlugin {
                 Update,
                 (
                     update_global_sound_overlay,
+                    update_global_settings_scroll,
                     handle_global_sound_overlay_input,
                     handle_global_sound_overlay_click,
-                ),
+                )
+                    .chain(),
             )
             .add_systems(OnEnter(AppState::MainMenu), spawn_main_menu)
             .add_systems(OnEnter(AppState::ModeSelect), spawn_mode_select)
@@ -44,6 +47,7 @@ impl Plugin for MenuPlugin {
                     handle_main_menu_input.run_if(in_state(AppState::MainMenu)),
                     handle_main_menu_click.run_if(in_state(AppState::MainMenu)),
                     update_mode_select_option_visuals.run_if(in_state(AppState::ModeSelect)),
+                    update_compact_mode_scroll.run_if(in_state(AppState::ModeSelect)),
                     handle_mode_select_input.run_if(in_state(AppState::ModeSelect)),
                     handle_mode_select_click.run_if(in_state(AppState::ModeSelect)),
                     refresh_mode_select_layout.run_if(in_state(AppState::ModeSelect)),
@@ -91,6 +95,9 @@ struct GlobalSoundEntry;
 #[derive(Component)]
 /// 全局声音弹窗实体。
 struct GlobalSoundModal;
+
+#[derive(Component)]
+struct GlobalSettingsViewport;
 
 #[derive(Component)]
 /// 全局声音设置 UI 实体分组。
@@ -189,6 +196,12 @@ struct ModeSelectOption {
 }
 
 #[derive(Component)]
+struct CompactModeViewport;
+
+#[derive(Component)]
+struct CompactModeItem;
+
+#[derive(Component)]
 /// 配置项文字节点；颜色随选中态同步。
 struct ModeSelectOptionLabel;
 
@@ -237,22 +250,22 @@ const MAIN_BUTTON_GAP: f32 = 22.0;
 const GLOBAL_SOUND_ENTRY_LEFT: f32 = 16.0;
 const GLOBAL_SOUND_ENTRY_TOP: f32 = 16.0;
 const GLOBAL_SOUND_ENTRY_W: f32 = 128.0;
-const GLOBAL_SOUND_ENTRY_H: f32 = 38.0;
-const GLOBAL_SOUND_PANEL_W: f32 = 462.0;
+const GLOBAL_SOUND_ENTRY_H: f32 = 48.0;
+const GLOBAL_SOUND_PANEL_W: f32 = 320.0;
 const GLOBAL_SOUND_PANEL_H: f32 = 506.0;
-const GLOBAL_SOUND_ROW_LEFT: f32 = 34.0;
-const GLOBAL_SOUND_CONTROL_LEFT: f32 = 244.0;
+const GLOBAL_SOUND_ROW_LEFT: f32 = 16.0;
+const GLOBAL_SOUND_CONTROL_LEFT: f32 = 116.0;
 const GLOBAL_SOUND_ROW_TOP: f32 = 98.0;
 const GLOBAL_SOUND_ROW_GAP: f32 = 58.0;
 const GLOBAL_SOUND_MUTE_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 2.0;
 const GLOBAL_SOUND_FPS_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 3.0;
 const GLOBAL_SOUND_LANGUAGE_ROW_TOP: f32 = GLOBAL_SOUND_ROW_TOP + GLOBAL_SOUND_ROW_GAP * 4.0;
-const GLOBAL_SOUND_BUTTON: f32 = 42.0;
-const GLOBAL_SOUND_VALUE_W: f32 = 82.0;
-const GLOBAL_SOUND_TOGGLE_W: f32 = 176.0;
+const GLOBAL_SOUND_BUTTON: f32 = 48.0;
+const GLOBAL_SOUND_VALUE_W: f32 = 64.0;
+const GLOBAL_SOUND_TOGGLE_W: f32 = 180.0;
 const GLOBAL_SETTINGS_ACTION_TOP: f32 = 424.0;
-const GLOBAL_SETTINGS_ACTION_W: f32 = 160.0;
-const GLOBAL_SETTINGS_ACTION_H: f32 = 44.0;
+const GLOBAL_SETTINGS_ACTION_W: f32 = 128.0;
+const GLOBAL_SETTINGS_ACTION_H: f32 = 48.0;
 const GLOBAL_SETTINGS_ACTION_GAP: f32 = 18.0;
 
 const SOUND_PANEL_TOP: f32 = 170.0;
@@ -280,26 +293,26 @@ const SECTION_LABEL_X: f32 = 96.0;
 const OPTION_LEFT: f32 = 336.0;
 const OPTION_W: f32 = 112.0;
 const RULE_SET_OPTION_W: f32 = 168.0;
-const OPTION_H: f32 = 36.0;
+const OPTION_H: f32 = 48.0;
 const OPTION_GAP: f32 = 12.0;
 const OPTION_LABEL_SAFETY_PX: f32 = 8.0;
 const MODE_ROW_TOP: f32 = 72.0;
 const RULE_SET_ROW_TOP: f32 = MODE_ROW_TOP + SETTING_ROW_GAP;
 const PLAYER_ROW_START_TOP: f32 = RULE_SET_ROW_TOP + SETTING_ROW_GAP;
-const PLAYER_ROW_GAP: f32 = 48.0;
+const PLAYER_ROW_GAP: f32 = 60.0;
 const PLAYER_COLOR_LEFT: f32 = 250.0;
 const PLAYER_CONTROL_LEFT: f32 = 486.0;
 const PLAYER_CONTROL_W: f32 = 92.0;
 const PLAYER_CONTROL_GAP: f32 = 10.0;
 const PLAYER_SETTINGS_GAP: f32 = 26.0;
-const SETTING_ROW_GAP: f32 = 48.0;
-const COLOR_SWATCH_W: f32 = 46.0;
-const COLOR_SWATCH_H: f32 = 32.0;
+const SETTING_ROW_GAP: f32 = 60.0;
+const COLOR_SWATCH_W: f32 = 48.0;
+const COLOR_SWATCH_H: f32 = 48.0;
 const MODE_LAYOUT_BASE_LEFT: f32 = MENU_LEFT;
 const MODE_LAYOUT_BASE_TOP: f32 = MODE_ROW_TOP;
 const SETTING_ROW_BAND_LEFT: f32 = 72.0;
 const SETTING_ROW_BAND_W: f32 = 666.0;
-const SETTING_ROW_BAND_H: f32 = 40.0;
+const SETTING_ROW_BAND_H: f32 = 52.0;
 const MODE_LAYOUT_VISIBLE_LEFT: f32 = SETTING_ROW_BAND_LEFT;
 const MODE_LAYOUT_VISIBLE_W: f32 = SETTING_ROW_BAND_W;
 const BOTTOM_ACTION_W: f32 = 150.0;
@@ -375,14 +388,30 @@ fn spawn_global_sound_overlay(mut commands: Commands, language_settings: Res<Lan
                         height: Val::Px(GLOBAL_SOUND_PANEL_H),
                         border: UiRect::all(Val::Px(1.0)),
                         position_type: PositionType::Relative,
+                        overflow: Overflow::scroll_y(),
                         ..default()
                     },
                     BackgroundColor(Color::srgba(0.98, 0.99, 1.0, 0.98)),
                     BorderColor::all(Color::srgba(0.34, 0.42, 0.55, 0.42)),
                     ZIndex(91),
                     Name::new("GlobalSoundPanel"),
+                    ScrollPosition::default(),
+                    GlobalSettingsViewport,
                 ))
                 .with_children(|panel| {
+                    panel.spawn(Node {
+                        width: Val::Px(1.0),
+                        height: Val::Px(GLOBAL_SOUND_PANEL_H),
+                        flex_shrink: 0.0,
+                        ..default()
+                    });
+                    spawn_global_sound_panel_button(
+                        panel,
+                        global_settings_close_rect(),
+                        "×",
+                        None,
+                        24.0,
+                    );
                     panel.spawn((
                         Text::new(text(language, TextKey::Settings)),
                         TextFont {
@@ -757,6 +786,7 @@ fn update_sound_overlay_input_capture(
 }
 
 fn update_global_sound_overlay(
+    windows: Query<&Window>,
     app_state: Res<State<AppState>>,
     audio_settings: Res<AudioSettings>,
     performance_settings: Res<PerformanceSettings>,
@@ -785,7 +815,14 @@ fn update_global_sound_overlay(
         Visibility::Hidden
     };
     for (mut node, mut visibility) in &mut entry_query {
-        apply_global_sound_entry_position(&mut node);
+        if let Ok(window) = windows.single() {
+            let rect = global_sound_entry_rect(window);
+            node.left = Val::Px(rect.x);
+            node.right = Val::Auto;
+            node.top = Val::Px(rect.y);
+            node.width = Val::Px(rect.w);
+            node.height = Val::Px(rect.h);
+        }
         *visibility = entry_visibility;
     }
 
@@ -868,8 +905,20 @@ fn handle_global_sound_overlay_click(
     mut overlay_state: ResMut<SoundSettingsOverlayState>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut app_exit: MessageWriter<AppExit>,
+    scroll: Query<&ScrollPosition, With<GlobalSettingsViewport>>,
+    mut touch_start: Local<Option<Vec2>>,
 ) {
-    let Some(cursor) = pointer.just_pressed_position() else {
+    let position = if pointer.current_source() == Some(crate::platform::PointerSource::Touch) {
+        if pointer.just_pressed() {
+            *touch_start = pointer.just_pressed_position();
+        }
+        pointer
+            .just_released_position()
+            .filter(|p| touch_start.is_some_and(|start| start.distance(*p) < 12.0))
+    } else {
+        pointer.just_pressed_position()
+    };
+    let Some(cursor) = position else {
         return;
     };
     let Ok(window) = windows.single() else {
@@ -878,7 +927,10 @@ fn handle_global_sound_overlay_click(
 
     if overlay_state.open {
         overlay_state.input_captured = true;
-        if let Some(action) = global_sound_action_at(cursor, window) {
+        let scroll_y = scroll.single().map(|s| s.y).unwrap_or(0.0);
+        if global_sound_panel_rect(window).contains(cursor)
+            && let Some(action) = global_sound_action_at(cursor + Vec2::Y * scroll_y, window)
+        {
             match apply_global_sound_action(
                 action,
                 &mut audio_settings,
@@ -939,38 +991,98 @@ fn apply_global_sound_action(
     GlobalSettingsCommand::None
 }
 
-fn apply_global_sound_entry_position(node: &mut Node) {
-    node.left = Val::Auto;
-    node.right = Val::Px(GLOBAL_SOUND_ENTRY_LEFT);
-    node.top = Val::Px(GLOBAL_SOUND_ENTRY_TOP);
-}
-
 fn global_sound_entry_rect(window: &Window) -> ClickRect {
-    let (x, y, w, h) = global_settings_entry_screen_rect(window.width());
+    let (x, y, w, h) = global_settings_entry_screen_rect(window.width(), window.height());
     ClickRect { x, y, w, h }
 }
 
-pub fn global_settings_entry_screen_rect(window_width: f32) -> (f32, f32, f32, f32) {
-    (
-        (window_width - GLOBAL_SOUND_ENTRY_W - GLOBAL_SOUND_ENTRY_LEFT)
-            .max(GLOBAL_SOUND_ENTRY_LEFT),
-        GLOBAL_SOUND_ENTRY_TOP,
-        GLOBAL_SOUND_ENTRY_W,
-        GLOBAL_SOUND_ENTRY_H,
+pub fn global_settings_entry_screen_rect(
+    window_width: f32,
+    window_height: f32,
+) -> (f32, f32, f32, f32) {
+    let rect = crate::ui::game_layout::GameLayout::new(
+        window_width,
+        window_height,
+        DeviceProfile::from_window_size(window_width, window_height),
     )
+    .settings;
+    (rect.x, rect.y, rect.w, rect.h)
 }
 
 fn global_sound_panel_rect(window: &Window) -> ClickRect {
+    let height = GLOBAL_SOUND_PANEL_H.min((window.height() - 32.0).max(120.0));
     ClickRect {
         x: (window.width() - GLOBAL_SOUND_PANEL_W) * 0.5,
-        y: (window.height() - GLOBAL_SOUND_PANEL_H) * 0.5,
+        y: (window.height() - height) * 0.5,
         w: GLOBAL_SOUND_PANEL_W,
-        h: GLOBAL_SOUND_PANEL_H,
+        h: height,
+    }
+}
+
+fn update_global_settings_scroll(
+    windows: Query<&Window>,
+    overlay: Res<SoundSettingsOverlayState>,
+    pointer: Res<PointerInputState>,
+    mut wheel: MessageReader<MouseWheel>,
+    mut drag: Local<Option<Vec2>>,
+    mut panels: Query<
+        (&mut Node, &mut ScrollPosition, &ComputedNode),
+        With<GlobalSettingsViewport>,
+    >,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let panel = global_sound_panel_rect(window);
+    for (mut node, mut scroll, computed) in &mut panels {
+        node.height = Val::Px(panel.h);
+        if !overlay.open {
+            scroll.y = 0.0;
+            *drag = None;
+            wheel.clear();
+            continue;
+        }
+        let Some(point) = pointer.current_position().filter(|p| panel.contains(*p)) else {
+            wheel.clear();
+            *drag = None;
+            continue;
+        };
+        let max = ((computed.content_size().y - computed.size().y)
+            * computed.inverse_scale_factor())
+        .max(0.0);
+        for event in wheel.read() {
+            let delta = match event.unit {
+                MouseScrollUnit::Line => event.y * 24.0,
+                MouseScrollUnit::Pixel => event.y,
+            };
+            scroll.y = (scroll.y - delta).clamp(0.0, max);
+        }
+        if pointer.is_pressed()
+            && pointer.current_source() == Some(crate::platform::PointerSource::Touch)
+        {
+            if !pointer.just_pressed()
+                && let Some(previous) = *drag
+            {
+                scroll.y = (scroll.y + previous.y - point.y).clamp(0.0, max);
+            }
+            *drag = Some(point);
+        } else {
+            *drag = None;
+        }
     }
 }
 
 fn global_settings_action_start_x() -> f32 {
     (GLOBAL_SOUND_PANEL_W - GLOBAL_SETTINGS_ACTION_W * 2.0 - GLOBAL_SETTINGS_ACTION_GAP) * 0.5
+}
+
+fn global_settings_close_rect() -> ClickRect {
+    ClickRect {
+        x: GLOBAL_SOUND_PANEL_W - 64.0,
+        y: 16.0,
+        w: 48.0,
+        h: 48.0,
+    }
 }
 
 fn global_settings_main_menu_rect() -> ClickRect {
@@ -995,6 +1107,7 @@ fn global_sound_action_at(cursor: Vec2, window: &Window) -> Option<SoundSettings
     let panel = global_sound_panel_rect(window);
     let local = Vec2::new(cursor.x - panel.x, cursor.y - panel.y);
     let actions = [
+        (SoundSettingsAction::Back, global_settings_close_rect()),
         (
             SoundSettingsAction::MusicDown,
             ClickRect {
@@ -1549,6 +1662,334 @@ fn spawn_mode_select(
     ));
 }
 
+struct CompactConfigItem {
+    rect: ClickRect,
+    label: String,
+    action: Option<ModeSelectAction>,
+    color: Color,
+}
+
+fn compact_mode_items(
+    width: f32,
+    setup: &MatchSetup,
+    language: Language,
+) -> (Vec<CompactConfigItem>, f32) {
+    let mut items = Vec::new();
+    let mut y = 0.0;
+    let default_color = Color::srgb(0.86, 0.91, 0.97);
+    let mut group =
+        |title: String, options: Vec<(ModeSelectAction, String, Color)>, columns: usize| {
+            items.push(CompactConfigItem {
+                rect: ClickRect {
+                    x: 0.,
+                    y,
+                    w: width,
+                    h: 24.,
+                },
+                label: title,
+                action: None,
+                color: Color::NONE,
+            });
+            let card_w = (width - (columns - 1) as f32 * 8.0) / columns as f32;
+            for (i, (action, label, color)) in options.into_iter().enumerate() {
+                items.push(CompactConfigItem {
+                    rect: ClickRect {
+                        x: (i % columns) as f32 * (card_w + 8.),
+                        y: y + 28. + (i / columns) as f32 * 56.,
+                        w: card_w,
+                        h: 48.,
+                    },
+                    label,
+                    action: Some(action),
+                    color,
+                });
+            }
+            y = items.last().map(|i| i.rect.y + i.rect.h + 16.).unwrap_or(y);
+        };
+    group(
+        text(language, TextKey::Mode).into(),
+        GameMode::ALL
+            .iter()
+            .map(|m| {
+                (
+                    ModeSelectAction::SetMode(*m),
+                    mode_label(language, *m).into(),
+                    default_color,
+                )
+            })
+            .collect(),
+        3,
+    );
+    group(
+        text(language, TextKey::PlayStyle).into(),
+        RuleSet::ALL
+            .iter()
+            .map(|r| {
+                (
+                    ModeSelectAction::SetRuleSet(*r),
+                    rule_set_label(language, *r).into(),
+                    default_color,
+                )
+            })
+            .collect(),
+        2,
+    );
+    for player_index in 0..setup.active_player_count() {
+        let mut options: Vec<_> = PlayerSeat::ALL
+            .iter()
+            .map(|seat| {
+                let label = match (language, seat) {
+                    (Language::SimplifiedChinese, PlayerSeat::Blue) => "蓝",
+                    (Language::SimplifiedChinese, PlayerSeat::Red) => "红",
+                    (Language::SimplifiedChinese, PlayerSeat::Green) => "绿",
+                    (Language::SimplifiedChinese, PlayerSeat::Yellow) => "黄",
+                    (_, PlayerSeat::Blue) => "Blue",
+                    (_, PlayerSeat::Red) => "Red",
+                    (_, PlayerSeat::Green) => "Green",
+                    (_, PlayerSeat::Yellow) => "Yellow",
+                };
+                (
+                    ModeSelectAction::SetPlayerSeat {
+                        player_index,
+                        seat: *seat,
+                    },
+                    label.to_string(),
+                    seat.to_color().mix(&Color::WHITE, 0.6),
+                )
+            })
+            .collect();
+        options.push((
+            ModeSelectAction::SetPlayerControl {
+                player_index,
+                control: PlayerControl::Human,
+            },
+            text(language, TextKey::Human).into(),
+            default_color,
+        ));
+        options.push((
+            ModeSelectAction::SetPlayerControl {
+                player_index,
+                control: PlayerControl::Ai,
+            },
+            text(language, TextKey::Ai).into(),
+            default_color,
+        ));
+        group(player_label(language, player_index + 1), options, 4);
+    }
+    group(
+        text(language, TextKey::PiecesPerPlayer).into(),
+        (1..=4)
+            .map(|n| (ModeSelectAction::SetPieces(n), n.to_string(), default_color))
+            .collect(),
+        4,
+    );
+    group(
+        text(language, TextKey::LaunchRule).into(),
+        LaunchRule::ALL
+            .iter()
+            .map(|r| {
+                (
+                    ModeSelectAction::SetLaunchRule(*r),
+                    launch_rule_label(language, *r).into(),
+                    default_color,
+                )
+            })
+            .collect(),
+        2,
+    );
+    group(
+        text(language, TextKey::AiDifficulty).into(),
+        [AiDifficulty::Easy, AiDifficulty::Normal, AiDifficulty::Hard]
+            .iter()
+            .map(|a| {
+                (
+                    ModeSelectAction::SetAiDifficulty(*a),
+                    ai_difficulty_label(language, *a).into(),
+                    default_color,
+                )
+            })
+            .collect(),
+        3,
+    );
+    (items, y)
+}
+
+fn compact_mode_viewport(width: f32, height: f32) -> ClickRect {
+    ClickRect {
+        x: 16.,
+        y: 96.,
+        w: width - 32.,
+        h: (height - 176.).max(100.),
+    }
+}
+
+fn compact_mode_action_rect(width: f32, height: f32, index: usize) -> ClickRect {
+    let w = (width - 40.) * 0.5;
+    ClickRect {
+        x: 16. + index as f32 * (w + 8.),
+        y: height - 64.,
+        w,
+        h: 48.,
+    }
+}
+
+fn spawn_compact_mode_select(
+    commands: &mut Commands,
+    setup: &MatchSetup,
+    language: Language,
+    width: f32,
+    height: f32,
+) {
+    let rect = compact_mode_viewport(width, height);
+    let (items, content_height) = compact_mode_items(rect.w, setup, language);
+    if content_height > rect.h {
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(rect.x),
+                top: Val::Px(height - 80.0),
+                width: Val::Px(rect.w),
+                height: Val::Px(16.0),
+                ..default()
+            },
+            Text::new(match language {
+                Language::SimplifiedChinese => "上下滑动 / 滚动查看更多设置",
+                Language::English => "Swipe or scroll for more settings",
+            }),
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.25, 0.31, 0.40)),
+            TextLayout::justify(Justify::Center),
+            MenuEntity,
+        ));
+    }
+    let viewport = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(rect.x),
+                top: Val::Px(rect.y),
+                width: Val::Px(rect.w),
+                height: Val::Px(rect.h),
+                overflow: Overflow::scroll_y(),
+                ..default()
+            },
+            ScrollPosition::default(),
+            CompactModeViewport,
+            MenuEntity,
+            Name::new("CompactMatchSettings"),
+        ))
+        .id();
+    let content = commands
+        .spawn(Node {
+            width: Val::Percent(100.),
+            height: Val::Px(content_height),
+            flex_shrink: 0.,
+            position_type: PositionType::Relative,
+            ..default()
+        })
+        .id();
+    commands.entity(viewport).add_child(content);
+    for item in items {
+        let entity = if let Some(action) = item.action {
+            let entity = spawn_box_with_label(
+                commands,
+                item.rect,
+                item.color,
+                &item.label,
+                16.,
+                None,
+                Some(action),
+            );
+            commands.entity(entity).insert(CompactModeItem);
+            entity
+        } else {
+            commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(item.rect.x),
+                        top: Val::Px(item.rect.y),
+                        width: Val::Px(item.rect.w),
+                        height: Val::Px(item.rect.h),
+                        ..default()
+                    },
+                    Text::new(item.label),
+                    TextFont {
+                        font_size: FontSize::Px(18.),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.10, 0.16, 0.24)),
+                ))
+                .id()
+        };
+        commands.entity(content).add_child(entity);
+    }
+    for (i, action, key) in [
+        (0, ModeSelectAction::StartMatch, TextKey::Start),
+        (1, ModeSelectAction::Back, TextKey::Back),
+    ] {
+        spawn_option(
+            commands,
+            action,
+            compact_mode_action_rect(width, height, i),
+            text(language, key),
+            Color::srgb(0.72, 0.84, 0.94),
+        );
+    }
+}
+
+fn update_compact_mode_scroll(
+    windows: Query<&Window>,
+    pointer: Res<PointerInputState>,
+    overlay: Res<SoundSettingsOverlayState>,
+    mut wheel: MessageReader<MouseWheel>,
+    mut previous: Local<Option<Vec2>>,
+    mut query: Query<(&mut ScrollPosition, &ComputedNode), With<CompactModeViewport>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(point) = pointer
+        .current_position()
+        .filter(|p| compact_mode_viewport(window.width(), window.height()).contains(*p))
+    else {
+        wheel.clear();
+        *previous = None;
+        return;
+    };
+    if overlay.open {
+        wheel.clear();
+        *previous = None;
+        return;
+    }
+    let delta: f32 = wheel
+        .read()
+        .map(|e| match e.unit {
+            MouseScrollUnit::Line => e.y * 24.,
+            MouseScrollUnit::Pixel => e.y,
+        })
+        .sum();
+    for (mut scroll, node) in &mut query {
+        let max = ((node.content_size().y - node.size().y) * node.inverse_scale_factor()).max(0.);
+        scroll.y = (scroll.y - delta).clamp(0., max);
+        if pointer.is_pressed()
+            && pointer.current_source() == Some(crate::platform::PointerSource::Touch)
+        {
+            if !pointer.just_pressed()
+                && let Some(last) = *previous
+            {
+                scroll.y = (scroll.y + last.y - point.y).clamp(0., max);
+            }
+            *previous = Some(point);
+        } else {
+            *previous = None;
+        }
+    }
+}
+
 fn spawn_mode_select_content(
     commands: &mut Commands,
     windows: &Query<&Window>,
@@ -1562,6 +2003,10 @@ fn spawn_mode_select_content(
         .unwrap_or((1280.0, 720.0));
     let active_player_count = match_setup.active_player_count();
     let layout = mode_select_layout(window_width, window_height, active_player_count);
+    if window_width < 900.0 || window_height < 620.0 || layout.scale < 1.0 {
+        spawn_compact_mode_select(commands, match_setup, language, window_width, window_height);
+        return;
+    }
 
     spawn_section_label(
         commands,
@@ -2454,22 +2899,48 @@ fn handle_mode_select_input(
 }
 
 fn handle_mode_select_click(
+    windows: Query<&Window>,
     pointer: Res<PointerInputState>,
     mut match_setup: ResMut<MatchSetup>,
     mut next_state: ResMut<NextState<AppState>>,
     overlay_state: Res<SoundSettingsOverlayState>,
-    query: Query<(&ClickRect, &ModeSelectOption)>,
+    query: Query<(&ClickRect, &ModeSelectOption, Option<&CompactModeItem>)>,
+    viewport: Query<&ScrollPosition, With<CompactModeViewport>>,
+    mut touch_start: Local<Option<Vec2>>,
 ) {
     // 鼠标主操作：点击命中对应配置项并立即生效。
     if sound_settings_overlay_blocks_input(&overlay_state) {
         return;
     }
-    let Some(cursor) = pointer.just_pressed_position() else {
+    let position = if pointer.current_source() == Some(crate::platform::PointerSource::Touch) {
+        if pointer.just_pressed() {
+            *touch_start = pointer.just_pressed_position();
+        }
+        pointer
+            .just_released_position()
+            .filter(|p| touch_start.is_some_and(|start| start.distance(*p) < 12.0))
+    } else {
+        pointer.just_pressed_position()
+    };
+    let Some(cursor) = position else {
         return;
     };
 
-    for (rect, option) in &query {
-        if !rect.contains(cursor) {
+    for (rect, option, compact) in &query {
+        let point = if compact.is_some() {
+            let Ok(window) = windows.single() else {
+                continue;
+            };
+            let area = compact_mode_viewport(window.width(), window.height());
+            if !area.contains(cursor) {
+                continue;
+            }
+            cursor - Vec2::new(area.x, area.y)
+                + Vec2::Y * viewport.single().map(|s| s.y).unwrap_or(0.)
+        } else {
+            cursor
+        };
+        if !rect.contains(point) {
             continue;
         }
         apply_mode_select_action(option.action, &mut match_setup, &mut next_state);
@@ -2554,6 +3025,94 @@ fn cleanup_menu(
 mod tests {
     use super::*;
     use crate::gameplay::ai::AiDifficulty;
+
+    #[test]
+    fn compact_configuration_preserves_touch_targets_and_fixed_footer() {
+        for (w, h) in [(360., 640.), (390., 844.), (640., 360.), (1024., 600.)] {
+            let viewport = compact_mode_viewport(w, h);
+            for mode in GameMode::ALL {
+                let mut config = setup();
+                config.mode = mode;
+                for language in [Language::SimplifiedChinese, Language::English] {
+                    let (items, content_height) = compact_mode_items(viewport.w, &config, language);
+                    for (i, item) in items.iter().enumerate() {
+                        let a = item.rect;
+                        assert!(
+                            a.x >= 0.
+                                && a.x + a.w <= viewport.w + 0.01
+                                && a.y + a.h <= content_height
+                        );
+                        if item.action.is_some() {
+                            assert!(a.w >= 48. && a.h >= 48.);
+                        }
+                        for other in &items[i + 1..] {
+                            let b = other.rect;
+                            assert!(
+                                !(a.x < b.x + b.w
+                                    && a.x + a.w > b.x
+                                    && a.y < b.y + b.h
+                                    && a.y + a.h > b.y)
+                            );
+                        }
+                    }
+                    for index in 0..2 {
+                        let button = compact_mode_action_rect(w, h, index);
+                        assert!(button.y >= viewport.y + viewport.h + 8.);
+                        assert!(button.x >= 16. && button.x + button.w <= w - 16.);
+                        assert!(button.w >= 48. && button.h >= 48.);
+                        assert!(button.y + button.h <= h - 16.);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settings_fit_narrow_windows_and_scrolled_actions_map_to_content() {
+        for (w, h) in [(360, 640), (390, 844), (640, 360), (1280, 720)] {
+            let window = Window {
+                resolution: (w, h).into(),
+                ..default()
+            };
+            let panel = global_sound_panel_rect(&window);
+            assert!(panel.x >= 16. && panel.x + panel.w <= w as f32 - 16.);
+            assert!(panel.y >= 16. && panel.y + panel.h <= h as f32 - 16.);
+            let close = global_settings_close_rect();
+            assert!(close.w >= 48. && close.h >= 48. && close.x + close.w <= panel.w - 16.);
+            assert_eq!(
+                global_sound_action_at(
+                    Vec2::new(
+                        panel.x + close.x + close.w / 2.,
+                        panel.y + close.y + close.h / 2.
+                    ),
+                    &window
+                ),
+                Some(SoundSettingsAction::Back)
+            );
+            let scroll = (GLOBAL_SOUND_PANEL_H - panel.h).max(0.);
+            for (action, local) in [
+                (
+                    SoundSettingsAction::MainMenu,
+                    global_settings_main_menu_rect(),
+                ),
+                (
+                    SoundSettingsAction::QuitGame,
+                    global_settings_quit_game_rect(),
+                ),
+            ] {
+                assert!(local.w >= 48. && local.h >= 48.);
+                let visible_center = Vec2::new(
+                    panel.x + local.x + local.w / 2.,
+                    panel.y + local.y + local.h / 2. - scroll,
+                );
+                assert!(panel.contains(visible_center));
+                assert_eq!(
+                    global_sound_action_at(visible_center + Vec2::Y * scroll, &window),
+                    Some(action)
+                );
+            }
+        }
+    }
 
     fn setup() -> MatchSetup {
         MatchSetup {
@@ -2746,8 +3305,9 @@ mod tests {
         let entry = global_sound_entry_rect(&window);
 
         assert!(entry.x > window.width() * 0.5);
-        assert_eq!(entry.x + entry.w + GLOBAL_SOUND_ENTRY_LEFT, window.width());
-        assert_eq!(entry.y, GLOBAL_SOUND_ENTRY_TOP);
+        assert!(entry.x + entry.w <= window.width() - 16.0);
+        assert_eq!(entry.y, 8.0);
+        assert!(entry.h >= 48.0);
     }
 
     #[test]

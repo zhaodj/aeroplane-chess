@@ -98,21 +98,39 @@ fn spawn_fps_display(mut commands: Commands) {
 }
 
 fn update_fps_display(
+    windows: Query<&Window>,
     settings: Res<PerformanceSettings>,
     language_settings: Res<LanguageSettings>,
     app_state: Res<State<AppState>>,
     diagnostics: Res<DiagnosticsStore>,
     time: Res<Time>,
     mut refresh_state: ResMut<FpsDisplayRefreshState>,
-    mut container_query: Query<&mut Visibility, (With<FpsDisplay>, Without<Text>)>,
-    mut text_query: Query<&mut Text, (With<FpsDisplay>, With<Text>)>,
+    mut container_query: Query<(&mut Visibility, &mut Node), (With<FpsDisplay>, Without<Text>)>,
+    mut text_query: Query<(&mut Text, &mut TextFont), With<FpsDisplay>>,
 ) {
     let smoothed_fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|fps| fps.smoothed());
 
     let visible = settings.show_fps && !matches!(app_state.get(), AppState::Boot);
-    for mut visibility in &mut container_query {
+    for (mut visibility, mut node) in &mut container_query {
+        if let Ok(window) = windows.single() {
+            let in_game = *app_state.get() == AppState::InGame;
+            let profile =
+                crate::platform::DeviceProfile::from_window_size(window.width(), window.height());
+            let game_fps =
+                crate::ui::game_layout::GameLayout::new(window.width(), window.height(), profile)
+                    .fps();
+            node.left = Val::Px(if in_game {
+                game_fps.x
+            } else {
+                FPS_DISPLAY_LEFT
+            });
+            node.top = Val::Px(if in_game { game_fps.y } else { FPS_DISPLAY_TOP });
+            node.width = Val::Px(if in_game { game_fps.w } else { FPS_DISPLAY_W });
+            node.height = Val::Px(if in_game { game_fps.h } else { FPS_DISPLAY_H });
+            node.padding = UiRect::horizontal(Val::Px(4.0));
+        }
         *visibility = if visible {
             Visibility::Visible
         } else {
@@ -127,13 +145,20 @@ fn update_fps_display(
     }
 
     refresh_state.timer.tick(time.delta());
+    for (_, mut font) in &mut text_query {
+        font.font_size = FontSize::Px(if *app_state.get() == AppState::InGame {
+            12.0
+        } else {
+            14.0
+        });
+    }
     if !fps_display_refresh_due(&mut refresh_state) {
         return;
     }
 
     update_smoke_fps_metric(smoothed_fps);
     let label = fps_display_text(smoothed_fps, language_settings.language);
-    for mut text in &mut text_query {
+    for (mut text, _) in &mut text_query {
         *text = Text::new(label.clone());
     }
 }

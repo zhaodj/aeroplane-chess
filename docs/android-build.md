@@ -70,7 +70,8 @@ adb devices
 ## 设备目标
 
 - 默认 ABI：`arm64-v8a`
-- 平板横屏：`android:screenOrientation="sensorLandscape"`，跟随设备在左右横屏之间旋转
+- 自适应横竖屏：`android:screenOrientation="fullSensor"`，Activity 同步使用 `SCREEN_ORIENTATION_FULL_SENSOR`；旋转时重排棋盘、HUD 和菜单，不重开对局
+- 保留沉浸模式，但不将内容布局到系统导航栏下；刘海屏使用 `LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER`，布局尺寸由安全窗口提供
 - `minSdk 31`：匹配 Bevy 默认 GameActivity 路线
 - 支持 large/xlarge screen，面向安卓平板优先
 

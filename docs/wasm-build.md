@@ -20,6 +20,10 @@ cargo install wasm-bindgen-cli
 
 ## 本地预览
 
+画布显示尺寸由 CSS 和安全区 `env(safe-area-inset-*)` 控制，物理像素缓冲区由 Bevy/winit 管理，页面不再重复写入 `canvas.width/height`。触控设备通过 `maxTouchPoints` / `any-pointer: coarse` 识别；PWA 支持横竖屏旋转。不要把设备物理分辨率直接作为 UI 逻辑尺寸。
+
+响应式布局与交互检查见 [自适应 UI 验收说明](ui-adaptive-acceptance.md)。
+
 ```bash
 ./scripts/serve-wasm.sh
 ```

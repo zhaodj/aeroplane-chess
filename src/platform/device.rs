@@ -72,7 +72,8 @@ impl Default for DeviceProfile {
 impl DeviceProfile {
     pub fn from_window_size(width: f32, height: f32) -> Self {
         let family = PlatformFamily::current();
-        let touch_first = matches!(family, PlatformFamily::Android | PlatformFamily::Ios);
+        let touch_first = matches!(family, PlatformFamily::Android | PlatformFamily::Ios)
+            || browser_touch_capable();
         let shortest_side = width.min(height);
         let class = match family {
             PlatformFamily::Android | PlatformFamily::Ios => {
@@ -91,7 +92,7 @@ impl DeviceProfile {
             }
             PlatformFamily::Desktop => DeviceClass::Desktop,
         };
-        let hud_layout = if width >= height && width >= 960.0 && height >= 620.0 {
+        let hud_layout = if width > height && width >= 640.0 {
             HudLayoutMode::SidePanel
         } else {
             HudLayoutMode::OverlayPanel
@@ -106,29 +107,36 @@ impl DeviceProfile {
         }
     }
 
-    pub fn board_screen_padding(self) -> f32 {
-        if self.touch_first { 36.0 } else { 24.0 }
-    }
-
-    pub fn hud_reserved_width(self) -> f32 {
-        match self.hud_layout {
-            HudLayoutMode::SidePanel => 308.0,
-            HudLayoutMode::OverlayPanel => 0.0,
-        }
-    }
-
-    /// 横屏右侧 HUD 预留区之外，棋盘可使用的水平空间。
-    pub fn board_area_width(self, window_width: f32) -> f32 {
-        (window_width - self.hud_reserved_width()).max(240.0)
-    }
-
     pub fn should_start_hud_collapsed(self) -> bool {
         matches!(self.class, DeviceClass::Phone)
     }
 
     pub fn piece_pick_radius_world(self) -> f32 {
-        if self.touch_first { 36.0 } else { 28.0 }
+        if self.touch_first {
+            let board = crate::ui::game_layout::GameLayout::new(
+                self.window_size.x,
+                self.window_size.y,
+                self,
+            )
+            .board;
+            (24.0 * crate::constants::BOARD_WORLD_SIZE / board.w).max(28.0)
+        } else {
+            28.0
+        }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_touch_capable() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.body())
+        .is_some_and(|body| body.get_attribute("data-ac-touch").as_deref() == Some("true"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn browser_touch_capable() -> bool {
+    false
 }
 
 pub fn primary_window() -> Window {
@@ -180,15 +188,15 @@ mod tests {
     use super::{DeviceProfile, HudLayoutMode};
 
     #[test]
-    fn android_activity_follows_landscape_sensor_orientation() {
+    fn android_activity_follows_full_sensor_orientation() {
         let manifest = include_str!("../../platforms/android/app/src/main/AndroidManifest.xml");
         let main_activity = include_str!(
             "../../platforms/android/app/src/main/java/com/zhaodaojun/aeroplanechess/MainActivity.java"
         );
 
-        assert!(manifest.contains(r#"android:screenOrientation="sensorLandscape""#));
+        assert!(manifest.contains(r#"android:screenOrientation="fullSensor""#));
         assert!(!manifest.contains(r#"android:screenOrientation="portrait""#));
-        assert!(main_activity.contains("ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE"));
+        assert!(main_activity.contains("ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR"));
     }
 
     #[test]
@@ -202,12 +210,22 @@ mod tests {
             HudLayoutMode::OverlayPanel
         );
         assert_eq!(
-            DeviceProfile::from_window_size(1280.0, 720.0).board_area_width(1280.0),
-            972.0
+            DeviceProfile::from_window_size(1024.0, 600.0).hud_layout,
+            HudLayoutMode::SidePanel
         );
-        assert_eq!(
-            DeviceProfile::from_window_size(720.0, 1280.0).board_area_width(720.0),
-            720.0
-        );
+    }
+
+    #[test]
+    fn touch_pick_diameter_stays_large_when_portrait_board_shrinks() {
+        for (w, h) in [(360., 640.), (720., 1280.), (1280., 720.)] {
+            let mut profile = DeviceProfile::from_window_size(w, h);
+            profile.touch_first = true;
+            let board = crate::ui::game_layout::GameLayout::new(w, h, profile).board;
+            assert!(
+                profile.piece_pick_radius_world() * 2.0 * board.w
+                    / crate::constants::BOARD_WORLD_SIZE
+                    >= 48.0 - 0.01
+            );
+        }
     }
 }

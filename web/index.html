@@ -28,6 +28,11 @@
         height: 100%;
         display: block;
       }
+      body {
+        box-sizing: border-box;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right)
+          env(safe-area-inset-bottom) env(safe-area-inset-left);
+      }
     </style>
   </head>
   <body>
@@ -43,11 +48,14 @@
       }
 
       function syncCanvasSize(canvas) {
-        const scale = window.devicePixelRatio || 1;
-        canvas.width = Math.max(1, Math.floor(window.innerWidth * scale));
-        canvas.height = Math.max(1, Math.floor(window.innerHeight * scale));
+        // Bevy/winit owns the canvas backing resolution and device-pixel scaling.
+        // Only CSS controls its displayed size; competing attribute writes can
+        // desynchronise rendering and pointer coordinates during rotation.
         document.body.dataset.acOrientation =
           window.innerWidth >= window.innerHeight ? "landscape" : "portrait";
+        document.body.dataset.acTouch = String(
+          navigator.maxTouchPoints > 0 || window.matchMedia("(any-pointer: coarse)").matches,
+        );
       }
 
       async function boot() {

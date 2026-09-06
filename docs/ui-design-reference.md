@@ -1,6 +1,8 @@
 # 飞行棋 UI 设计图（实现参考）
 
 本文档用于后续 UI 实现，提供页面结构图、HUD 线框图、组件状态图和响应式布局规则。  
+当前实现以 [自适应 UI 验收说明](ui-adaptive-acceptance.md) 为准；下方早期线框中的固定尺寸、技能位置和配置项仅作历史设计背景。
+
 对齐文档：
 
 - [requirement.md](/Users/zhaodaojun/Documents/studio/404man/code/aeroplane-chess/requirement.md)

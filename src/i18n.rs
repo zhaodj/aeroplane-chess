@@ -175,7 +175,7 @@ pub fn text(language: Language, key: TextKey) -> &'static str {
             TextKey::Music => "Music",
             TextKey::Effects => "Effects",
             TextKey::Mute => "Mute",
-            TextKey::FpsCounter => "FPS Counter",
+            TextKey::FpsCounter => "FPS",
             TextKey::Language => "Language",
             TextKey::MainMenu => "Main Menu",
             TextKey::QuitGame => "Quit Game",
