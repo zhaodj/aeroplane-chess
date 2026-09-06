@@ -7,7 +7,7 @@ use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
 use crate::gameplay::match_flow::{MatchSetup, PlayerSeat};
-use crate::platform::DeviceProfile;
+use crate::platform::{DeviceProfile, HudLayoutMode};
 use crate::states::AppState;
 
 /// 启动插件：初始化相机与默认 MatchSetup，并跳转主菜单。
@@ -221,11 +221,13 @@ fn fit_in_game_camera(
     let window_width = window.width().max(1.0);
     let window_height = window.height().max(1.0);
     let camera_scale = centered_board_camera_scale(window_width, window_height, *device_profile);
+    let camera_center_x =
+        centered_board_camera_center_x(window_width, camera_scale, *device_profile);
 
     for (mut transform, mut projection) in &mut camera_query {
         if let Projection::Orthographic(orthographic) = &mut *projection {
             orthographic.scale = camera_scale;
-            transform.translation.x = 0.0;
+            transform.translation.x = camera_center_x;
             transform.translation.y = 0.0;
         }
     }
@@ -237,11 +239,24 @@ fn centered_board_camera_scale(
     device_profile: DeviceProfile,
 ) -> f32 {
     let target_pixels = gameplay_board_target_pixels(
-        window_width,
+        device_profile.board_area_width(window_width),
         window_height,
         device_profile.board_screen_padding(),
     );
     (BOARD_WORLD_SIZE / target_pixels).max(1.0)
+}
+
+fn centered_board_camera_center_x(
+    window_width: f32,
+    camera_scale: f32,
+    device_profile: DeviceProfile,
+) -> f32 {
+    let board_area_width = device_profile.board_area_width(window_width);
+    let desired_screen_center = match device_profile.hud_layout {
+        HudLayoutMode::SidePanel => board_area_width * 0.5,
+        HudLayoutMode::OverlayPanel => window_width * 0.5,
+    };
+    (window_width * 0.5 - desired_screen_center) * camera_scale
 }
 
 #[cfg(test)]
@@ -262,10 +277,26 @@ mod tests {
     fn centered_board_camera_uses_short_side_on_tablet() {
         let profile = DeviceProfile::from_window_size(2560.0, 1600.0);
         let scale = centered_board_camera_scale(2560.0, 1600.0, profile);
-        let expected_target =
-            gameplay_board_target_pixels(2560.0, 1600.0, profile.board_screen_padding());
+        let expected_target = gameplay_board_target_pixels(
+            profile.board_area_width(2560.0),
+            1600.0,
+            profile.board_screen_padding(),
+        );
 
         assert!((scale - (BOARD_WORLD_SIZE / expected_target).max(1.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn landscape_camera_centers_board_in_left_content_area() {
+        let profile = DeviceProfile::from_window_size(1280.0, 720.0);
+        let scale = centered_board_camera_scale(1280.0, 720.0, profile);
+
+        assert!(
+            (centered_board_camera_center_x(1280.0, scale, profile)
+                - profile.hud_reserved_width() * 0.5 * scale)
+                .abs()
+                < f32::EPSILON
+        );
     }
 
     #[test]

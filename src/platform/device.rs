@@ -91,7 +91,7 @@ impl DeviceProfile {
             }
             PlatformFamily::Desktop => DeviceClass::Desktop,
         };
-        let hud_layout = if width >= 960.0 && height >= 620.0 {
+        let hud_layout = if width >= height && width >= 960.0 && height >= 620.0 {
             HudLayoutMode::SidePanel
         } else {
             HudLayoutMode::OverlayPanel
@@ -115,6 +115,11 @@ impl DeviceProfile {
             HudLayoutMode::SidePanel => 308.0,
             HudLayoutMode::OverlayPanel => 0.0,
         }
+    }
+
+    /// 横屏右侧 HUD 预留区之外，棋盘可使用的水平空间。
+    pub fn board_area_width(self, window_width: f32) -> f32 {
+        (window_width - self.hud_reserved_width()).max(240.0)
     }
 
     pub fn should_start_hud_collapsed(self) -> bool {
@@ -172,15 +177,37 @@ pub fn update_device_profile(windows: Query<&Window>, mut device_profile: ResMut
 
 #[cfg(test)]
 mod tests {
+    use super::{DeviceProfile, HudLayoutMode};
+
     #[test]
-    fn android_activity_is_locked_to_portrait() {
+    fn android_activity_follows_landscape_sensor_orientation() {
         let manifest = include_str!("../../platforms/android/app/src/main/AndroidManifest.xml");
         let main_activity = include_str!(
             "../../platforms/android/app/src/main/java/com/zhaodaojun/aeroplanechess/MainActivity.java"
         );
 
-        assert!(manifest.contains(r#"android:screenOrientation="portrait""#));
-        assert!(!manifest.contains(r#"android:screenOrientation="landscape""#));
-        assert!(main_activity.contains("ActivityInfo.SCREEN_ORIENTATION_PORTRAIT"));
+        assert!(manifest.contains(r#"android:screenOrientation="sensorLandscape""#));
+        assert!(!manifest.contains(r#"android:screenOrientation="portrait""#));
+        assert!(main_activity.contains("ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE"));
+    }
+
+    #[test]
+    fn landscape_uses_side_hud_but_portrait_uses_overlay_hud() {
+        assert_eq!(
+            DeviceProfile::from_window_size(1280.0, 720.0).hud_layout,
+            HudLayoutMode::SidePanel
+        );
+        assert_eq!(
+            DeviceProfile::from_window_size(720.0, 1280.0).hud_layout,
+            HudLayoutMode::OverlayPanel
+        );
+        assert_eq!(
+            DeviceProfile::from_window_size(1280.0, 720.0).board_area_width(1280.0),
+            972.0
+        );
+        assert_eq!(
+            DeviceProfile::from_window_size(720.0, 1280.0).board_area_width(720.0),
+            720.0
+        );
     }
 }

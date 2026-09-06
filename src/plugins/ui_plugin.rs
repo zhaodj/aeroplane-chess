@@ -22,7 +22,7 @@ use crate::i18n::{
     Language, LanguageSettings, LocalizedText, TextKey, skill_name as i18n_skill_name,
     skill_tip_body as i18n_skill_tip_body, skill_token as i18n_skill_token, text as i18n_text,
 };
-use crate::platform::{DeviceProfile, PointerInputState, PointerSource};
+use crate::platform::{DeviceProfile, HudLayoutMode, PointerInputState, PointerSource};
 use crate::plugins::effects_plugin::EffectRevealDelays;
 use crate::plugins::menu_plugin::{
     SoundSettingsOverlayState, global_settings_entry_screen_rect,
@@ -420,6 +420,8 @@ const EVENT_NOTICE_PANEL_PADDING: f32 = 8.0;
 const EVENT_NOTICE_ACTOR_W: f32 = 64.0;
 const EVENT_NOTICE_CONTENT_GAP: f32 = 8.0;
 const EVENT_NOTICE_ACTOR_TEXT_SIZE: f32 = 10.0;
+const SIDE_HUD_TOP: f32 = 64.0;
+const SIDE_HUD_GAP: f32 = 12.0;
 const EVENT_LOG_TOGGLE_W: f32 = 92.0;
 const EVENT_LOG_TOGGLE_H: f32 = 36.0;
 const EVENT_LOG_PANEL_W: f32 = 360.0;
@@ -2201,16 +2203,34 @@ fn gameplay_board_screen_rect(
     window_height: f32,
     device_profile: DeviceProfile,
 ) -> ScreenRect {
+    let board_area_width = device_profile.board_area_width(window_width);
     let size = gameplay_board_target_pixels(
-        window_width,
+        board_area_width,
         window_height,
         device_profile.board_screen_padding(),
     );
     ScreenRect {
-        x: (window_width - size) * 0.5,
+        x: match device_profile.hud_layout {
+            HudLayoutMode::SidePanel => (board_area_width - size) * 0.5,
+            HudLayoutMode::OverlayPanel => (window_width - size) * 0.5,
+        },
         y: (window_height - size) * 0.5,
         w: size,
         h: size,
+    }
+}
+
+fn side_hud_rect(
+    window_width: f32,
+    window_height: f32,
+    device_profile: DeviceProfile,
+) -> ScreenRect {
+    let reserved_width = device_profile.hud_reserved_width();
+    ScreenRect {
+        x: (window_width - reserved_width + HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+        y: SIDE_HUD_TOP,
+        w: (reserved_width - HUD_EDGE_MARGIN * 2.0).max(1.0),
+        h: (window_height - SIDE_HUD_TOP - HUD_EDGE_MARGIN).max(1.0),
     }
 }
 
@@ -2327,6 +2347,18 @@ fn shared_skill_bar_rect(
     window_height: f32,
     device_profile: DeviceProfile,
 ) -> ScreenRect {
+    if matches!(device_profile.hud_layout, HudLayoutMode::SidePanel) {
+        let side_hud = side_hud_rect(window_width, window_height, device_profile);
+        let stack_height = SKILL_BUTTON_SIZE * HUD_SKILL_ACTIONS.len() as f32
+            + SKILL_BUTTON_GAP * HUD_SKILL_ACTIONS.len().saturating_sub(1) as f32;
+        return ScreenRect {
+            x: side_hud.x,
+            y: side_hud.y + SKILL_BUTTON_SIZE + SIDE_HUD_GAP,
+            w: side_hud.w,
+            h: stack_height,
+        };
+    }
+
     let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
     let total_width = shared_skill_bar_width();
     let total_height =
@@ -2355,9 +2387,20 @@ pub(crate) fn shared_skill_button_rect(
 ) -> ScreenRect {
     let bar = shared_skill_bar_rect(window_width, window_height, device_profile);
     let index = skill_action_index(action) as f32;
+    let (x, y) = if matches!(device_profile.hud_layout, HudLayoutMode::SidePanel) {
+        (
+            bar.x + (bar.w - SKILL_BUTTON_SIZE) * 0.5,
+            bar.y + index * (SKILL_BUTTON_SIZE + SKILL_BUTTON_GAP),
+        )
+    } else {
+        (
+            bar.x + index * (SKILL_BUTTON_SIZE + SKILL_BUTTON_GAP),
+            bar.y,
+        )
+    };
     ScreenRect {
-        x: bar.x + index * (SKILL_BUTTON_SIZE + SKILL_BUTTON_GAP),
-        y: bar.y,
+        x,
+        y,
         w: SKILL_BUTTON_SIZE,
         h: SKILL_BUTTON_SIZE,
     }
@@ -2369,6 +2412,14 @@ fn finish_bounce_charge_bar_rect(
     device_profile: DeviceProfile,
 ) -> ScreenRect {
     let skill_bar = shared_skill_bar_rect(window_width, window_height, device_profile);
+    if matches!(device_profile.hud_layout, HudLayoutMode::SidePanel) {
+        return ScreenRect {
+            x: skill_bar.x,
+            y: skill_bar.y + skill_bar.h + SIDE_HUD_GAP,
+            w: skill_bar.w,
+            h: FINISH_BOUNCE_CHARGE_BAR_H,
+        };
+    }
     ScreenRect {
         x: skill_bar.x,
         y: skill_bar.y + skill_bar.h + FINISH_BOUNCE_CHARGE_BAR_GAP,
@@ -2382,6 +2433,16 @@ fn event_notice_panel_rect(
     window_height: f32,
     device_profile: DeviceProfile,
 ) -> ScreenRect {
+    if matches!(device_profile.hud_layout, HudLayoutMode::SidePanel) {
+        let side_hud = side_hud_rect(window_width, window_height, device_profile);
+        return ScreenRect {
+            x: side_hud.x,
+            y: side_hud.y,
+            w: side_hud.w,
+            h: SKILL_BUTTON_SIZE,
+        };
+    }
+
     let board = gameplay_board_screen_rect(window_width, window_height, device_profile);
     let width = shared_skill_bar_width();
     let x = (board.x + (board.w - width) * 0.5).clamp(
@@ -2407,6 +2468,21 @@ fn skill_tip_rect(
     action: SkillUiAction,
 ) -> ScreenRect {
     let button = shared_skill_button_rect(window_width, window_height, device_profile, action);
+    if matches!(device_profile.hud_layout, HudLayoutMode::SidePanel) {
+        let side_hud = side_hud_rect(window_width, window_height, device_profile);
+        let width = (side_hud.w - HUD_EDGE_MARGIN * 2.0).max(1.0);
+        let height = SKILL_TIP_H.min((window_height - HUD_EDGE_MARGIN * 2.0).max(0.0));
+        return ScreenRect {
+            x: side_hud.x + HUD_EDGE_MARGIN,
+            y: (button.y + button.h * 0.5 - height * 0.5).clamp(
+                HUD_EDGE_MARGIN,
+                (window_height - height - HUD_EDGE_MARGIN).max(HUD_EDGE_MARGIN),
+            ),
+            w: width,
+            h: height,
+        };
+    }
+
     let width = SKILL_TIP_W.min((window_width - HUD_EDGE_MARGIN * 2.0).max(0.0));
     let height = SKILL_TIP_H.min((window_height - HUD_EDGE_MARGIN * 2.0).max(0.0));
     let x = (button.x + button.w * 0.5 - width * 0.5).clamp(
@@ -4127,8 +4203,27 @@ mod tests {
 
         assert_eq!(board.w, BOARD_WORLD_SIZE);
         assert_eq!(board.h, BOARD_WORLD_SIZE);
-        assert!((board.x - (2560.0 - BOARD_WORLD_SIZE) * 0.5).abs() < f32::EPSILON);
+        assert!(
+            (board.x - (profile.board_area_width(2560.0) - BOARD_WORLD_SIZE) * 0.5).abs()
+                < f32::EPSILON
+        );
         assert!((board.y - (1600.0 - BOARD_WORLD_SIZE) * 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn landscape_board_and_side_hud_use_separate_screen_regions() {
+        let width = 1280.0;
+        let height = 720.0;
+        let profile = test_profile(width, height);
+        let board = gameplay_board_screen_rect(width, height, profile);
+        let side_hud = side_hud_rect(width, height, profile);
+
+        assert_eq!(profile.hud_layout, HudLayoutMode::SidePanel);
+        assert!(board.x + board.w <= profile.board_area_width(width) + f32::EPSILON);
+        assert!(side_hud.x >= profile.board_area_width(width) + HUD_EDGE_MARGIN - f32::EPSILON);
+        assert!(!board.overlaps(side_hud));
+        assert!(side_hud.y >= HUD_EDGE_MARGIN);
+        assert!(side_hud.y + side_hud.h <= height - HUD_EDGE_MARGIN + f32::EPSILON);
     }
 
     #[test]
@@ -4571,6 +4666,44 @@ mod tests {
         assert_eq!(first.w, first.h);
         assert!(first.y >= board.y + board.h);
         assert!((bar_center - (board.x + board.w * 0.5)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn landscape_skill_buttons_stack_inside_side_hud() {
+        let width = 1280.0;
+        let height = 720.0;
+        let profile = test_profile(width, height);
+        let side_hud = side_hud_rect(width, height, profile);
+        let skill_bar = shared_skill_bar_rect(width, height, profile);
+        let first = shared_skill_button_rect(width, height, profile, SkillUiAction::Dash);
+        let last = shared_skill_button_rect(width, height, profile, SkillUiAction::DoubleDice);
+        let charge_bar = finish_bounce_charge_bar_rect(width, height, profile);
+        let notice = event_notice_panel_rect(width, height, profile);
+
+        assert_eq!(first.x, last.x);
+        assert!(first.y < last.y);
+        assert!(skill_bar.x >= side_hud.x);
+        assert!(skill_bar.x + skill_bar.w <= side_hud.x + side_hud.w + f32::EPSILON);
+        assert!(last.y + last.h <= skill_bar.y + skill_bar.h + f32::EPSILON);
+        assert!(charge_bar.x >= side_hud.x);
+        assert!(charge_bar.x + charge_bar.w <= side_hud.x + side_hud.w + f32::EPSILON);
+        assert!(notice.x >= side_hud.x);
+        assert!(notice.x + notice.w <= side_hud.x + side_hud.w + f32::EPSILON);
+        assert!(charge_bar.y + charge_bar.h <= side_hud.y + side_hud.h + f32::EPSILON);
+    }
+
+    #[test]
+    fn landscape_skill_tip_stays_inside_side_hud() {
+        let width = 1280.0;
+        let height = 720.0;
+        let profile = test_profile(width, height);
+        let side_hud = side_hud_rect(width, height, profile);
+        let tip = skill_tip_rect(width, height, profile, SkillUiAction::Shield);
+
+        assert!(tip.x >= side_hud.x);
+        assert!(tip.x + tip.w <= side_hud.x + side_hud.w + f32::EPSILON);
+        assert!(tip.y >= HUD_EDGE_MARGIN);
+        assert!(tip.y + tip.h <= height - HUD_EDGE_MARGIN + f32::EPSILON);
     }
 
     #[test]

@@ -70,7 +70,7 @@ adb devices
 ## 设备目标
 
 - 默认 ABI：`arm64-v8a`
-- 默认横屏：`android:screenOrientation="landscape"`
+- 平板横屏：`android:screenOrientation="sensorLandscape"`，跟随设备在左右横屏之间旋转
 - `minSdk 31`：匹配 Bevy 默认 GameActivity 路线
 - 支持 large/xlarge screen，面向安卓平板优先
 

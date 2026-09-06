@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
     <meta name="theme-color" content="#0f172a" />
     <title>Aeroplane Chess / 飞行棋</title>
     <link rel="icon" type="image/png" sizes="64x64" href="./favicon-64x64.png" />
@@ -17,6 +20,8 @@
         height: 100%;
         background: #0f172a;
         overflow: hidden;
+        overscroll-behavior: none;
+        touch-action: none;
       }
       canvas {
         width: 100%;
@@ -41,12 +46,16 @@
         const scale = window.devicePixelRatio || 1;
         canvas.width = Math.max(1, Math.floor(window.innerWidth * scale));
         canvas.height = Math.max(1, Math.floor(window.innerHeight * scale));
+        document.body.dataset.acOrientation =
+          window.innerWidth >= window.innerHeight ? "landscape" : "portrait";
       }
 
       async function boot() {
         const canvas = ensureCanvas();
         syncCanvasSize(canvas);
         window.addEventListener("resize", () => syncCanvasSize(canvas));
+        window.addEventListener("orientationchange", () => syncCanvasSize(canvas));
+        window.visualViewport?.addEventListener("resize", () => syncCanvasSize(canvas));
 
         const params = new URLSearchParams(window.location.search);
         const smokeEnabled = params.has("ac_autoplay");
