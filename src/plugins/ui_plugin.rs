@@ -16,7 +16,7 @@ use crate::gameplay::skill_flow::{
     is_legal_shield_target, is_legal_snipe_target, is_legal_swap_target, player_skill_state,
 };
 use crate::gameplay::turn_flow::{
-    EventNotice, EventNoticeDetail, TurnState, player_has_finished_all_pieces,
+    EventNotice, EventNoticeDetail, TurnState, human_roll_is_ready, player_has_finished_all_pieces,
 };
 use crate::i18n::{
     Language, LanguageSettings, LocalizedText, TextKey, skill_name as i18n_skill_name,
@@ -32,7 +32,7 @@ use crate::plugins::piece_plugin::PieceId;
 use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction, SkillUiRequest};
 use crate::plugins::turn_plugin::TurnUiRequest;
 use crate::states::{AppState, GamePhase};
-use crate::ui::game_layout::{GameLayout, ScreenRect};
+use crate::ui::game_layout::{GameLayout, ScreenRect, SkillCardLayout, swap_piece_picker_rects};
 
 pub struct UiPlugin;
 
@@ -49,12 +49,14 @@ impl Plugin for UiPlugin {
                     handle_skill_tip_input,
                     handle_event_log_scroll,
                     update_player_hud_layout,
+                    update_skill_card_layout,
                     update_hud_content,
                     update_adaptive_hud,
                     update_finish_bounce_charge_bar_layout,
                     update_skill_tip_content,
                     update_event_log_content,
                     update_event_notice_content,
+                    update_swap_piece_picker,
                 )
                     .chain()
                     .run_if(in_state(AppState::InGame)),
@@ -75,6 +77,122 @@ impl Plugin for UiPlugin {
 
 #[derive(Component)]
 struct HudEntity;
+
+#[derive(Component)]
+struct SwapPiecePicker;
+
+fn update_swap_piece_picker(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    profile: Res<DeviceProfile>,
+    target: Res<SkillTargetState>,
+    roster: Res<PlayerRoster>,
+    language: Res<LanguageSettings>,
+    pieces: Query<(&PieceId, &PieceState)>,
+    old: Query<Entity, With<SwapPiecePicker>>,
+    mut previous: Local<Option<(Vec<u8>, f32, f32, Language)>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let key = (
+        target.overlap_choices.clone(),
+        window.width(),
+        window.height(),
+        language.language,
+    );
+    if previous.as_ref() == Some(&key) {
+        return;
+    }
+    *previous = Some(key);
+    for entity in &old {
+        commands.entity(entity).despawn();
+    }
+    if target.overlap_choices.is_empty() {
+        return;
+    }
+    let (panel, cells) = swap_piece_picker_rects(
+        GameLayout::new(window.width(), window.height(), *profile),
+        target.overlap_choices.len(),
+    );
+    let mut node = Node {
+        border_radius: BorderRadius::all(Val::Px(12.0)),
+        border: UiRect::all(Val::Px(2.0)),
+        ..default()
+    };
+    apply_rect_to_node(&mut node, panel);
+    commands.spawn((
+        node,
+        BackgroundColor(Color::srgb(0.96, 0.975, 0.99)),
+        BorderColor::all(Color::srgb(0.20, 0.43, 0.70)),
+        ZIndex(70),
+        HudEntity,
+        SwapPiecePicker,
+        Name::new("SwapPiecePickerPanel"),
+    ));
+    let mut title = Node::default();
+    apply_rect_to_node(
+        &mut title,
+        ScreenRect {
+            x: panel.x + 8.0,
+            y: panel.y + 8.0,
+            w: panel.w - 16.0,
+            h: 24.0,
+        },
+    );
+    commands.spawn((
+        title,
+        Text::new(ui_words(
+            language.language,
+            "请选择飞机编号",
+            "Choose an aircraft",
+        )),
+        TextFont {
+            font_size: FontSize::Px(16.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.12, 0.18, 0.27)),
+        ZIndex(71),
+        HudEntity,
+        SwapPiecePicker,
+    ));
+    for (id, rect) in target.overlap_choices.iter().zip(cells) {
+        let owner = pieces
+            .iter()
+            .find(|(piece_id, _)| piece_id.0 == *id)
+            .map(|(_, p)| p.owner_player_id)
+            .unwrap_or_default();
+        let color = player_profile(&roster, owner)
+            .map(|p| p.color)
+            .unwrap_or(Color::WHITE);
+        let mut node = Node {
+            border_radius: BorderRadius::all(Val::Px(8.0)),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        };
+        apply_rect_to_node(&mut node, rect);
+        commands
+            .spawn((
+                node,
+                BackgroundColor(color.mix(&Color::WHITE, 0.75)),
+                ZIndex(72),
+                HudEntity,
+                SwapPiecePicker,
+                Name::new(format!("SwapPieceChoice_{id}")),
+            ))
+            .with_children(|parent| {
+                parent.spawn((
+                    Text::new(format!("P{owner} · #{id}")),
+                    TextFont {
+                        font_size: FontSize::Px(15.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.08, 0.12, 0.18)),
+                ));
+            });
+    }
+}
 
 #[derive(Component)]
 struct ResultEntity;
@@ -141,7 +259,7 @@ enum AdaptiveHudPart {
     Status,
     Context,
     SkillName(SkillUiAction),
-    SkillState(SkillUiAction),
+    SkillMark(SkillUiAction),
 }
 
 #[derive(Component)]
@@ -628,25 +746,34 @@ fn spawn_hud(
                 HudEntity,
             ))
             .with_children(|button| {
-                for part in [
+                button.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        ..default()
+                    },
+                    Text::new(""),
+                    TextFont {
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.12, 0.32, 0.56)),
+                    TextLayout::justify(Justify::Center),
+                    AdaptiveHudPart::SkillMark(action),
+                ));
+                button.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        ..default()
+                    },
+                    Text::new(""),
+                    TextFont {
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.12, 0.18, 0.27)),
+                    TextLayout::justify(Justify::Center),
                     AdaptiveHudPart::SkillName(action),
-                    AdaptiveHudPart::SkillState(action),
-                ] {
-                    button.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            ..default()
-                        },
-                        Text::new(""),
-                        TextFont {
-                            font_size: FontSize::Px(14.0),
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.12, 0.18, 0.27)),
-                        TextLayout::justify(Justify::Center),
-                        part,
-                    ));
-                }
+                ));
                 button.spawn((
                     ImageNode {
                         color: skill_icon_color(false),
@@ -654,11 +781,6 @@ fn spawn_hud(
                     },
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Percent(50.0),
-                        margin: UiRect::left(Val::Px(-12.0)),
-                        top: Val::Px(4.0),
-                        width: Val::Px(24.0),
-                        height: Val::Px(24.0),
                         ..default()
                     },
                     Name::new(format!(
@@ -672,7 +794,6 @@ fn spawn_hud(
                         Node {
                             position_type: PositionType::Absolute,
                             top: Val::Px(0.0),
-                            right: Val::Px(0.0),
                             width: Val::Px(SKILL_BADGE_W),
                             height: Val::Px(SKILL_BADGE_H),
                             border: UiRect::all(Val::Px(1.0)),
@@ -1291,6 +1412,47 @@ fn update_player_hud_layout(
     }
 }
 
+fn update_skill_card_layout(
+    windows: Query<&Window>,
+    profile: Res<DeviceProfile>,
+    mut parts: Query<
+        (
+            &mut Node,
+            Option<&SharedSkillButtonIcon>,
+            Option<&SharedSkillButtonBadge>,
+            Option<&SharedSkillButtonText>,
+            Option<&mut TextFont>,
+        ),
+        Or<(
+            With<SharedSkillButtonIcon>,
+            With<SharedSkillButtonBadge>,
+            With<SharedSkillButtonText>,
+        )>,
+    >,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let layout = GameLayout::new(window.width(), window.height(), *profile);
+    for (mut node, icon, badge, label, font) in &mut parts {
+        let action = icon
+            .map(|p| p.action)
+            .or_else(|| badge.map(|p| p.action))
+            .or_else(|| label.map(|p| p.action))
+            .unwrap();
+        let rect = layout.skill(skill_action_index(action));
+        let card = SkillCardLayout::new(rect.w, rect.h);
+        if icon.is_some() {
+            apply_rect_to_node(&mut node, card.icon);
+        } else if badge.is_some() {
+            apply_rect_to_node(&mut node, card.badge);
+        }
+        if let Some(mut font) = font {
+            font.font_size = FontSize::Px(card.badge_font_size);
+        }
+    }
+}
+
 fn update_finish_bounce_charge_bar_layout(
     windows: Query<&Window>,
     device_profile: Res<DeviceProfile>,
@@ -1556,11 +1718,15 @@ fn update_hud_content(
         };
     }
 
-    let roll_ready = current_human_turn && matches!(game_phase.get(), GamePhase::AwaitDice);
+    let roll_ready =
+        human_roll_is_ready(&turn_state, game_phase.get(), &player_roster, &match_result)
+            && !skill_target_state.is_active();
     let cancel_target_ready = current_human_turn
         && matches!(game_phase.get(), GamePhase::ResolveSkillEffect)
         && skill_target_state.is_active();
     let board_roll_hit_target_active = roll_ready || cancel_target_ready;
+    let swap_active =
+        cancel_target_ready && skill_target_state.action() == Some(SkillUiAction::Swap);
     let board_roll_visual_visible = true;
     hud_state.board_roll_button_visible = board_roll_hit_target_active;
 
@@ -1570,14 +1736,20 @@ fn update_hud_content(
         } else {
             Display::None
         };
-        *background = BackgroundColor(if board_roll_hit_target_active {
-            Color::srgb(0.20, 0.43, 0.70)
-        } else {
-            Color::srgb(0.82, 0.86, 0.91)
-        });
+        *background = BackgroundColor(
+            if board_roll_hit_target_active
+                && (!swap_active || skill_target_state.can_confirm_swap())
+            {
+                Color::srgb(0.20, 0.43, 0.70)
+            } else {
+                Color::srgb(0.82, 0.86, 0.91)
+            },
+        );
     }
     for mut text in &mut queries.board_roll_button_text_query {
-        *text = Text::new(if board_roll_hit_target_active {
+        *text = Text::new(if swap_active {
+            swap_primary_label(&skill_target_state, language).to_string()
+        } else if board_roll_hit_target_active {
             roll_button_text(cancel_target_ready, language)
         } else {
             ui_words(language, "等待中", "Waiting").to_string()
@@ -1650,6 +1822,7 @@ fn update_adaptive_hud(
     phase: Res<State<GamePhase>>,
     skills: Res<SkillRoster>,
     target: Res<SkillTargetState>,
+    result: Res<MatchResult>,
     config: Res<MatchConfig>,
     language: Res<LanguageSettings>,
     event_log: Res<EventLogState>,
@@ -1699,8 +1872,12 @@ fn update_adaptive_hud(
         .map(state_label)
         .unwrap_or_default()
         .to_string();
-    let stage = if target.is_active() {
+    let stage = if target.action() == Some(SkillUiAction::Swap) {
+        swap_primary_label(&target, lang)
+    } else if target.is_active() {
         ui_words(lang, "请选择目标", "Choose a target")
+    } else if turn.pending_roll_display.is_some() {
+        ui_words(lang, "正在掷骰", "Rolling")
     } else if turn.pending_double_dice_choice.is_some() {
         ui_words(lang, "选择一个骰子", "Choose a die")
     } else {
@@ -1716,7 +1893,7 @@ fn update_adaptive_hud(
         let mut content = String::new();
         let mut font_size = 14.0;
         match *part {
-            AdaptiveHudPart::Surface => apply_rect_to_node(&mut node, layout.panel.expanded(8.0)),
+            AdaptiveHudPart::Surface => apply_rect_to_node(&mut node, layout.surface()),
             AdaptiveHudPart::Status => {
                 apply_rect_to_node(&mut node, layout.status);
                 node.padding = UiRect {
@@ -1773,13 +1950,16 @@ fn update_adaptive_hud(
                             .as_deref()
                             .and_then(|action| finish_bounce_notice_from_action(action, lang))
                             .is_some());
-                node.display =
-                    if event_log.expanded || tip.visible_action.is_some() || notice_visible {
-                        Display::None
-                    } else {
-                        Display::Flex
-                    };
-                content = if target.is_active() {
+                node.display = if !target.is_active()
+                    && (event_log.expanded || tip.visible_action.is_some() || notice_visible)
+                {
+                    Display::None
+                } else {
+                    Display::Flex
+                };
+                content = if target.action() == Some(SkillUiAction::Swap) {
+                    target.prompt.clone().unwrap_or_default()
+                } else if target.is_active() {
                     let name = target
                         .action()
                         .map(|a| skill_action_name(a, lang))
@@ -1799,14 +1979,23 @@ fn update_adaptive_hud(
                         "AI is playing.\nYou can inspect skills and match history.",
                     )
                     .to_string()
-                } else if matches!(phase.get(), GamePhase::AwaitDice) {
+                } else if turn.pending_roll_display.is_some() {
+                    ui_words(lang, "正在掷骰，请稍候。", "Rolling, please wait.").to_string()
+                } else if turn.pending_double_dice_choice.is_some() {
+                    ui_words(
+                        lang,
+                        "点击一个骰子选择点数，或按 1 / 2。",
+                        "Tap one die to choose, or press 1 / 2.",
+                    )
+                    .to_string()
+                } else if human_roll_is_ready(&turn, phase.get(), &roster, &result) {
                     if config.rule_set.skills_enabled() {
-                        ui_words(lang,"准备好后点击「掷骰」。\n点击灰色技能可查看不可用原因；长按查看规则。","Tap Roll when ready.\nTap an unavailable skill for its reason; hold for rules.").to_string()
+                        ui_words(lang,"点击中心骰子或「掷骰」开始。\n点击灰色技能可查看不可用原因；长按查看规则。","Tap the center die or Roll to start.\nTap an unavailable skill for its reason; hold for rules.").to_string()
                     } else {
                         ui_words(
                             lang,
-                            "准备好后点击「掷骰」。\n传统玩法不使用技能。",
-                            "Tap Roll when ready.\nSkills are not used in Classic rules.",
+                            "点击中心骰子或「掷骰」开始。\n传统玩法不使用技能。",
+                            "Tap the center die or Roll to start.\nSkills are not used in Classic rules.",
                         )
                         .to_string()
                     }
@@ -1823,40 +2012,33 @@ fn update_adaptive_hud(
             }
             AdaptiveHudPart::SkillName(action) => {
                 let rect = layout.skill(skill_action_index(action));
-                apply_rect_to_node(
-                    &mut node,
-                    ScreenRect {
-                        x: 0.0,
-                        y: 28.0,
-                        w: rect.w,
-                        h: 20.0,
-                    },
-                );
-                content = if action == SkillUiAction::DoubleDice {
+                let card = SkillCardLayout::new(rect.w, rect.h);
+                apply_rect_to_node(&mut node, card.name);
+                font_size = card.name_font_size;
+                let name = if action == SkillUiAction::DoubleDice {
                     ui_words(lang, "双骰", "2 dice")
                 } else {
                     skill_action_name(action, lang)
+                };
+                content = name.to_string();
+            }
+            AdaptiveHudPart::SkillMark(action) => {
+                let rect = layout.skill(skill_action_index(action));
+                let card = SkillCardLayout::new(rect.w, rect.h);
+                apply_rect_to_node(&mut node, card.mark);
+                font_size = 13.0;
+                // Keep the name one line even in English and compact landscape.
+                content = if target.action() == Some(action) {
+                    "…"
+                } else if current_skills.is_some_and(|s| {
+                    (action == SkillUiAction::Dash && s.dash_armed)
+                        || (action == SkillUiAction::DoubleDice && s.double_dice_armed)
+                }) {
+                    "✓"
+                } else {
+                    ""
                 }
                 .to_string();
-            }
-            AdaptiveHudPart::SkillState(action) => {
-                let rect = layout.skill(skill_action_index(action));
-                apply_rect_to_node(
-                    &mut node,
-                    ScreenRect {
-                        x: 2.0,
-                        y: 48.0,
-                        w: rect.w - 4.0,
-                        h: 18.0,
-                    },
-                );
-                node.display = if rect.h >= 68.0 && rect.w >= 104.0 {
-                    Display::Flex
-                } else {
-                    Display::None
-                };
-                content = state_label(action).to_string();
-                font_size = 12.0;
             }
         }
         if let Some(mut text) = text
@@ -1881,11 +2063,16 @@ fn update_skill_tip_content(
     mut text_query: Query<
         (
             &mut Text,
+            &mut Node,
+            &mut TextFont,
             Option<&SkillTipTitle>,
             Option<&SkillTipBody>,
             Option<&SkillTipClose>,
         ),
-        Or<(With<SkillTipTitle>, With<SkillTipBody>, With<SkillTipClose>)>,
+        (
+            Without<SkillTipPanel>,
+            Or<(With<SkillTipTitle>, With<SkillTipBody>, With<SkillTipClose>)>,
+        ),
     >,
 ) {
     let language = language_settings.language;
@@ -1893,6 +2080,13 @@ fn update_skill_tip_content(
         return;
     };
     let visible_action = skill_tip.visible_action;
+    let compact = skill_tip_rect(
+        window.width(),
+        window.height(),
+        *device_profile,
+        visible_action.unwrap_or(SkillUiAction::Shield),
+    )
+    .h < 88.0;
     if *previous_action != visible_action {
         for (area, mut scroll) in &mut scroll_query {
             if *area == HudScrollArea::SkillTip {
@@ -1908,21 +2102,35 @@ fn update_skill_tip_content(
                 &mut node,
                 skill_tip_rect(window.width(), window.height(), *device_profile, action),
             );
+            node.padding = UiRect {
+                left: Val::Px(if compact { 8.0 } else { 13.0 }),
+                right: Val::Px(34.0),
+                top: Val::Px(if compact { 4.0 } else { 10.0 }),
+                bottom: Val::Px(if compact { 4.0 } else { 10.0 }),
+            };
+            node.row_gap = Val::Px(if compact { 0.0 } else { 5.0 });
             *visibility = Visibility::Visible;
         } else {
             *visibility = Visibility::Hidden;
         }
     }
 
-    for (mut text, title, body, close) in &mut text_query {
+    for (mut text, mut node, mut font, title, body, close) in &mut text_query {
         if let Some(action) = visible_action {
             if title.is_some() {
                 *text = Text::new(skill_action_name(action, language));
+                node.display = if compact {
+                    Display::None
+                } else {
+                    Display::Flex
+                };
             } else if body.is_some() {
-                *text = Text::new(format!(
-                    "{}\n{}",
-                    skill_tip.reason,
-                    skill_tip_body(action, language)
+                font.font_size = FontSize::Px(if compact { 13.0 } else { 14.0 });
+                *text = Text::new(skill_tip_description(
+                    action,
+                    &skill_tip.reason,
+                    language,
+                    compact,
                 ));
             } else if close.is_some() {
                 *text = Text::new(i18n_text(language, TextKey::SkillTipClose));
@@ -1933,8 +2141,28 @@ fn update_skill_tip_content(
     }
 }
 
+fn skill_tip_description(
+    action: SkillUiAction,
+    reason: &str,
+    language: Language,
+    compact: bool,
+) -> String {
+    if compact {
+        // Keep both identity and reason in the scrollable content's first visible line.
+        format!(
+            "{} · {}\n{}",
+            skill_action_name(action, language),
+            reason,
+            skill_tip_body(action, language)
+        )
+    } else {
+        format!("{}\n{}", reason, skill_tip_body(action, language))
+    }
+}
+
 fn update_event_log_content(
     mut event_log: ResMut<EventLogState>,
+    skill_target: Res<SkillTargetState>,
     turn_state: Res<TurnState>,
     skill_roster: Res<SkillRoster>,
     language_settings: Res<LanguageSettings>,
@@ -1945,6 +2173,10 @@ fn update_event_log_content(
     mut log_text_query: EventLogTextQuery,
 ) {
     let language = language_settings.language;
+    let swap_active = skill_target.action() == Some(SkillUiAction::Swap);
+    if swap_active {
+        event_log.expanded = false;
+    }
     sync_event_log(&mut event_log, &turn_state, &skill_roster, language);
     for mut visibility in &mut panel_visibility_query {
         *visibility = if event_log.expanded {
@@ -1954,14 +2186,18 @@ fn update_event_log_content(
         };
     }
     for mut text in &mut toggle_text_query {
-        *text = Text::new(i18n_text(
-            language,
-            if event_log.expanded {
-                TextKey::EventLogOpen
-            } else {
-                TextKey::EventLogClosed
-            },
-        ));
+        *text = Text::new(if swap_active {
+            ui_words(language, "取消", "Cancel")
+        } else {
+            i18n_text(
+                language,
+                if event_log.expanded {
+                    TextKey::EventLogOpen
+                } else {
+                    TextKey::EventLogClosed
+                },
+            )
+        });
     }
     let entries = format_event_log_entries(&event_log.entries, language);
     for mut text in &mut log_text_query {
@@ -2136,6 +2372,7 @@ fn handle_skill_tip_input(
     match_config: Res<MatchConfig>,
     player_roster: Res<PlayerRoster>,
     skill_roster: Res<SkillRoster>,
+    skill_target: Res<SkillTargetState>,
     game_phase: Res<State<GamePhase>>,
     match_result: Res<MatchResult>,
     turn_state: Res<TurnState>,
@@ -2149,8 +2386,12 @@ fn handle_skill_tip_input(
         || match_result.finished
         || !match_config.rule_set.skills_enabled()
         || hud_state.event_log_expanded
+        || skill_target.action() == Some(SkillUiAction::Swap)
     {
         clear_skill_tip_interaction(&mut skill_tip);
+        if skill_target.action() == Some(SkillUiAction::Swap) {
+            *skill_tip = SkillTipState::default();
+        }
         hud_state.skill_tip_action = skill_tip.visible_action;
         return;
     }
@@ -2350,6 +2591,10 @@ fn handle_player_hud_click(
 
     let log_toggle = event_log_toggle_rect(window.width(), window.height(), *device_profile);
     if log_toggle.contains(cursor) {
+        if skill_target_state.action() == Some(SkillUiAction::Swap) {
+            skill_ui_request.queue_cancel_target();
+            return;
+        }
         event_log.expanded = !event_log.expanded;
         if event_log.expanded {
             event_log.scroll_to_bottom_requested = true;
@@ -2364,22 +2609,35 @@ fn handle_player_hud_click(
     }
 
     let board_roll_rect = board_roll_button_rect(window.width(), window.height(), *device_profile);
+    let center_roll_rect =
+        GameLayout::new(window.width(), window.height(), *device_profile).center_dice_roll();
+    if (board_roll_rect.contains(cursor) || center_roll_rect.contains(cursor))
+        && !skill_target_state.is_active()
+        && human_roll_is_ready(&turn_state, game_phase.get(), &player_roster, &match_result)
+    {
+        turn_ui_request.queue_roll();
+        return;
+    }
+
+    // Only the explicit HUD action cancels targeting. Do not register the center as
+    // an always-blocking HUD region: double-dice and piece selection still use it.
     if board_roll_rect.contains(cursor) {
         let current_human_turn = player_roster.players.iter().any(|player| {
             player.state.player_id == turn_state.current_player
                 && player.state.control == PlayerControl::Human
         });
-        let roll_ready = current_human_turn && matches!(game_phase.get(), GamePhase::AwaitDice);
         let cancel_target_ready = match_config.rule_set.skills_enabled()
             && current_human_turn
             && matches!(game_phase.get(), GamePhase::ResolveSkillEffect)
             && skill_target_state.is_active();
-        if roll_ready {
-            turn_ui_request.queue_roll();
-            return;
-        }
         if cancel_target_ready {
-            skill_ui_request.queue_cancel_target();
+            if skill_target_state.action() == Some(SkillUiAction::Swap) {
+                if skill_target_state.can_confirm_swap() {
+                    skill_ui_request.queue_confirm_target();
+                }
+            } else {
+                skill_ui_request.queue_cancel_target();
+            }
             return;
         }
     }
@@ -2726,15 +2984,6 @@ fn board_roll_button_rect(
     GameLayout::new(window_width, window_height, device_profile).primary
 }
 
-fn roll_button_rect_at(board: ScreenRect, x_ratio: f32, y_ratio: f32) -> ScreenRect {
-    ScreenRect {
-        x: board.x + board.w * x_ratio - BOARD_ROLL_BUTTON_W * 0.5,
-        y: board.y + board.h * y_ratio - BOARD_ROLL_BUTTON_H * 0.5,
-        w: BOARD_ROLL_BUTTON_W,
-        h: BOARD_ROLL_BUTTON_H,
-    }
-}
-
 fn shared_skill_bar_width() -> f32 {
     SKILL_BUTTON_SIZE * HUD_SKILL_ACTIONS.len() as f32
         + SKILL_BUTTON_GAP * HUD_SKILL_ACTIONS.len().saturating_sub(1) as f32
@@ -2822,11 +3071,11 @@ fn skill_action_name(action: SkillUiAction, language: Language) -> &'static str 
 
 fn skill_icon_asset_path(action: SkillUiAction) -> &'static str {
     match action {
-        SkillUiAction::Dash => "ui/skills/dash.png",
-        SkillUiAction::Snipe => "ui/skills/snipe.png",
-        SkillUiAction::Swap => "ui/skills/swap.png",
-        SkillUiAction::Shield => "ui/skills/shield.png",
-        SkillUiAction::DoubleDice => "ui/skills/double_dice.png",
+        SkillUiAction::Dash => "ui/skills/dash-compact.png",
+        SkillUiAction::Snipe => "ui/skills/snipe-compact.png",
+        SkillUiAction::Swap => "ui/skills/swap-compact.png",
+        SkillUiAction::Shield => "ui/skills/shield-compact.png",
+        SkillUiAction::DoubleDice => "ui/skills/double_dice-compact.png",
     }
 }
 
@@ -2846,7 +3095,7 @@ fn skill_icon_color(ready: bool) -> Color {
     if ready {
         Color::WHITE
     } else {
-        Color::srgba(0.64, 0.67, 0.72, 0.74)
+        Color::srgba(0.84, 0.88, 0.95, 0.80)
     }
 }
 
@@ -3090,6 +3339,18 @@ fn roll_button_text(cancel_target_ready: bool, language: Language) -> String {
         return ui_words(language, "取消选择", "Cancel selection").to_string();
     }
     ui_words(language, "掷骰", "Roll dice").to_string()
+}
+
+fn swap_primary_label(target: &SkillTargetState, language: Language) -> &'static str {
+    if target.is_swap_preview() && !target.can_confirm_swap() {
+        ui_words(language, "等待落稳", "Wait to land")
+    } else if target.is_swap_preview() {
+        ui_words(language, "确认换位", "Confirm swap")
+    } else if target.swap_source().is_some() {
+        ui_words(language, "选择目标", "Choose target")
+    } else {
+        ui_words(language, "选择己方飞机", "Choose aircraft")
+    }
 }
 
 fn finish_bounce_notice_from_action(action: &str, language: Language) -> Option<String> {
@@ -3667,6 +3928,14 @@ fn localize_action_segment(segment: &str, language: Language) -> String {
         "needs a main route piece to use Swap" => "需要己方飞机在主航道上才能换位".to_string(),
         "Skill not available in current phase" => "当前阶段不能使用技能".to_string(),
         "Snipe selection cancelled" => "已取消狙击选择".to_string(),
+        "Swap selection cancelled" => "已取消换位，未消耗次数".to_string(),
+        "Swap failed: selection is no longer available" => {
+            "换位选择已失效，请重新选择；未消耗次数".to_string()
+        }
+        "Swap failed: no charges left" => "换位失败：没有可用次数".to_string(),
+        "Swap failed: board position could not be resolved" => {
+            "换位失败：无法确定棋盘位置".to_string()
+        }
         "completed all pieces" => "所有飞机已到达终点".to_string(),
         "skipped turn" => "跳过回合".to_string(),
         "Snipe failed to resolve" => "狙击结算失败".to_string(),
@@ -4361,8 +4630,554 @@ mod tests {
     use crate::gameplay::turn_flow::{HOME_ENTRY_PROGRESS, record_turn_action};
     use bevy::ecs::system::SystemState;
 
+    #[test]
+    fn compact_skill_tip_keeps_reason_in_visible_scroll_area_and_restores_large_layout() {
+        let (mut app, window) = roll_click_test_app(640, 360);
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>()
+        .insert_resource(crate::gameplay::skill_flow::build_skill_roster(
+            &test_roster(),
+        ))
+        .add_systems(Startup, spawn_hud)
+        .add_systems(Update, update_skill_tip_content.after(update_adaptive_hud));
+        app.update();
+        for (w, h, compact) in [(640., 360., true), (360., 640., true), (1280., 720., false)] {
+            app.world_mut()
+                .get_mut::<Window>(window)
+                .unwrap()
+                .resolution
+                .set(w, h);
+            show_skill_tip(
+                &mut app.world_mut().resource_mut::<SkillTipState>(),
+                SkillUiAction::Snipe,
+                false,
+            );
+            app.update();
+            let mut title = app
+                .world_mut()
+                .query_filtered::<&Node, With<SkillTipTitle>>();
+            assert_eq!(
+                title.single(app.world()).unwrap().display,
+                if compact {
+                    Display::None
+                } else {
+                    Display::Flex
+                }
+            );
+            let mut body = app
+                .world_mut()
+                .query_filtered::<(&Text, &TextFont), With<SkillTipBody>>();
+            let (text, font) = body.single(app.world()).unwrap();
+            let reason = &app.world().resource::<SkillTipState>().reason;
+            assert!(text.0.lines().next().unwrap().contains(reason));
+            assert!(text.0.contains(skill_tip_body(
+                SkillUiAction::Snipe,
+                Language::SimplifiedChinese
+            )));
+            if compact {
+                assert!(text.0.starts_with("狙击 · "));
+                assert_eq!(font.font_size, FontSize::Px(13.0));
+                let mut panel = app
+                    .world_mut()
+                    .query_filtered::<&Node, With<SkillTipPanel>>();
+                let node = panel.single(app.world()).unwrap();
+                assert_eq!(node.padding.top, Val::Px(4.0));
+                assert_eq!(node.padding.bottom, Val::Px(4.0));
+                assert_eq!(node.row_gap, Val::Px(0.0));
+                let Val::Px(height) = node.height else {
+                    panic!("pixel height expected");
+                };
+                assert!(height - 8.0 - 2.0 >= 38.0); // two readable lines, plus scrolling
+            }
+        }
+    }
+
+    #[test]
+    fn rendered_skill_card_children_match_shared_geometry_across_resize_and_languages() {
+        let (mut app, window) = roll_click_test_app(360, 640);
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>()
+        .add_systems(Startup, spawn_hud)
+        .add_systems(
+            Update,
+            (update_player_hud_layout, update_skill_card_layout).chain(),
+        );
+        for language in [Language::SimplifiedChinese, Language::English] {
+            app.world_mut().resource_mut::<LanguageSettings>().language = language;
+            for (w, h) in [
+                (360, 640),
+                (640, 360),
+                (900, 420),
+                (900, 540),
+                (720, 1280),
+                (981, 998),
+                (1280, 720),
+            ] {
+                app.world_mut()
+                    .get_mut::<Window>(window)
+                    .unwrap()
+                    .resolution
+                    .set(w as f32, h as f32);
+                app.update();
+                let layout = GameLayout::new(w as f32, h as f32, test_profile(w as f32, h as f32));
+                let assert_rect = |node: &Node, rect: ScreenRect| {
+                    assert_eq!(
+                        (node.left, node.top, node.width, node.height),
+                        (
+                            Val::Px(rect.x),
+                            Val::Px(rect.y),
+                            Val::Px(rect.w),
+                            Val::Px(rect.h)
+                        )
+                    );
+                };
+                let mut icons = app
+                    .world_mut()
+                    .query::<(&SharedSkillButtonIcon, &Node, &ChildOf)>();
+                for (icon, node, parent) in icons.iter(app.world()) {
+                    let rect = layout.skill(skill_action_index(icon.action));
+                    assert_rect(app.world().get::<Node>(parent.parent()).unwrap(), rect);
+                    assert_rect(node, SkillCardLayout::new(rect.w, rect.h).icon);
+                    // The entire visible icon, including all edges, belongs to the correct hit target.
+                    let image_rect = SkillCardLayout::new(rect.w, rect.h).icon;
+                    for point in [
+                        Vec2::new(image_rect.x, image_rect.y),
+                        image_rect.center(),
+                        Vec2::new(image_rect.x + image_rect.w, image_rect.y + image_rect.h),
+                    ] {
+                        assert_eq!(
+                            skill_action_at_point(
+                                point + Vec2::new(rect.x, rect.y),
+                                w as f32,
+                                h as f32,
+                                test_profile(w as f32, h as f32)
+                            ),
+                            Some(icon.action)
+                        );
+                    }
+                }
+                assert_eq!(icons.iter(app.world()).count(), 5);
+                let mut badges = app.world_mut().query::<(&SharedSkillButtonBadge, &Node)>();
+                for (badge, node) in badges.iter(app.world()) {
+                    let rect = layout.skill(skill_action_index(badge.action));
+                    assert_rect(node, SkillCardLayout::new(rect.w, rect.h).badge);
+                }
+                let mut names = app
+                    .world_mut()
+                    .query::<(&AdaptiveHudPart, &Node, &TextFont, &Text)>();
+                for (part, node, font, text) in names.iter(app.world()) {
+                    if let AdaptiveHudPart::SkillName(action) = part {
+                        let rect = layout.skill(skill_action_index(*action));
+                        let card = SkillCardLayout::new(rect.w, rect.h);
+                        assert_rect(node, card.name);
+                        assert_eq!(font.font_size, FontSize::Px(card.name_font_size));
+                        assert!(!text.0.contains('\n'));
+                        assert!(!text.0.contains("可使用") && !text.0.contains("Ready"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn swap_controls_render_and_hit_the_same_separate_touch_regions() {
+        use crate::gameplay::swap_flow::SwapSelection;
+        for (w, h) in [(360, 640), (640, 360), (1280, 720), (720, 1280)] {
+            for stage in 0..3 {
+                let preview = stage > 0;
+                let waiting = stage == 2;
+                let (mut app, window) = roll_click_test_app(w, h);
+                app.world_mut()
+                    .insert_resource(State::new(GamePhase::ResolveSkillEffect));
+                app.world_mut()
+                    .insert_resource(SkillTargetState::with_swap(SwapSelection::new(
+                        1,
+                        1,
+                        if preview { vec![1] } else { vec![1, 2] },
+                        vec![5],
+                    )));
+                app.add_systems(Update, (update_player_hud_layout, update_event_log_content));
+                app.add_systems(
+                    Update,
+                    crate::plugins::skill_plugin::update_swap_motion_readiness
+                        .before(update_hud_content),
+                );
+                if waiting {
+                    app.world_mut().spawn((
+                        PieceId(5),
+                        crate::plugins::animation_plugin::PieceMoveAnimation::test_pending(),
+                    ));
+                }
+                let primary = app
+                    .world_mut()
+                    .spawn((
+                        BoardRollButton,
+                        Node::default(),
+                        BackgroundColor(Color::NONE),
+                    ))
+                    .id();
+                let label = app
+                    .world_mut()
+                    .spawn((BoardRollButtonText, Text::new("")))
+                    .id();
+                let cancel = app
+                    .world_mut()
+                    .spawn((EventLogToggle, Node::default()))
+                    .id();
+                let cancel_label = app
+                    .world_mut()
+                    .spawn((EventLogToggleText, Text::new("")))
+                    .id();
+                app.update();
+                let layout = GameLayout::new(w as f32, h as f32, test_profile(w as f32, h as f32));
+                for (entity, rect) in [(primary, layout.primary), (cancel, layout.log_toggle)] {
+                    let node = app.world().get::<Node>(entity).unwrap();
+                    assert_eq!(
+                        (node.left, node.top, node.width, node.height),
+                        (
+                            Val::Px(rect.x),
+                            Val::Px(rect.y),
+                            Val::Px(rect.w),
+                            Val::Px(rect.h)
+                        )
+                    );
+                    assert!(rect.w >= 48.0 && rect.h >= 48.0);
+                    assert!(!rect.overlaps(layout.board));
+                }
+                assert!(!layout.primary.overlaps(layout.log_toggle));
+                assert_eq!(app.world().get::<Text>(cancel_label).unwrap().0, "取消");
+                assert_eq!(
+                    app.world().get::<Text>(label).unwrap().0,
+                    if waiting {
+                        "等待落稳"
+                    } else if preview {
+                        "确认换位"
+                    } else {
+                        "选择己方飞机"
+                    }
+                );
+                assert_eq!(
+                    app.world()
+                        .resource::<SkillTargetState>()
+                        .can_confirm_swap(),
+                    preview && !waiting
+                );
+                if waiting {
+                    assert_eq!(
+                        app.world().get::<BackgroundColor>(primary).unwrap().0,
+                        Color::srgb(0.82, 0.86, 0.91)
+                    );
+                    assert_eq!(
+                        swap_primary_label(
+                            app.world().resource::<SkillTargetState>(),
+                            Language::English
+                        ),
+                        "Wait to land"
+                    );
+                }
+                touch_roll_target(&mut app, window, layout.primary.center());
+                // No targeting action ever queues a dice roll.
+                assert!(!app.world_mut().resource_mut::<TurnUiRequest>().take_roll());
+            }
+        }
+    }
+
+    #[test]
+    fn stacked_swap_picker_visible_buttons_are_distinct_large_and_match_hit_geometry() {
+        use crate::gameplay::swap_flow::SwapSelection;
+        for (w, h) in [(360, 640), (640, 360), (1280, 720), (720, 1280)] {
+            for count in [2, 4, 12] {
+                let (mut app, _) = roll_click_test_app(w, h);
+                let mut target =
+                    SkillTargetState::with_swap(SwapSelection::new(1, 1, vec![1, 2], vec![5, 6]));
+                target.overlap_choices = (1..=count).collect();
+                app.world_mut().insert_resource(target);
+                app.add_systems(Update, update_swap_piece_picker);
+                app.update();
+                let layout = GameLayout::new(w as f32, h as f32, test_profile(w as f32, h as f32));
+                let (panel, cells) = swap_piece_picker_rects(layout, count as usize);
+                assert!(
+                    panel.x >= 0.0
+                        && panel.y >= 0.0
+                        && panel.x + panel.w <= w as f32
+                        && panel.y + panel.h <= h as f32
+                );
+                let mut query = app.world_mut().query::<(&Name, &Node)>();
+                for (i, rect) in cells.iter().enumerate() {
+                    assert!(rect.w >= 48.0 && rect.h >= 48.0);
+                    assert!(
+                        panel.contains(Vec2::new(rect.x, rect.y))
+                            && panel.contains(Vec2::new(rect.x + rect.w, rect.y + rect.h))
+                    );
+                    assert!(
+                        cells
+                            .iter()
+                            .enumerate()
+                            .all(|(j, other)| i == j || !rect.overlaps(*other))
+                    );
+                    let name = format!("SwapPieceChoice_{}", i + 1);
+                    let (_, node) = query
+                        .iter(app.world())
+                        .find(|(n, _)| n.as_str() == name)
+                        .unwrap();
+                    assert_eq!(
+                        (node.left, node.top, node.width, node.height),
+                        (
+                            Val::Px(rect.x),
+                            Val::Px(rect.y),
+                            Val::Px(rect.w),
+                            Val::Px(rect.h)
+                        )
+                    );
+                }
+                app.world_mut()
+                    .resource_mut::<SkillTargetState>()
+                    .overlap_choices
+                    .clear();
+                app.update();
+                assert_eq!(
+                    app.world_mut()
+                        .query_filtered::<Entity, With<SwapPiecePicker>>()
+                        .iter(app.world())
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
     fn test_profile(width: f32, height: f32) -> DeviceProfile {
         DeviceProfile::from_window_size(width, height)
+    }
+
+    fn roll_click_test_app(width: u32, height: u32) -> (App, Entity) {
+        use bevy::input::touch::TouchInput;
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .add_message::<TouchInput>()
+            .add_plugins(crate::platform::PlatformPlugin)
+            .init_resource::<SoundSettingsOverlayState>()
+            .insert_resource(MatchConfig {
+                mode: GameMode::TwoVsTwo,
+                rule_set: crate::data::rule_set::RuleSet::Creative,
+                ai_difficulty: AiDifficulty::Normal,
+                fast_mode: false,
+                launch_rule: LaunchRule::SixOnly,
+                player_seats: PlayerSeat::ALL,
+                pieces_per_player: 2,
+                player_controls: [
+                    PlayerControl::Human,
+                    PlayerControl::Ai,
+                    PlayerControl::Human,
+                    PlayerControl::Ai,
+                ],
+            })
+            .insert_resource(test_roster())
+            .insert_resource(State::new(GamePhase::AwaitDice))
+            .insert_resource(TurnState::opening_turn())
+            .init_resource::<MatchResult>()
+            .init_resource::<SkillTargetState>()
+            .init_resource::<SkillTipState>()
+            .init_resource::<PlayerHudState>()
+            .init_resource::<EventLogState>()
+            .init_resource::<SkillUiRequest>()
+            .init_resource::<TurnUiRequest>()
+            .init_resource::<SkillRoster>()
+            .init_resource::<EffectRevealDelays>()
+            .init_resource::<LanguageSettings>()
+            .init_resource::<Time>()
+            .add_systems(
+                Update,
+                (
+                    handle_player_hud_click,
+                    update_hud_content,
+                    update_adaptive_hud,
+                )
+                    .chain(),
+            );
+        let window = app
+            .world_mut()
+            .spawn(Window {
+                resolution: (width, height).into(),
+                ..default()
+            })
+            .id();
+        (app, window)
+    }
+
+    fn touch_roll_target(app: &mut App, window: Entity, position: Vec2) {
+        use bevy::input::touch::{TouchInput, TouchPhase};
+        app.world_mut().write_message(TouchInput {
+            phase: TouchPhase::Started,
+            position,
+            window,
+            force: None,
+            id: 1,
+        });
+        app.update();
+    }
+
+    #[test]
+    fn center_and_primary_roll_entries_accept_touch_and_mouse_only_once_per_press() {
+        for (w, h) in [(360, 640), (640, 360), (1280, 720), (720, 1280)] {
+            let layout = GameLayout::new(w as f32, h as f32, test_profile(w as f32, h as f32));
+            for position in [layout.center_dice_roll().center(), layout.primary.center()] {
+                for touch in [false, true] {
+                    let (mut app, window) = roll_click_test_app(w, h);
+                    if touch {
+                        touch_roll_target(&mut app, window, position);
+                    } else {
+                        app.world_mut()
+                            .get_mut::<Window>(window)
+                            .unwrap()
+                            .set_cursor_position(Some(position));
+                        app.world_mut()
+                            .resource_mut::<ButtonInput<MouseButton>>()
+                            .press(MouseButton::Left);
+                        app.update();
+                        app.world_mut()
+                            .resource_mut::<ButtonInput<MouseButton>>()
+                            .clear();
+                    }
+                    assert!(
+                        app.world_mut().resource_mut::<TurnUiRequest>().take_roll(),
+                        "{w}x{h}, {position:?}, touch={touch}"
+                    );
+                    assert!(
+                        app.world()
+                            .resource::<PlayerHudState>()
+                            .board_roll_button_visible
+                    );
+                    app.update();
+                    assert!(!app.world_mut().resource_mut::<TurnUiRequest>().take_roll());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn roll_entries_reject_blocked_states_and_outside_taps() {
+        use crate::gameplay::turn_flow::{
+            commit_pending_roll_display, set_pending_double_dice_choice, set_roll_with_faces,
+        };
+        let layout = GameLayout::new(1280., 720., test_profile(1280., 720.));
+        for position in [layout.center_dice_roll().center(), layout.primary.center()] {
+            for blocked in 0..8 {
+                let (mut app, window) = roll_click_test_app(1280, 720);
+                match blocked {
+                    0 => {
+                        app.world_mut()
+                            .resource_mut::<SoundSettingsOverlayState>()
+                            .open = true
+                    }
+                    1 => {
+                        app.world_mut()
+                            .resource_mut::<SoundSettingsOverlayState>()
+                            .input_captured = true
+                    }
+                    2 => app.world_mut().resource_mut::<MatchResult>().finished = true,
+                    3 => app.world_mut().resource_mut::<TurnState>().current_player = 2,
+                    4 => {
+                        app.insert_resource(State::new(GamePhase::ResolveSkillEffect));
+                    }
+                    5 => set_roll_with_faces(
+                        &mut app.world_mut().resource_mut::<TurnState>(),
+                        4,
+                        [4, 0],
+                    ),
+                    _ => {
+                        let mut turn = app.world_mut().resource_mut::<TurnState>();
+                        set_pending_double_dice_choice(&mut turn, [2, 6]);
+                        if blocked == 7 {
+                            commit_pending_roll_display(&mut turn, 1);
+                        }
+                    }
+                }
+                touch_roll_target(&mut app, window, position);
+                assert!(
+                    !app.world_mut().resource_mut::<TurnUiRequest>().take_roll(),
+                    "blocked={blocked}"
+                );
+                if blocked >= 2 {
+                    assert!(
+                        !app.world()
+                            .resource::<PlayerHudState>()
+                            .board_roll_button_visible
+                    );
+                }
+            }
+        }
+        let (mut app, window) = roll_click_test_app(1280, 720);
+        let hit = layout.center_dice_roll();
+        touch_roll_target(&mut app, window, Vec2::new(hit.x - 1.0, hit.center().y));
+        assert!(!app.world_mut().resource_mut::<TurnUiRequest>().take_roll());
+    }
+
+    #[test]
+    fn center_remains_available_for_die_and_piece_selection_despite_cached_hud_flags() {
+        for (w, h) in [(360, 640), (1280, 720)] {
+            let profile = test_profile(w as f32, h as f32);
+            let layout = GameLayout::new(w as f32, h as f32, profile);
+            let window = Window {
+                resolution: (w, h).into(),
+                ..default()
+            };
+            let hud = PlayerHudState {
+                board_roll_button_visible: true,
+                event_log_expanded: true,
+                ..default()
+            };
+            for x in [-38.0, 0.0, 38.0] {
+                let die_center =
+                    layout.board.center() + Vec2::X * x * layout.board.w / BOARD_WORLD_SIZE;
+                assert!(!player_hud_point_is_interactive(
+                    die_center,
+                    &window,
+                    profile,
+                    &test_roster(),
+                    &hud,
+                    true
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn dice_context_guidance_matches_ready_rolling_and_choice_states() {
+        use crate::gameplay::turn_flow::{
+            commit_pending_roll_display, set_pending_double_dice_choice,
+        };
+        let (mut app, _) = roll_click_test_app(1280, 720);
+        let context = app
+            .world_mut()
+            .spawn((AdaptiveHudPart::Context, Node::default(), Text::default()))
+            .id();
+        app.update();
+        assert!(
+            app.world()
+                .get::<Text>(context)
+                .unwrap()
+                .0
+                .contains("点击中心骰子")
+        );
+        set_pending_double_dice_choice(&mut app.world_mut().resource_mut::<TurnState>(), [2, 6]);
+        app.update();
+        assert_eq!(
+            app.world().get::<Text>(context).unwrap().0,
+            "正在掷骰，请稍候。"
+        );
+        commit_pending_roll_display(&mut app.world_mut().resource_mut::<TurnState>(), 1);
+        app.update();
+        assert_eq!(
+            app.world().get::<Text>(context).unwrap().0,
+            "点击一个骰子选择点数，或按 1 / 2。"
+        );
     }
 
     #[test]
@@ -4776,23 +5591,23 @@ mod tests {
 
         assert_eq!(
             skill_icon_asset_path(SkillUiAction::Dash),
-            "ui/skills/dash.png"
+            "ui/skills/dash-compact.png"
         );
         assert_eq!(
             skill_icon_asset_path(SkillUiAction::Snipe),
-            "ui/skills/snipe.png"
+            "ui/skills/snipe-compact.png"
         );
         assert_eq!(
             skill_icon_asset_path(SkillUiAction::Swap),
-            "ui/skills/swap.png"
+            "ui/skills/swap-compact.png"
         );
         assert_eq!(
             skill_icon_asset_path(SkillUiAction::Shield),
-            "ui/skills/shield.png"
+            "ui/skills/shield-compact.png"
         );
         assert_eq!(
             skill_icon_asset_path(SkillUiAction::DoubleDice),
-            "ui/skills/double_dice.png"
+            "ui/skills/double_dice-compact.png"
         );
         assert_eq!(
             skill_badge_text(skill_charge(SkillUiAction::Dash, &skills)),
@@ -5043,7 +5858,9 @@ mod tests {
         let charge_bar = finish_bounce_charge_bar_rect(width, height, profile);
         let notice = event_notice_panel_rect(width, height, profile);
 
-        assert_eq!(first.x, last.x);
+        assert!((last.x - first.x - first.w - 8.0).abs() < 0.01);
+        assert_eq!((first.w, first.h), (last.w, last.h));
+        assert_eq!(last.y, first.y + first.h + 8.0);
         assert!(first.y < last.y);
         assert!(skill_bar.x >= side_hud.x);
         assert!(skill_bar.x + skill_bar.w <= side_hud.x + side_hud.w + f32::EPSILON);

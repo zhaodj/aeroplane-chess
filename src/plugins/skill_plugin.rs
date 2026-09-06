@@ -2,8 +2,8 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
-use crate::domain::piece::{PieceState, SWAP_MOTION_SERIAL_DELTA};
-use crate::gameplay::match_flow::{MatchConfig, MatchResult, PlayerRoster};
+use crate::domain::piece::PieceState;
+use crate::gameplay::match_flow::{BoardLayout, MatchConfig, MatchResult, PlayerRoster};
 use crate::gameplay::skill_flow::{
     MAX_PIECE_SHIELD, SkillRoster, arm_dash, arm_double_dice, build_skill_roster,
     can_use_skill_this_turn, current_player_type, dash_bonus, is_current_player_dash_move_piece,
@@ -11,9 +11,13 @@ use crate::gameplay::skill_flow::{
     is_legal_swap_target, mark_skill_used, player_skill_state, record_skill_action,
     spend_shield_charge, spend_snipe_charge, spend_swap_charge, sync_turn_skill_usage,
 };
-use crate::gameplay::turn_flow::TurnState;
+#[cfg(test)]
+use crate::gameplay::swap_flow::execute_swap;
+use crate::gameplay::swap_flow::{SWAP_MOTION_PENDING, SwapSelection, execute_selected_swap};
+use crate::gameplay::turn_flow::{TurnState, human_roll_is_ready};
 use crate::i18n::{Language, LanguageSettings};
 use crate::platform::{DeviceProfile, PointerInputState};
+use crate::plugins::animation_plugin::{MovingPieceQuery, swap_pair_is_moving};
 use crate::plugins::effects_plugin::{
     EffectRevealDelays, PieceMotionEffects, TARGETED_MISSILE_REVEAL_DURATION, VisualEffectQueue,
 };
@@ -21,9 +25,13 @@ use crate::plugins::menu_plugin::{SoundSettingsOverlayState, sound_settings_over
 use crate::plugins::piece_plugin::{HangarSlot, PieceId};
 use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
 use crate::states::{AppState, GamePhase};
+use crate::ui::game_layout::{GameLayout, swap_piece_picker_rects};
 
 /// 技能插件：处理技能输入、目标选择与技能效果执行。
 pub struct SkillPlugin;
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct SkillSystems;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SkillUiAction {
@@ -39,6 +47,7 @@ pub enum SkillUiAction {
 pub struct SkillUiRequest {
     pending: Option<SkillUiAction>,
     cancel_target_requested: bool,
+    confirm_target_requested: bool,
 }
 
 impl SkillUiRequest {
@@ -52,6 +61,14 @@ impl SkillUiRequest {
     /// 请求取消当前技能目标选择。
     pub fn queue_cancel_target(&mut self) {
         self.cancel_target_requested = true;
+    }
+
+    pub fn queue_confirm_target(&mut self) {
+        self.confirm_target_requested = true;
+    }
+
+    fn take_confirm_target(&mut self) -> bool {
+        std::mem::take(&mut self.confirm_target_requested)
     }
 
     /// 取出并清空待处理技能请求。
@@ -74,9 +91,23 @@ pub struct SkillTargetState {
     pub prompt: Option<String>,
     action: Option<SkillUiAction>,
     active: bool,
+    pub(crate) swap: Option<SwapSelection>,
+    swap_snapshot: Option<(PieceState, PieceState)>,
+    swap_motion_pending: bool,
+    input_consumed: bool,
+    pub(crate) overlap_choices: Vec<u8>,
 }
 
 impl SkillTargetState {
+    pub(crate) fn with_swap(swap: SwapSelection) -> Self {
+        Self {
+            candidate_piece_ids: swap.candidates().to_vec(),
+            action: Some(SkillUiAction::Swap),
+            active: true,
+            swap: Some(swap),
+            ..default()
+        }
+    }
     /// 当前技能（如 Snipe）可选目标列表。
     pub fn candidate_piece_ids(&self) -> &[u8] {
         &self.candidate_piece_ids
@@ -90,6 +121,23 @@ impl SkillTargetState {
     /// 当前等待确认目标的技能类型。
     pub fn action(&self) -> Option<SkillUiAction> {
         self.action
+    }
+
+    pub fn is_swap_preview(&self) -> bool {
+        self.overlap_choices.is_empty()
+            && self.swap.as_ref().and_then(SwapSelection::pair).is_some()
+    }
+
+    pub fn swap_pair(&self) -> Option<(u8, u8)> {
+        self.swap.as_ref()?.pair()
+    }
+
+    pub fn can_confirm_swap(&self) -> bool {
+        self.is_swap_preview() && !self.swap_motion_pending
+    }
+
+    pub fn swap_source(&self) -> Option<u8> {
+        self.swap.as_ref()?.source
     }
 }
 
@@ -120,10 +168,15 @@ struct HumanSkillInputParams<'w, 's> {
     motion_effects: ResMut<'w, PieceMotionEffects>,
     next_phase: ResMut<'w, NextState<GamePhase>>,
     piece_query: SkillPieceQuery<'w, 's>,
+    moving_pieces: MovingPieceQuery<'w, 's>,
 }
 
 #[derive(SystemParam)]
 struct SkillTargetParams<'w, 's> {
+    board_layout: Res<'w, BoardLayout>,
+    player_roster: Res<'w, PlayerRoster>,
+    language_settings: Res<'w, LanguageSettings>,
+    match_result: Res<'w, MatchResult>,
     match_config: Res<'w, MatchConfig>,
     game_phase: Res<'w, State<GamePhase>>,
     turn_state: Res<'w, TurnState>,
@@ -135,6 +188,7 @@ struct SkillTargetParams<'w, 's> {
     motion_effects: ResMut<'w, PieceMotionEffects>,
     next_phase: ResMut<'w, NextState<GamePhase>>,
     piece_query: SkillPieceQuery<'w, 's>,
+    moving_pieces: MovingPieceQuery<'w, 's>,
 }
 
 impl Plugin for SkillPlugin {
@@ -145,10 +199,13 @@ impl Plugin for SkillPlugin {
                 (
                     sync_skill_turn_state,
                     handle_human_skill_input,
+                    update_swap_motion_readiness,
                     handle_human_skill_target_key_select,
                     handle_human_skill_target_click,
                     update_skill_smoke_state,
                 )
+                    .chain()
+                    .in_set(SkillSystems)
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnExit(AppState::InGame), cleanup_skill_roster);
@@ -218,7 +275,8 @@ fn handle_human_skill_input(
     overlay_state: Res<SoundSettingsOverlayState>,
     mut params: HumanSkillInputParams,
 ) {
-    if overlay_state.open {
+    params.target_state.input_consumed = false;
+    if sound_settings_overlay_blocks_input(&overlay_state) {
         return;
     }
 
@@ -247,6 +305,10 @@ fn handle_human_skill_input(
     let Some(action) = requested_action else {
         return;
     };
+
+    if params.target_state.is_active() {
+        return;
+    }
 
     if params.match_result.finished {
         return;
@@ -476,6 +538,14 @@ fn handle_human_skill_input(
             }
         }
         SkillUiAction::Swap if matches!(params.game_phase.get(), GamePhase::AwaitDice) => {
+            if !human_roll_is_ready(
+                &params.turn_state,
+                params.game_phase.get(),
+                &params.player_roster,
+                &params.match_result,
+            ) {
+                return;
+            }
             let Some(current_team_id) = params
                 .player_roster
                 .players
@@ -486,12 +556,13 @@ fn handle_human_skill_input(
                 return;
             };
 
-            let Some(target_piece_id) = find_active_target_piece_for_swap(
+            let targets = collect_swap_targets(
                 params.turn_state.current_player,
                 current_team_id,
                 params.match_config.mode,
                 &params.piece_query,
-            ) else {
+            );
+            if targets.is_empty() {
                 record_skill_action(
                     &mut params.skill_roster,
                     params.turn_state.turn_index,
@@ -502,9 +573,17 @@ fn handle_human_skill_input(
                     ),
                 );
                 return;
-            };
-            if !current_player_has_swap_piece(params.turn_state.current_player, &params.piece_query)
-            {
+            }
+            let mut sources = params
+                .piece_query
+                .iter()
+                .filter(|(_, _, piece, _)| {
+                    is_current_player_swap_piece(params.turn_state.current_player, piece)
+                })
+                .map(|(id, _, _, _)| id.0)
+                .collect::<Vec<_>>();
+            sources.sort_unstable();
+            if sources.is_empty() {
                 record_skill_action(
                     &mut params.skill_roster,
                     params.turn_state.turn_index,
@@ -516,7 +595,9 @@ fn handle_human_skill_input(
                 );
                 return;
             }
-            if !spend_swap_charge(&mut params.skill_roster, params.turn_state.current_player) {
+            if !player_skill_state(&params.skill_roster, params.turn_state.current_player)
+                .is_some_and(|skills| skills.swap_charges > 0)
+            {
                 record_skill_action(
                     &mut params.skill_roster,
                     params.turn_state.turn_index,
@@ -529,20 +610,19 @@ fn handle_human_skill_input(
                 return;
             }
 
-            mark_skill_used(&mut params.skill_roster, params.turn_state.current_player);
-            let message = execute_swap(
+            *params.target_state = SkillTargetState::with_swap(SwapSelection::new(
                 params.turn_state.current_player,
-                current_team_id,
-                params.match_config.mode,
-                target_piece_id,
-                &mut params.piece_query,
-            );
-            record_skill_action(
-                &mut params.skill_roster,
                 params.turn_state.turn_index,
-                params.turn_state.current_player,
-                message,
+                sources,
+                targets,
+            ));
+            refresh_swap_target_state(
+                &mut params.target_state,
+                params.language_settings.language,
+                &params.piece_query,
+                &params.moving_pieces,
             );
+            params.next_phase.set(GamePhase::ResolveSkillEffect);
         }
         _ => {
             record_skill_action(
@@ -573,6 +653,7 @@ fn skill_target_cancelled_message(action: SkillUiAction) -> &'static str {
     match action {
         SkillUiAction::Shield => "Shield selection cancelled",
         SkillUiAction::Snipe => "Snipe selection cancelled",
+        SkillUiAction::Swap => "Swap selection cancelled",
         _ => "Skill target selection cancelled",
     }
 }
@@ -583,13 +664,30 @@ fn handle_human_skill_target_key_select(
     overlay_state: Res<SoundSettingsOverlayState>,
     mut params: SkillTargetParams,
 ) {
+    let cancel_requested = params.skill_ui_request.take_cancel_target();
+    let confirm_requested = params.skill_ui_request.take_confirm_target();
+    if params.target_state.swap.as_ref().is_some_and(|swap| {
+        swap.player_id != params.turn_state.current_player
+            || swap.turn_index != params.turn_state.turn_index
+            || params.match_result.finished
+            || !matches!(
+                params.game_phase.get(),
+                GamePhase::AwaitDice | GamePhase::ResolveSkillEffect
+            )
+    }) {
+        clear_target_state(&mut params.target_state);
+        if matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect) {
+            params.next_phase.set(GamePhase::AwaitDice);
+        }
+        return;
+    }
     if !params.match_config.rule_set.skills_enabled() {
         let _ = params.skill_ui_request.take_cancel_target();
         clear_target_state(&mut params.target_state);
         return;
     }
 
-    if overlay_state.open
+    if sound_settings_overlay_blocks_input(&overlay_state)
         || !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
         || !params.target_state.is_active()
     {
@@ -600,7 +698,7 @@ fn handle_human_skill_target_key_select(
         return;
     };
 
-    if keyboard.just_pressed(KeyCode::Escape) || params.skill_ui_request.take_cancel_target() {
+    if keyboard.just_pressed(KeyCode::Escape) || cancel_requested {
         record_skill_action(
             &mut params.skill_roster,
             params.turn_state.turn_index,
@@ -612,20 +710,52 @@ fn handle_human_skill_target_key_select(
         return;
     }
 
+    if target_action == SkillUiAction::Swap {
+        if keyboard.just_pressed(KeyCode::Backspace) {
+            params.target_state.swap.as_mut().unwrap().reselect();
+            refresh_swap_target_state(
+                &mut params.target_state,
+                params.language_settings.language,
+                &params.piece_query,
+                &params.moving_pieces,
+            );
+            params.target_state.input_consumed = true;
+            return;
+        }
+        if (confirm_requested || keyboard.just_pressed(KeyCode::Enter))
+            && params.target_state.is_swap_preview()
+        {
+            confirm_swap(&mut params);
+            return;
+        }
+    }
+
     let keys = [
         KeyCode::Digit1,
         KeyCode::Digit2,
         KeyCode::Digit3,
         KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+        KeyCode::Digit0,
+        KeyCode::Minus,
+        KeyCode::Equal,
     ];
+    let candidates = if params.target_state.overlap_choices.is_empty() {
+        &params.target_state.candidate_piece_ids
+    } else {
+        &params.target_state.overlap_choices
+    };
     let Some(selection) = keys.iter().enumerate().find_map(|(index, key)| {
-        (index < params.target_state.candidate_piece_ids.len() && keyboard.just_pressed(*key))
-            .then_some(index)
+        (index < candidates.len() && keyboard.just_pressed(*key)).then_some(index)
     }) else {
         return;
     };
 
-    let target_piece_id = params.target_state.candidate_piece_ids[selection];
+    let target_piece_id = candidates[selection];
     match target_action {
         SkillUiAction::Shield => resolve_shield_target(
             target_piece_id,
@@ -645,6 +775,10 @@ fn handle_human_skill_target_key_select(
             &mut params.motion_effects,
             &mut params.piece_query,
         ),
+        SkillUiAction::Swap => {
+            select_swap_piece(target_piece_id, &mut params);
+            return;
+        }
         _ => return,
     }
     clear_target_state(&mut params.target_state);
@@ -673,6 +807,7 @@ fn handle_human_skill_target_click(
 
     if !matches!(params.game_phase.get(), GamePhase::ResolveSkillEffect)
         || !params.target_state.is_active()
+        || params.target_state.input_consumed
     {
         return;
     }
@@ -685,6 +820,22 @@ fn handle_human_skill_target_click(
     let Ok(window) = windows.single() else {
         return;
     };
+    if !params.target_state.overlap_choices.is_empty() {
+        let (_, cells) = swap_piece_picker_rects(
+            GameLayout::new(window.width(), window.height(), *device_profile),
+            params.target_state.overlap_choices.len(),
+        );
+        if let Some(index) = cells
+            .iter()
+            .position(|rect| rect.contains(pointer_position))
+        {
+            let id = params.target_state.overlap_choices[index];
+            select_swap_piece(id, &mut params);
+        } else {
+            params.target_state.overlap_choices.clear();
+        }
+        return;
+    }
     if player_hud_point_is_interactive(
         pointer_position,
         window,
@@ -705,11 +856,22 @@ fn handle_human_skill_target_click(
     let pick_radius = device_profile.piece_pick_radius_world();
     let mut selected_piece_id = None;
     let mut best_distance_sq = f32::MAX;
+    let mut swap_hits = Vec::new();
     for (piece_id, _, _, transform) in &mut params.piece_query {
         if !params
             .target_state
             .candidate_piece_ids
             .contains(&piece_id.0)
+            && params.target_state.swap_source() != Some(piece_id.0)
+        {
+            continue;
+        }
+
+        if params.target_state.is_swap_preview()
+            && !params
+                .target_state
+                .swap_pair()
+                .is_some_and(|pair| piece_id.0 == pair.0 || piece_id.0 == pair.1)
         {
             continue;
         }
@@ -718,10 +880,20 @@ fn handle_human_skill_target_click(
             .translation
             .truncate()
             .distance_squared(cursor_world);
+        if target_action == SkillUiAction::Swap && distance_sq <= pick_radius * pick_radius {
+            swap_hits.push((piece_id.0, distance_sq));
+        }
         if distance_sq <= pick_radius * pick_radius && distance_sq < best_distance_sq {
             best_distance_sq = distance_sq;
             selected_piece_id = Some(piece_id.0);
         }
+    }
+
+    if swap_hits.len() > 1 {
+        swap_hits.sort_by_key(|(id, _)| *id);
+        params.target_state.overlap_choices = swap_hits.into_iter().map(|(id, _)| id).collect();
+        params.target_state.input_consumed = true;
+        return;
     }
 
     let Some(target_piece_id) = selected_piece_id else {
@@ -746,6 +918,10 @@ fn handle_human_skill_target_click(
             &mut params.motion_effects,
             &mut params.piece_query,
         ),
+        SkillUiAction::Swap => {
+            select_swap_piece(target_piece_id, &mut params);
+            return;
+        }
         _ => return,
     }
     clear_target_state(&mut params.target_state);
@@ -754,10 +930,179 @@ fn handle_human_skill_target_click(
 
 /// 清理技能目标选择状态。
 fn clear_target_state(target_state: &mut SkillTargetState) {
-    target_state.candidate_piece_ids.clear();
-    target_state.prompt = None;
-    target_state.action = None;
-    target_state.active = false;
+    *target_state = SkillTargetState::default();
+}
+
+fn swap_piece_snapshot(
+    pair: (u8, u8),
+    pieces: &SkillPieceQuery<'_, '_>,
+) -> Option<(PieceState, PieceState)> {
+    let get = |id| {
+        pieces
+            .iter()
+            .find(|(piece_id, _, _, _)| piece_id.0 == id)
+            .map(|(_, _, piece, _)| *piece)
+    };
+    Some((get(pair.0)?, get(pair.1)?))
+}
+
+fn refresh_swap_target_state(
+    target: &mut SkillTargetState,
+    language: Language,
+    pieces: &SkillPieceQuery<'_, '_>,
+    moving: &MovingPieceQuery,
+) {
+    target.overlap_choices.clear();
+    let Some(swap) = &target.swap else {
+        return;
+    };
+    target.active = true;
+    target.action = Some(SkillUiAction::Swap);
+    target.candidate_piece_ids = swap.candidates().to_vec();
+    target.swap_snapshot = swap
+        .pair()
+        .and_then(|pair| swap_piece_snapshot(pair, pieces));
+    target.swap_motion_pending = swap
+        .pair()
+        .is_some_and(|pair| swap_pair_is_moving(pair, moving));
+    refresh_swap_prompt(target, language);
+}
+
+pub(crate) fn update_swap_motion_readiness(
+    mut target: ResMut<SkillTargetState>,
+    language: Res<LanguageSettings>,
+    moving: MovingPieceQuery,
+) {
+    let pending = target
+        .swap_pair()
+        .is_some_and(|pair| swap_pair_is_moving(pair, &moving));
+    if target.swap_motion_pending != pending {
+        target.swap_motion_pending = pending;
+        // Do not refresh the commit snapshot: stale selections must still fail validation.
+        refresh_swap_prompt(&mut target, language.language);
+    }
+}
+
+fn refresh_swap_prompt(target: &mut SkillTargetState, language: Language) {
+    let Some(swap) = &target.swap else {
+        return;
+    };
+    let zh = language == Language::SimplifiedChinese;
+    target.prompt = Some(if let Some((source, other)) = swap.pair() {
+        let owner = target
+            .swap_snapshot
+            .map(|(_, p)| p.owner_player_id)
+            .unwrap_or_default();
+        if target.swap_motion_pending && zh {
+            format!(
+                "P{} · #{} ↔ P{} · #{}\n等待双方落稳后确认；可取消，不消耗次数。",
+                swap.player_id, source, owner, other
+            )
+        } else if target.swap_motion_pending {
+            format!(
+                "P{} · #{} ↔ P{} · #{}\nWait for both aircraft to land. Cancel is free.",
+                swap.player_id, source, owner, other
+            )
+        } else if zh {
+            format!(
+                "P{} · #{} ↔ P{} · #{}\n确认后消耗 1 次；点击己方飞机可重选。",
+                swap.player_id, source, owner, other
+            )
+        } else {
+            format!(
+                "P{} · #{} ↔ P{} · #{}\nCosts 1 charge on confirm. Tap your aircraft to reselect.",
+                swap.player_id, source, owner, other
+            )
+        }
+    } else if let Some(source) = swap.source {
+        if zh {
+            format!(
+                "已选己方 #{}，请点击高亮目标。\n点击己方飞机可重选；取消不消耗次数。",
+                source
+            )
+        } else {
+            format!(
+                "Selected #{}. Tap a highlighted target.\nTap your aircraft to reselect; cancel is free.",
+                source
+            )
+        }
+    } else if zh {
+        "先点击一架高亮的己方飞机。\n取消不消耗次数。".into()
+    } else {
+        "First tap one of your highlighted aircraft.\nCancel does not spend a charge.".into()
+    });
+}
+
+fn select_swap_piece(id: u8, params: &mut SkillTargetParams) {
+    params.target_state.overlap_choices.clear();
+    let Some(swap) = &mut params.target_state.swap else {
+        return;
+    };
+    if swap.source == Some(id) {
+        swap.reselect();
+    } else {
+        swap.select(id);
+    }
+    refresh_swap_target_state(
+        &mut params.target_state,
+        params.language_settings.language,
+        &params.piece_query,
+        &params.moving_pieces,
+    );
+    params.target_state.input_consumed = true;
+}
+
+fn confirm_swap(params: &mut SkillTargetParams) {
+    let Some(pair) = params.target_state.swap_pair() else {
+        return;
+    };
+    let player = params.turn_state.current_player;
+    let legal_session = params.target_state.swap.as_ref().is_some_and(|swap| {
+        swap.player_id == player && swap.turn_index == params.turn_state.turn_index
+    });
+    let result = if !legal_session
+        || params.match_result.finished
+        || current_player_type(&params.player_roster, player)
+            != Some(crate::domain::player::PlayerControl::Human)
+        || !can_use_skill_this_turn(&params.skill_roster, player)
+        || params.target_state.swap_snapshot.is_none()
+        || params.target_state.swap_snapshot != swap_piece_snapshot(pair, &params.piece_query)
+    {
+        Err("Swap failed: selection is no longer available")
+    } else if !player_skill_state(&params.skill_roster, player).is_some_and(|s| s.swap_charges > 0)
+    {
+        Err("Swap failed: no charges left")
+    } else {
+        execute_selected_swap(
+            player,
+            params.match_config.mode,
+            pair.0,
+            pair.1,
+            &params.board_layout,
+            &params.player_roster,
+            &mut params.piece_query,
+            &params.moving_pieces,
+        )
+    };
+    if result == Err(SWAP_MOTION_PENDING) {
+        params.target_state.swap_motion_pending = true;
+        params.target_state.input_consumed = true;
+        refresh_swap_prompt(&mut params.target_state, params.language_settings.language);
+        return;
+    }
+    if result.is_ok() {
+        // Same exclusive system: the checked charge cannot change between validation and commit.
+        spend_swap_charge(&mut params.skill_roster, player);
+        mark_skill_used(&mut params.skill_roster, player);
+    }
+    record_skill_action(
+        &mut params.skill_roster,
+        params.turn_state.turn_index,
+        player,
+        result.unwrap_or_else(str::to_string),
+    );
+    clear_target_state(&mut params.target_state);
+    params.next_phase.set(GamePhase::AwaitDice);
 }
 
 /// 收集 Shield 目标：仅允许己方 Active 且未满个人护盾的棋子。
@@ -979,6 +1324,7 @@ fn execute_snipe(
 }
 
 /// 判断当前玩家是否至少有一枚可作为 Swap 发起方的棋子。
+#[cfg(test)]
 fn current_player_has_swap_piece(
     current_player: u8,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -999,12 +1345,12 @@ fn current_player_has_dash_move_piece(
 }
 
 /// 查找可用于 Swap 的目标主环道棋子。
-fn find_active_target_piece_for_swap(
+fn collect_swap_targets(
     current_player: u8,
     current_team: u8,
     mode: GameMode,
     piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-) -> Option<u8> {
+) -> Vec<u8> {
     let mut candidates = piece_query
         .iter()
         .filter(|(_, _, piece_state, _)| {
@@ -1013,69 +1359,7 @@ fn find_active_target_piece_for_swap(
         .map(|(piece_id, _, _, _)| piece_id.0)
         .collect::<Vec<_>>();
     candidates.sort_unstable();
-    candidates.into_iter().next()
-}
-
-/// 执行 Swap：交换双方状态与世界坐标。
-fn execute_swap(
-    current_player: u8,
-    current_team: u8,
-    mode: GameMode,
-    target_piece_id: u8,
-    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-) -> String {
-    let Some((current_piece_id, current_state, current_translation)) =
-        piece_query
-            .iter()
-            .find_map(|(piece_id, _, piece_state, transform)| {
-                is_current_player_swap_piece(current_player, &piece_state).then_some((
-                    piece_id.0,
-                    *piece_state,
-                    transform.translation,
-                ))
-            })
-    else {
-        return "Swap failed: current player's active piece not found".to_string();
-    };
-
-    let Some((target_state, target_translation)) =
-        piece_query
-            .iter()
-            .find_map(|(piece_id, _, piece_state, transform)| {
-                (piece_id.0 == target_piece_id
-                    && is_legal_swap_target(current_player, current_team, mode, &piece_state))
-                .then_some((*piece_state, transform.translation))
-            })
-    else {
-        return "Swap failed: target piece not found on main route".to_string();
-    };
-
-    for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
-        if piece_id.0 == current_piece_id {
-            piece_state.status = target_state.status;
-            piece_state.progress = target_state.progress;
-            piece_state.shield = target_state.shield;
-            piece_state.stack_shield = target_state.stack_shield;
-            piece_state.motion_serial = piece_state
-                .motion_serial
-                .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
-            transform.translation = target_translation;
-        } else if piece_id.0 == target_piece_id {
-            piece_state.status = current_state.status;
-            piece_state.progress = current_state.progress;
-            piece_state.shield = current_state.shield;
-            piece_state.stack_shield = current_state.stack_shield;
-            piece_state.motion_serial = piece_state
-                .motion_serial
-                .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
-            transform.translation = current_translation;
-        }
-    }
-
-    format!(
-        "Swap exchanged piece #{} with piece #{}",
-        current_piece_id, target_piece_id
-    )
+    candidates
 }
 
 #[cfg(test)]
@@ -1084,6 +1368,436 @@ mod tests {
     use crate::gameplay::skill_flow::PlayerSkillState;
     use crate::gameplay::turn_flow::HOME_ENTRY_PROGRESS;
     use bevy::ecs::system::SystemState;
+
+    fn swap_selection_app(single: bool) -> App {
+        use crate::gameplay::match_flow::{MatchSetup, PlayerSeat, build_match_resources};
+        let setup = MatchSetup {
+            mode: GameMode::TwoVsTwo,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
+            ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
+            fast_mode: false,
+            launch_rule: crate::domain::rules::LaunchRule::SixOnly,
+            player_seats: PlayerSeat::ALL,
+            pieces_per_player: 2,
+            player_controls: [crate::domain::player::PlayerControl::Human; 4],
+        };
+        let (board, roster, _) = build_match_resources(&setup);
+        let config = MatchConfig {
+            mode: setup.mode,
+            rule_set: setup.rule_set,
+            ai_difficulty: setup.ai_difficulty,
+            fast_mode: setup.fast_mode,
+            launch_rule: setup.launch_rule,
+            player_seats: setup.player_seats,
+            pieces_per_player: setup.pieces_per_player,
+            player_controls: setup.player_controls,
+        };
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .insert_state(GamePhase::AwaitDice)
+            .insert_resource(config)
+            .insert_resource(build_skill_roster(&roster))
+            .insert_resource(roster)
+            .insert_resource(TurnState::opening_turn())
+            .insert_resource(board)
+            .init_resource::<MatchResult>()
+            .init_resource::<LanguageSettings>()
+            .init_resource::<SoundSettingsOverlayState>()
+            .init_resource::<SkillUiRequest>()
+            .init_resource::<SkillTargetState>()
+            .init_resource::<VisualEffectQueue>()
+            .init_resource::<EffectRevealDelays>()
+            .init_resource::<PieceMotionEffects>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(
+                Update,
+                (
+                    sync_skill_turn_state,
+                    handle_human_skill_input,
+                    update_swap_motion_readiness,
+                    handle_human_skill_target_key_select,
+                )
+                    .chain(),
+            );
+        for (id, owner, progress) in [(1, 1, 3), (2, 1, 9), (5, 3, 18), (6, 3, 27)] {
+            if single && (id == 2 || id == 6) {
+                continue;
+            }
+            app.world_mut().spawn((
+                PieceId(id),
+                HangarSlot(Vec2::ZERO),
+                PieceState {
+                    owner_player_id: owner,
+                    team_id: 1,
+                    status: crate::domain::piece::PieceStatus::Active,
+                    progress,
+                    shield: 0,
+                    stack_shield: 0,
+                    motion_serial: 0,
+                },
+                Transform::default(),
+            ));
+        }
+        app.world_mut()
+            .resource_mut::<SkillUiRequest>()
+            .queue(SkillUiAction::Swap);
+        app.update();
+        app.update();
+        app
+    }
+
+    fn select_key(app: &mut App, key: KeyCode) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(key);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+    }
+
+    fn selection_pieces(app: &mut App) -> Vec<(u8, PieceState)> {
+        let mut query = app.world_mut().query::<(&PieceId, &PieceState)>();
+        let mut pieces = query
+            .iter(app.world())
+            .map(|(id, p)| (id.0, *p))
+            .collect::<Vec<_>>();
+        pieces.sort_by_key(|(id, _)| *id);
+        pieces
+    }
+
+    #[test]
+    fn overlap_picker_touch_selects_exact_number_and_cannot_confirm_in_same_press() {
+        use bevy::input::touch::{TouchInput, TouchPhase};
+        let mut app = swap_selection_app(false);
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .add_message::<TouchInput>()
+            .add_plugins(crate::platform::PlatformPlugin)
+            .init_resource::<PlayerHudState>()
+            .add_systems(
+                Update,
+                handle_human_skill_target_click.after(handle_human_skill_target_key_select),
+            );
+        let window = app
+            .world_mut()
+            .spawn(Window {
+                resolution: (1280, 720).into(),
+                ..default()
+            })
+            .id();
+        let layout = GameLayout::new(
+            1280.0,
+            720.0,
+            DeviceProfile::from_window_size(1280.0, 720.0),
+        );
+        for (choices, expected_source, expected_pair) in [
+            (vec![1, 2], Some(2), None),
+            (vec![5, 6], Some(2), Some((2, 6))),
+        ] {
+            app.world_mut()
+                .resource_mut::<SkillTargetState>()
+                .overlap_choices = choices;
+            let (_, cells) = swap_piece_picker_rects(layout, 2);
+            app.world_mut().write_message(TouchInput {
+                phase: TouchPhase::Started,
+                position: cells[1].center(),
+                window,
+                force: None,
+                id: 1,
+            });
+            app.update();
+            let state = app.world().resource::<SkillTargetState>();
+            assert_eq!(state.swap_source(), expected_source);
+            assert_eq!(state.swap_pair(), expected_pair);
+            assert!(state.overlap_choices.is_empty());
+            assert_eq!(
+                app.world().resource::<SkillRoster>().players[0].swap_charges,
+                1
+            );
+            app.world_mut().write_message(TouchInput {
+                phase: TouchPhase::Ended,
+                position: cells[1].center(),
+                window,
+                force: None,
+                id: 1,
+            });
+            app.update();
+        }
+    }
+
+    #[test]
+    fn human_swap_selects_non_first_pair_previews_then_spends_once() {
+        let mut app = swap_selection_app(false);
+        let before = selection_pieces(&mut app);
+        assert_eq!(
+            app.world()
+                .resource::<SkillTargetState>()
+                .candidate_piece_ids(),
+            &[1, 2]
+        );
+        select_key(&mut app, KeyCode::Digit2);
+        assert_eq!(
+            app.world()
+                .resource::<SkillTargetState>()
+                .candidate_piece_ids(),
+            &[5, 6]
+        );
+        select_key(&mut app, KeyCode::Digit2);
+        assert_eq!(
+            app.world().resource::<SkillTargetState>().swap_pair(),
+            Some((2, 6))
+        );
+        assert_eq!(selection_pieces(&mut app), before);
+        let skills = app.world().resource::<SkillRoster>();
+        assert_eq!(skills.players[0].swap_charges, 1);
+        assert!(!skills.skill_used_this_turn);
+        app.world_mut()
+            .resource_mut::<SkillUiRequest>()
+            .queue_confirm_target();
+        select_key(&mut app, KeyCode::Enter);
+        let after = selection_pieces(&mut app);
+        assert_eq!(before[0], after[0]);
+        assert_eq!(before[2], after[2]);
+        assert_ne!(before[1], after[1]);
+        assert_ne!(before[3], after[3]);
+        let skills = app.world().resource::<SkillRoster>();
+        assert_eq!(skills.players[0].swap_charges, 0);
+        assert!(skills.skill_used_this_turn);
+        assert_eq!(
+            skills.last_skill_action.as_deref(),
+            Some("Swap exchanged piece #2 with piece #6")
+        );
+        assert!(!app.world().resource::<SkillTargetState>().is_active());
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<GamePhase>>().get(),
+            GamePhase::AwaitDice
+        );
+        assert_eq!(selection_pieces(&mut app), after);
+    }
+
+    #[test]
+    fn single_swap_candidates_still_require_confirmation_and_cancel_is_free() {
+        for keyboard in [true, false] {
+            let mut app = swap_selection_app(true);
+            let before = selection_pieces(&mut app);
+            assert_eq!(
+                app.world().resource::<SkillTargetState>().swap_pair(),
+                Some((1, 5))
+            );
+            if keyboard {
+                select_key(&mut app, KeyCode::Escape);
+            } else {
+                app.world_mut()
+                    .resource_mut::<SkillUiRequest>()
+                    .queue_cancel_target();
+                app.update();
+            }
+            assert_eq!(selection_pieces(&mut app), before);
+            assert!(!app.world().resource::<SkillTargetState>().is_active());
+            assert_eq!(
+                app.world().resource::<SkillRoster>().players[0].swap_charges,
+                1
+            );
+            assert!(!app.world().resource::<SkillRoster>().skill_used_this_turn);
+        }
+    }
+
+    #[test]
+    fn swap_waits_for_either_aircraft_and_requires_fresh_confirmation_without_spending() {
+        use crate::plugins::animation_plugin::PieceMoveAnimation;
+        for id in [1, 5] {
+            for cancel in [false, true] {
+                let mut app = swap_selection_app(true);
+                let before = selection_pieces(&mut app);
+                let entity = app
+                    .world_mut()
+                    .query::<(Entity, &PieceId)>()
+                    .iter(app.world())
+                    .find(|(_, piece)| piece.0 == id)
+                    .unwrap()
+                    .0;
+                app.world_mut()
+                    .entity_mut(entity)
+                    .insert(PieceMoveAnimation::test_pending());
+                app.world_mut()
+                    .resource_mut::<SkillUiRequest>()
+                    .queue_confirm_target();
+                app.update();
+                let target = app.world().resource::<SkillTargetState>();
+                assert!(target.is_active() && target.is_swap_preview());
+                assert!(!target.can_confirm_swap());
+                assert!(target.prompt.as_deref().unwrap().contains("等待双方落稳"));
+                assert_eq!(selection_pieces(&mut app), before);
+                assert_eq!(
+                    app.world().resource::<SkillRoster>().players[0].swap_charges,
+                    1
+                );
+                assert!(!app.world().resource::<SkillRoster>().skill_used_this_turn);
+                if cancel {
+                    select_key(&mut app, KeyCode::Escape);
+                    assert!(!app.world().resource::<SkillTargetState>().is_active());
+                    assert_eq!(
+                        app.world().resource::<SkillRoster>().players[0].swap_charges,
+                        1
+                    );
+                    continue;
+                }
+                app.world_mut()
+                    .entity_mut(entity)
+                    .remove::<PieceMoveAnimation>();
+                app.update();
+                assert!(
+                    app.world()
+                        .resource::<SkillTargetState>()
+                        .can_confirm_swap()
+                );
+                assert_eq!(selection_pieces(&mut app), before);
+                assert_eq!(
+                    app.world().resource::<SkillRoster>().players[0].swap_charges,
+                    1
+                );
+                app.world_mut()
+                    .resource_mut::<SkillUiRequest>()
+                    .queue_confirm_target();
+                app.update();
+                assert!(!app.world().resource::<SkillTargetState>().is_active());
+                assert_eq!(
+                    app.world().resource::<SkillRoster>().players[0].swap_charges,
+                    0
+                );
+                assert!(app.world().resource::<SkillRoster>().skill_used_this_turn);
+            }
+        }
+    }
+
+    #[test]
+    fn waiting_for_motion_does_not_refresh_a_stale_swap_snapshot() {
+        use crate::plugins::animation_plugin::PieceMoveAnimation;
+        let mut app = swap_selection_app(true);
+        let entity = app
+            .world_mut()
+            .query::<(Entity, &PieceId)>()
+            .iter(app.world())
+            .find(|(_, id)| id.0 == 5)
+            .unwrap()
+            .0;
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(PieceMoveAnimation::test_pending());
+        app.update();
+        app.world_mut()
+            .get_mut::<PieceState>(entity)
+            .unwrap()
+            .progress += 1;
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<PieceMoveAnimation>();
+        app.update();
+        let before = selection_pieces(&mut app);
+        app.world_mut()
+            .resource_mut::<SkillUiRequest>()
+            .queue_confirm_target();
+        app.update();
+        assert_eq!(selection_pieces(&mut app), before);
+        assert!(!app.world().resource::<SkillTargetState>().is_active());
+        assert_eq!(
+            app.world().resource::<SkillRoster>().players[0].swap_charges,
+            1
+        );
+        assert!(!app.world().resource::<SkillRoster>().skill_used_this_turn);
+    }
+
+    #[test]
+    fn swap_reselection_and_cancellation_work_at_every_stage() {
+        for stage in 0..3 {
+            let mut app = swap_selection_app(false);
+            let before = selection_pieces(&mut app);
+            if stage >= 1 {
+                select_key(&mut app, KeyCode::Digit2);
+            }
+            if stage >= 2 {
+                select_key(&mut app, KeyCode::Digit1);
+            }
+            select_key(&mut app, KeyCode::Backspace);
+            assert_eq!(
+                app.world()
+                    .resource::<SkillTargetState>()
+                    .candidate_piece_ids(),
+                &[1, 2]
+            );
+            assert_eq!(
+                app.world().resource::<SkillTargetState>().swap_source(),
+                None
+            );
+            select_key(&mut app, KeyCode::Escape);
+            assert_eq!(selection_pieces(&mut app), before);
+            assert_eq!(
+                app.world().resource::<SkillRoster>().players[0].swap_charges,
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn swap_confirmation_rejects_stale_piece_turn_charge_or_permission_without_mutation() {
+        for invalid in 0..7 {
+            let mut app = swap_selection_app(true);
+            match invalid {
+                0 => {
+                    app.world_mut().resource_mut::<TurnState>().turn_index += 1;
+                }
+                1 => {
+                    app.world_mut().resource_mut::<TurnState>().current_player = 3;
+                }
+                2 => {
+                    app.world_mut().resource_mut::<SkillRoster>().players[0].swap_charges = 0;
+                }
+                3 => {
+                    app.world_mut()
+                        .resource_mut::<SkillRoster>()
+                        .skill_used_this_turn = true;
+                }
+                4 => {
+                    app.world_mut().resource_mut::<MatchResult>().finished = true;
+                }
+                5 => {
+                    let mut query = app.world_mut().query::<&mut PieceState>();
+                    for mut piece in query.iter_mut(app.world_mut()) {
+                        piece.progress += 1;
+                    }
+                }
+                _ => {
+                    app.world_mut().resource_mut::<SkillRoster>().players[0]
+                        .skill_blocked_this_turn = true;
+                }
+            }
+            let before = selection_pieces(&mut app);
+            let charges = app.world().resource::<SkillRoster>().players[0].swap_charges;
+            select_key(&mut app, KeyCode::Enter);
+            assert_eq!(selection_pieces(&mut app), before, "case {invalid}");
+            assert_eq!(
+                app.world().resource::<SkillRoster>().players[0].swap_charges,
+                charges
+            );
+            assert!(!app.world().resource::<SkillTargetState>().is_active());
+        }
+    }
+
+    fn swap_test_roster() -> PlayerRoster {
+        use crate::gameplay::match_flow::{MatchSetup, PlayerSeat, build_match_resources};
+        let setup = MatchSetup {
+            mode: GameMode::TwoVsTwo,
+            rule_set: crate::data::rule_set::RuleSet::Creative,
+            ai_difficulty: crate::gameplay::ai::AiDifficulty::Normal,
+            fast_mode: false,
+            launch_rule: crate::domain::rules::LaunchRule::SixOnly,
+            player_seats: PlayerSeat::ALL,
+            pieces_per_player: 2,
+            player_controls: [crate::domain::player::PlayerControl::Human; 4],
+        };
+        build_match_resources(&setup).1
+    }
 
     #[test]
     fn skill_ui_request_carries_touch_cancel_target() {
@@ -1145,7 +1859,7 @@ mod tests {
                     owner_player_id: 1,
                     team_id: 1,
                     status: crate::domain::piece::PieceStatus::Active,
-                    progress: piece_id,
+                    progress: piece_id.into(),
                     shield: 0,
                     stack_shield: 0,
                     motion_serial: 0,
@@ -1344,17 +2058,17 @@ mod tests {
         let query = system_state.get_mut(&mut world).unwrap();
 
         assert_eq!(
-            find_active_target_piece_for_swap(1, 1, GameMode::TwoVsTwo, &query),
-            Some(4)
+            collect_swap_targets(1, 1, GameMode::TwoVsTwo, &query),
+            vec![4, 7]
         );
         assert_eq!(
-            find_active_target_piece_for_swap(1, 1, GameMode::OneVsOne, &query),
-            None
+            collect_swap_targets(1, 1, GameMode::OneVsOne, &query),
+            Vec::<u8>::new()
         );
     }
 
     #[test]
-    fn execute_swap_exchanges_progress_and_positions_between_valid_targets() {
+    fn execute_swap_rebases_progress_and_ignores_interpolated_positions() {
         let mut world = World::new();
         world.spawn((
             PieceId(1),
@@ -1385,12 +2099,21 @@ mod tests {
             Transform::from_xyz(100.0, 50.0, 0.0),
         ));
 
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
 
-        let note = execute_swap(1, 1, GameMode::TwoVsTwo, 2, &mut query);
+        let note = execute_swap(
+            1,
+            GameMode::TwoVsTwo,
+            2,
+            &BoardLayout::default(),
+            &swap_test_roster(),
+            &mut query,
+            &moving_query,
+        );
         let states = query
             .iter_mut()
             .map(|(piece_id, _, piece_state, transform)| {
@@ -1409,7 +2132,10 @@ mod tests {
         assert!(note.contains("exchanged"));
         assert_eq!(
             states,
-            vec![(1, 1, 18, 0, 1, 100.0, 50.0), (2, 3, 3, 1, 0, -100.0, 0.0),]
+            vec![
+                (1, 1, 5, 0, 1, -140.104, 200.104),
+                (2, 3, 16, 1, 0, -156.104, 124.104)
+            ]
         );
     }
 
@@ -1444,12 +2170,21 @@ mod tests {
             },
             Transform::from_xyz(20.0, 0.0, 0.0),
         ));
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
 
-        let note = execute_swap(1, 1, GameMode::OneVsOne, 3, &mut query);
+        let note = execute_swap(
+            1,
+            GameMode::OneVsOne,
+            3,
+            &BoardLayout::default(),
+            &swap_test_roster(),
+            &mut query,
+            &moving_query,
+        );
         let states = query
             .iter_mut()
             .map(|(piece_id, _, piece_state, transform)| {
@@ -1464,7 +2199,10 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(note, "Swap exchanged piece #1 with piece #3");
-        assert_eq!(states, vec![(1, 1, 16, 1, 20.0), (3, 2, 4, 0, -20.0)]);
+        assert_eq!(
+            states,
+            vec![(1, 1, 29, 1, 156.104), (3, 2, 43, 0, -124.104)]
+        );
     }
 
     #[test]
@@ -1499,13 +2237,22 @@ mod tests {
             Transform::from_xyz(100.0, 50.0, 0.0),
         ));
 
-        let mut target_system_state: SystemState<
+        let mut target_system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut target_home_lane_world);
-        let mut target_query = target_system_state
+            MovingPieceQuery,
+        )> = SystemState::new(&mut target_home_lane_world);
+        let (mut target_query, moving_target_query) = target_system_state
             .get_mut(&mut target_home_lane_world)
             .unwrap();
-        let target_note = execute_swap(1, 1, GameMode::TwoVsTwo, 2, &mut target_query);
+        let target_note = execute_swap(
+            1,
+            GameMode::TwoVsTwo,
+            2,
+            &BoardLayout::default(),
+            &swap_test_roster(),
+            &mut target_query,
+            &moving_target_query,
+        );
         assert!(target_note.contains("not found on main route"));
 
         let mut source_home_lane_world = World::new();
@@ -1538,13 +2285,22 @@ mod tests {
             Transform::from_xyz(100.0, 50.0, 0.0),
         ));
 
-        let mut source_system_state: SystemState<
+        let mut source_system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut source_home_lane_world);
-        let mut source_query = source_system_state
+            MovingPieceQuery,
+        )> = SystemState::new(&mut source_home_lane_world);
+        let (mut source_query, moving_source_query) = source_system_state
             .get_mut(&mut source_home_lane_world)
             .unwrap();
-        let source_note = execute_swap(1, 1, GameMode::TwoVsTwo, 2, &mut source_query);
+        let source_note = execute_swap(
+            1,
+            GameMode::TwoVsTwo,
+            2,
+            &BoardLayout::default(),
+            &swap_test_roster(),
+            &mut source_query,
+            &moving_source_query,
+        );
         assert!(source_note.contains("active piece not found"));
     }
 

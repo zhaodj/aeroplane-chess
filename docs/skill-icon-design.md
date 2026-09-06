@@ -1,0 +1,35 @@
+# 技能图标与紧凑技能栏
+
+生成方式：内置 image_gen（通过 imagegen 技能），2026-09-06。未调用 CLI/API fallback。
+
+新版 PNG 保留生成文件的透明 alpha；旧版插画保留原路径，不覆盖。图标与名称、充能次数分离渲染，不在图片中烘焙名称、次数或背景卡片。
+
+## 已接入资源
+
+- `assets/ui/skills/dash-compact.png`
+- `assets/ui/skills/snipe-compact.png`
+- `assets/ui/skills/swap-compact.png`
+- `assets/ui/skills/shield-compact.png`
+- `assets/ui/skills/double_dice-compact.png`
+
+## 最终提示词
+
+### dash
+
+Use case: stylized-concept. Asset type: one production-ready PNG game skill icon for a Rust/Bevy aeroplane chess tablet game. Generate a NEW asset, not a UI mockup or a sprite sheet. Style: cheerful, exceptionally simple vector-like raster game pictogram, warm amber-orange fill with a thick dark navy silhouette outline, rounded corners, very restrained golden highlight, matching a light blue/white board-game UI. Minimal geometry designed to be recognized at 40 pixels; solid chunky shapes rather than thin strokes. Composition: exactly one symbol centered in a square canvas; symbol occupies about 82% of the canvas in its longest dimension, equal clear margins, all edges within frame. Genuine transparent background with alpha, no painted checkerboard, no opaque white background. No card background, decorative frame, surrounding circle unless part of the requested symbol, no glow, sparkles, shadows, lettering, numbers, watermark, labels, or additional small details. Output exactly one square transparent PNG, preferably 512 by 512 pixels. Subject: A single bold orange lightning-bolt-shaped forward acceleration arrow with two short parallel speed streaks behind it. Reads as DASH / extra movement. One strong forward direction, no aircraft and no dice.
+
+### snipe
+
+Use case: stylized-concept. Asset type: one production-ready PNG game skill icon for a Rust/Bevy aeroplane chess tablet game. Generate a NEW asset, not a UI mockup or a sprite sheet. Style: cheerful, exceptionally simple vector-like raster game pictogram, warm amber-orange fill with a thick dark navy silhouette outline, rounded corners, very restrained golden highlight, matching a light blue/white board-game UI. Minimal geometry designed to be recognized at 40 pixels; solid chunky shapes rather than thin strokes. Composition: exactly one symbol centered in a square canvas; symbol occupies about 82% of the canvas in its longest dimension, equal clear margins, all edges within frame. Genuine transparent background with alpha, no painted checkerboard, no opaque white background. No card background, decorative frame, surrounding circle unless part of the requested symbol, no glow, sparkles, shadows, lettering, numbers, watermark, labels, or additional small details. Output exactly one square transparent PNG, preferably 512 by 512 pixels. Subject: A bold circular target reticle with four short cardinal aiming ticks and a central solid amber-orange dot. Thick dark navy ring and ticks, orange central dot. Clean symmetrical crosshair for SNIPE. No weapon, no aircraft.
+
+### swap
+
+Use case: stylized-concept. Asset type: one production-ready PNG game skill icon for a Rust/Bevy aeroplane chess tablet game. Generate a NEW asset, not a UI mockup or a sprite sheet. Style: cheerful, exceptionally simple vector-like raster game pictogram, warm amber-orange fill with a thick dark navy silhouette outline, rounded corners, very restrained golden highlight, matching a light blue/white board-game UI. Minimal geometry designed to be recognized at 40 pixels; solid chunky shapes rather than thin strokes. Composition: exactly one symbol centered in a square canvas; symbol occupies about 82% of the canvas in its longest dimension, equal clear margins, all edges within frame. Genuine transparent background with alpha, no painted checkerboard, no opaque white background. No card background, decorative frame, surrounding circle unless part of the requested symbol, no glow, sparkles, shadows, lettering, numbers, watermark, labels, or additional small details. Output exactly one square transparent PNG, preferably 512 by 512 pixels. Subject: Two thick amber-orange horizontal arrows stacked vertically, the top points right and the bottom points left. Rounded elbows at the tail ends give a subtle exchange/reversal feel. Clear opposite directions and a broad transparent gap between arrows. No aircraft, no circular background.
+
+### shield
+
+Use case: stylized-concept. Asset type: one production-ready PNG game skill icon for a Rust/Bevy aeroplane chess tablet game. Generate a NEW asset, not a UI mockup or a sprite sheet. Style: cheerful, exceptionally simple vector-like raster game pictogram, warm amber-orange fill with a thick dark navy silhouette outline, rounded corners, very restrained golden highlight, matching a light blue/white board-game UI. Minimal geometry designed to be recognized at 40 pixels; solid chunky shapes rather than thin strokes. Composition: exactly one symbol centered in a square canvas; symbol occupies about 82% of the canvas in its longest dimension, equal clear margins, all edges within frame. Genuine transparent background with alpha, no painted checkerboard, no opaque white background. No card background, decorative frame, surrounding circle unless part of the requested symbol, no glow, sparkles, shadows, lettering, numbers, watermark, labels, or additional small details. Output exactly one square transparent PNG, preferably 512 by 512 pixels. Subject: One bold upright rounded shield with an amber-orange face and thick dark navy rim; simple lighter orange central inset plane following the shield silhouette, no embedded text or plus sign, no aircraft. Clear symmetrical protective silhouette.
+
+### double_dice
+
+Use case: stylized-concept. Asset type: one production-ready PNG game skill icon for a Rust/Bevy aeroplane chess tablet game. Generate a NEW asset, not a UI mockup or a sprite sheet. Style: cheerful, exceptionally simple vector-like raster game pictogram, warm amber-orange fill with a thick dark navy silhouette outline, rounded corners, very restrained golden highlight, matching a light blue/white board-game UI. Minimal geometry designed to be recognized at 40 pixels; solid chunky shapes rather than thin strokes. Composition: exactly one symbol centered in a square canvas; symbol occupies about 82% of the canvas in its longest dimension, equal clear margins, all edges within frame. Genuine transparent background with alpha, no painted checkerboard, no opaque white background. No card background, decorative frame, surrounding circle unless part of the requested symbol, no glow, sparkles, shadows, lettering, numbers, watermark, labels, or additional small details. Output exactly one square transparent PNG, preferably 512 by 512 pixels. Subject: Exactly two chunky amber-orange dice with thick dark navy outlines, each shown as a flat rounded square face, slightly angled and overlapping diagonally. Three large dark navy circular pips on the front die, two on the rear die; all pips fully visible, no tiny details or extraneous dots. Clearly reads as TWO DICE, not one die.

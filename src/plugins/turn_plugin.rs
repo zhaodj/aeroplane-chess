@@ -3,7 +3,7 @@ use bevy::prelude::*;
 
 use crate::data::game_mode::GameMode;
 use crate::domain::dice::DiceRoll;
-use crate::domain::piece::{PieceState, SWAP_MOTION_SERIAL_DELTA};
+use crate::domain::piece::{PieceProgress, PieceState};
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::LaunchRule;
 use crate::gameplay::ai::AiDifficulty;
@@ -17,16 +17,18 @@ use crate::gameplay::skill_flow::{
     player_skill_state, record_skill_action, resolve_roll_value, spend_shield_charge,
     spend_snipe_charge, spend_swap_charge,
 };
+use crate::gameplay::swap_flow::execute_swap;
 use crate::gameplay::turn_flow::{
     ActionResources, ActionState, PlannedAction, TurnInputState, TurnState, choose_action,
     choose_pending_double_dice, clear_pending_input, collect_actions, current_player_control,
     execute_action, find_pending_action_by_piece_id, finish_turn_without_action,
-    get_pending_action, player_has_finished_all_pieces, pressed_selection_key, record_turn_action,
-    roll_die, set_pending_actions, set_pending_double_dice_choice, set_roll_with_faces,
-    skip_current_player_turn,
+    get_pending_action, human_roll_is_ready, player_has_finished_all_pieces, pressed_selection_key,
+    record_turn_action, roll_die, set_pending_actions, set_pending_double_dice_choice,
+    set_roll_with_faces, skip_current_player_turn,
 };
 use crate::i18n::{Language, LanguageSettings};
 use crate::platform::{DeviceProfile, PointerInputState};
+use crate::plugins::animation_plugin::MovingPieceQuery;
 use crate::plugins::boot_plugin::AutoplayMatch;
 use crate::plugins::effects_plugin::{
     EffectRevealDelays, PieceMotionEffects, TARGETED_MISSILE_REVEAL_DURATION, VisualEffectQueue,
@@ -35,12 +37,15 @@ use crate::plugins::menu_plugin::{SoundSettingsOverlayState, sound_settings_over
 use crate::plugins::piece_plugin::{
     HangarSlot, MoveTargetGuidePiece, PieceId, move_target_guide_infos, pick_move_target_guide,
 };
-use crate::plugins::skill_plugin::SkillUiAction;
+use crate::plugins::skill_plugin::{SkillTargetState, SkillUiAction};
 use crate::plugins::ui_plugin::{PlayerHudState, player_hud_point_is_interactive};
 use crate::states::{AppState, GamePhase};
 
 /// 回合驱动插件：整合 AI/人类输入并推进回合结算流程。
 pub struct TurnPlugin;
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TurnSystems;
 
 impl Plugin for TurnPlugin {
     fn build(&self, app: &mut App) {
@@ -55,6 +60,7 @@ impl Plugin for TurnPlugin {
                     handle_human_action_click,
                 )
                     .chain()
+                    .in_set(TurnSystems)
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnExit(AppState::InGame), cleanup_turn_automation);
@@ -118,7 +124,7 @@ impl TurnUiRequest {
         self.roll_requested = true;
     }
 
-    fn take_roll(&mut self) -> bool {
+    pub(crate) fn take_roll(&mut self) -> bool {
         let requested = self.roll_requested;
         self.roll_requested = false;
         requested
@@ -153,6 +159,7 @@ struct TurnActionParams<'w, 's> {
     motion_effects: ResMut<'w, PieceMotionEffects>,
     match_result: ResMut<'w, MatchResult>,
     piece_query: TurnPieceQuery<'w, 's>,
+    moving_pieces: MovingPieceQuery<'w, 's>,
 }
 
 fn execute_action_from_params(
@@ -293,11 +300,14 @@ fn drive_ai_turn_loop(
         params.turn_state.current_player,
         params.turn_state.turn_index,
         &params.match_config,
+        &params.board_layout,
+        &params.player_roster,
         &mut params.skill_roster,
         &mut params.effect_queue,
         &mut params.reveal_delays,
         &mut params.motion_effects,
         &mut params.piece_query,
+        &params.moving_pieces,
     );
 
     let roll_resolution = resolve_roll_for_rule_set(
@@ -369,18 +379,21 @@ fn finish_ai_roll_after_display(roll_value: u8, params: &mut TurnActionParams) {
     clear_dash_arm(&mut params.skill_roster, current_player);
 }
 
-const HARD_AI_SNIPE_MIN_PROGRESS: u8 = 8;
+const HARD_AI_SNIPE_MIN_PROGRESS: PieceProgress = 8;
 
 /// AI 技能策略：Easy 不主动用技能，Normal 偏防御/起飞，Hard 才主动攻击与换位。
 fn maybe_use_ai_skills(
     current_player: u8,
     turn_index: u32,
     match_config: &MatchConfig,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
     skill_roster: &mut SkillRoster,
     effect_queue: &mut VisualEffectQueue,
     reveal_delays: &mut EffectRevealDelays,
     motion_effects: &mut PieceMotionEffects,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    moving_pieces: &MovingPieceQuery,
 ) {
     if !match_config.rule_set.skills_enabled() {
         return;
@@ -421,8 +434,11 @@ fn maybe_use_ai_skills(
                 current_player,
                 turn_index,
                 match_config.mode,
+                board_layout,
+                player_roster,
                 skill_roster,
                 piece_query,
+                moving_pieces,
             ) || try_ai_double_dice(current_player, turn_index, skill_roster, piece_query);
         }
     }
@@ -431,7 +447,7 @@ fn maybe_use_ai_skills(
 fn try_ai_snipe(
     current_player: u8,
     turn_index: u32,
-    minimum_target_progress: u8,
+    minimum_target_progress: PieceProgress,
     skill_roster: &mut SkillRoster,
     effect_queue: &mut VisualEffectQueue,
     reveal_delays: &mut EffectRevealDelays,
@@ -515,8 +531,11 @@ fn try_ai_swap(
     current_player: u8,
     turn_index: u32,
     mode: GameMode,
+    board_layout: &BoardLayout,
+    player_roster: &PlayerRoster,
     skill_roster: &mut SkillRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+    moving_pieces: &MovingPieceQuery,
 ) -> bool {
     let can_use_swap = player_skill_state(skill_roster, current_player)
         .map(|skills| skills.swap_charges > 0)
@@ -529,12 +548,21 @@ fn try_ai_swap(
         return false;
     };
 
-    if !spend_swap_charge(skill_roster, current_player) {
+    let result = execute_swap(
+        current_player,
+        mode,
+        target_piece_id,
+        board_layout,
+        player_roster,
+        piece_query,
+        moving_pieces,
+    );
+    if !result.starts_with("Swap exchanged piece #") {
         return false;
     }
-
+    spend_swap_charge(skill_roster, current_player);
     mark_skill_used(skill_roster, current_player);
-    let message = execute_swap_on_turn_query(current_player, mode, target_piece_id, piece_query);
+    let message = format!("AI {result}");
     record_skill_action(skill_roster, turn_index, current_player, message);
     true
 }
@@ -631,7 +659,7 @@ fn maybe_arm_dash_for_ai_after_roll(
 /// 选择 AI 的 Snipe 目标：优先无盾、再有盾，且不攻击队友。
 fn preferred_ai_snipe_target(
     current_player: u8,
-    minimum_target_progress: u8,
+    minimum_target_progress: PieceProgress,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
 ) -> Option<u8> {
     let mut attacker_team = None;
@@ -829,73 +857,7 @@ fn execute_snipe_on_turn_query(
     }
 }
 
-/// 在 turn_query 上执行 Swap：交换两枚棋子的状态与位置。
-fn execute_swap_on_turn_query(
-    current_player: u8,
-    mode: GameMode,
-    target_piece_id: u8,
-    piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-) -> String {
-    let Some((current_piece_id, current_state, current_translation)) =
-        piece_query
-            .iter()
-            .find_map(|(piece_id, _, piece_state, transform)| {
-                is_current_player_swap_piece(current_player, &piece_state).then_some((
-                    piece_id.0,
-                    *piece_state,
-                    transform.translation,
-                ))
-            })
-    else {
-        return "AI Swap failed: current active piece not found".to_string();
-    };
-
-    let Some((target_state, target_translation)) =
-        piece_query
-            .iter()
-            .find_map(|(piece_id, _, piece_state, transform)| {
-                (piece_id.0 == target_piece_id
-                    && is_legal_swap_target(
-                        current_player,
-                        current_state.team_id,
-                        mode,
-                        &piece_state,
-                    ))
-                .then_some((*piece_state, transform.translation))
-            })
-    else {
-        return "AI Swap failed: target piece not found on main route".to_string();
-    };
-
-    for (piece_id, _, mut piece_state, mut transform) in piece_query.iter_mut() {
-        if piece_id.0 == current_piece_id {
-            piece_state.status = target_state.status;
-            piece_state.progress = target_state.progress;
-            piece_state.shield = target_state.shield;
-            piece_state.stack_shield = target_state.stack_shield;
-            piece_state.motion_serial = piece_state
-                .motion_serial
-                .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
-            transform.translation = target_translation;
-        } else if piece_id.0 == target_piece_id {
-            piece_state.status = current_state.status;
-            piece_state.progress = current_state.progress;
-            piece_state.shield = current_state.shield;
-            piece_state.stack_shield = current_state.stack_shield;
-            piece_state.motion_serial = piece_state
-                .motion_serial
-                .wrapping_add(SWAP_MOTION_SERIAL_DELTA);
-            transform.translation = current_translation;
-        }
-    }
-
-    format!(
-        "AI Swap exchanged piece #{} with piece #{}",
-        current_piece_id, target_piece_id
-    )
-}
-
-/// 人类玩家“掷骰阶段”输入处理（棋盘 Roll 按钮或 Space 掷骰）。
+/// 人类玩家掷骰输入（中心骰子、HUD 按钮或 Space）。
 fn handle_human_roll_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     pointer: Res<PointerInputState>,
@@ -905,9 +867,14 @@ fn handle_human_roll_input(
     game_phase: Res<State<GamePhase>>,
     overlay_state: Res<SoundSettingsOverlayState>,
     hud_state: Res<PlayerHudState>,
+    skill_target: Res<SkillTargetState>,
     mut params: TurnActionParams,
 ) {
-    if overlay_state.open
+    // Drain even while blocked or when Space is also pressed; no stale click may
+    // survive an animation/choice and unexpectedly roll in a later turn.
+    let ui_roll_requested = params.turn_ui_request.take_roll();
+    if sound_settings_overlay_blocks_input(&overlay_state)
+        || skill_target.is_active()
         || !matches!(game_phase.get(), GamePhase::AwaitDice)
         || params.match_result.finished
     {
@@ -970,7 +937,13 @@ fn handle_human_roll_input(
         return;
     }
 
-    if !keyboard.just_pressed(KeyCode::Space) && !params.turn_ui_request.take_roll() {
+    if !human_roll_is_ready(
+        &params.turn_state,
+        game_phase.get(),
+        &params.player_roster,
+        &params.match_result,
+    ) || (!keyboard.just_pressed(KeyCode::Space) && !ui_roll_requested)
+    {
         return;
     }
 
@@ -1460,12 +1433,138 @@ mod tests {
         }
     }
 
+    fn human_roll_test_app() -> App {
+        let mut app = App::new();
+        let (players, teams) = build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let players = PlayerRoster::from_players(players);
+        let skills = build_skill_roster(&players);
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<PointerInputState>()
+            .init_resource::<DeviceProfile>()
+            .insert_resource(State::new(GamePhase::AwaitDice))
+            .init_resource::<NextState<GamePhase>>()
+            .init_resource::<SoundSettingsOverlayState>()
+            .init_resource::<PlayerHudState>()
+            .init_resource::<TurnInputState>()
+            .init_resource::<TurnUiRequest>()
+            .insert_resource(TurnState::opening_turn())
+            .insert_resource(BoardLayout::default())
+            .insert_resource(match_config(GameMode::TwoVsTwo, AiDifficulty::Normal))
+            .insert_resource(players)
+            .insert_resource(TeamRoster { teams })
+            .init_resource::<LanguageSettings>()
+            .insert_resource(skills)
+            .init_resource::<VisualEffectQueue>()
+            .init_resource::<EffectRevealDelays>()
+            .init_resource::<PieceMotionEffects>()
+            .init_resource::<MatchResult>()
+            .init_resource::<SkillTargetState>()
+            .add_systems(Update, handle_human_roll_input);
+        app
+    }
+
+    #[test]
+    fn targeting_blocks_same_frame_roll_before_phase_transition_and_drains_request() {
+        let mut app = human_roll_test_app();
+        app.insert_resource(SkillTargetState::with_swap(
+            crate::gameplay::swap_flow::SwapSelection::new(1, 1, vec![1, 2], vec![5, 6]),
+        ));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+        app.world_mut().resource_mut::<TurnUiRequest>().queue_roll();
+        app.update();
+        assert_eq!(app.world().resource::<TurnState>().roll_serial, 0);
+        assert!(!app.world().resource::<TurnUiRequest>().roll_requested);
+        app.insert_resource(SkillTargetState::default());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.update();
+        assert_eq!(app.world().resource::<TurnState>().roll_serial, 0);
+    }
+
+    #[test]
+    fn simultaneous_keyboard_and_pointer_roll_is_consumed_once() {
+        let mut app = human_roll_test_app();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+        app.world_mut().resource_mut::<TurnUiRequest>().queue_roll();
+        app.update();
+        assert_eq!(app.world().resource::<TurnState>().roll_serial, 1);
+        assert!(
+            app.world()
+                .resource::<TurnState>()
+                .pending_roll_display
+                .is_some()
+        );
+        assert!(!app.world().resource::<TurnUiRequest>().roll_requested);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        // Simulate a later eligible turn; no queued click should survive into it.
+        app.insert_resource(TurnState::opening_turn());
+        app.update();
+        assert_eq!(app.world().resource::<TurnState>().roll_serial, 0);
+    }
+
+    #[test]
+    fn blocked_roll_requests_never_leak_into_a_later_turn() {
+        use crate::gameplay::turn_flow::commit_pending_roll_display;
+        for blocked in 0..8 {
+            let mut app = human_roll_test_app();
+            match blocked {
+                0 => {
+                    app.world_mut()
+                        .resource_mut::<SoundSettingsOverlayState>()
+                        .open = true
+                }
+                1 => {
+                    app.world_mut()
+                        .resource_mut::<SoundSettingsOverlayState>()
+                        .input_captured = true
+                }
+                2 => {
+                    app.insert_resource(State::new(GamePhase::ResolveSkillEffect));
+                }
+                3 => app.world_mut().resource_mut::<MatchResult>().finished = true,
+                4 => app.world_mut().resource_mut::<TurnState>().current_player = 2,
+                5 => {
+                    set_roll_with_faces(&mut app.world_mut().resource_mut::<TurnState>(), 4, [4, 0])
+                }
+                _ => {
+                    let mut turn = app.world_mut().resource_mut::<TurnState>();
+                    set_pending_double_dice_choice(&mut turn, [2, 6]);
+                    if blocked == 7 {
+                        commit_pending_roll_display(&mut turn, 1);
+                    }
+                }
+            }
+            let serial = app.world().resource::<TurnState>().roll_serial;
+            app.world_mut().resource_mut::<TurnUiRequest>().queue_roll();
+            app.update();
+            assert_eq!(
+                app.world().resource::<TurnState>().roll_serial,
+                serial,
+                "blocked={blocked}"
+            );
+            assert!(!app.world().resource::<TurnUiRequest>().roll_requested);
+            app.insert_resource(SoundSettingsOverlayState::default())
+                .insert_resource(State::new(GamePhase::AwaitDice))
+                .insert_resource(MatchResult::default())
+                .insert_resource(TurnState::opening_turn());
+            app.update();
+            assert_eq!(app.world().resource::<TurnState>().roll_serial, 0);
+        }
+    }
+
     fn spawn_test_piece(
         world: &mut World,
         piece_id: u8,
         owner_player_id: u8,
         team_id: u8,
-        progress: u8,
+        progress: PieceProgress,
         shield: u8,
     ) {
         world.spawn((
@@ -1490,7 +1589,7 @@ mod tests {
         owner_player_id: u8,
         team_id: u8,
         status: PieceStatus,
-        progress: u8,
+        progress: PieceProgress,
     ) {
         world.spawn((
             PieceId(piece_id),
@@ -1565,6 +1664,114 @@ mod tests {
     }
 
     #[test]
+    fn ai_swap_rebases_progress_from_the_same_public_positions_as_human_swap() {
+        let (players, _) = build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let roster = PlayerRoster::from_players(players);
+        let board = BoardLayout::default();
+        let mut skills = build_skill_roster(&roster);
+        sync_turn_skill_usage(&mut skills, 1);
+        set_ai_skill_charges(&mut skills, 1, 0, 0, 1, 0, 0);
+        let mut world = World::new();
+        spawn_test_piece(&mut world, 1, 1, 1, 3, 0);
+        spawn_test_piece(&mut world, 2, 3, 1, 18, 0);
+        let mut system: SystemState<(TurnPieceQuery, MovingPieceQuery)> =
+            SystemState::new(&mut world);
+        let (mut pieces, moving_pieces) = system.get_mut(&mut world).unwrap();
+        assert!(try_ai_swap(
+            1,
+            1,
+            GameMode::TwoVsTwo,
+            &board,
+            &roster,
+            &mut skills,
+            &mut pieces,
+            &moving_pieces,
+        ));
+        for (id, _, state, transform) in pieces.iter() {
+            let (old_owner, old_progress, expected_progress) =
+                if id.0 == 1 { (3, 18, 5) } else { (1, 3, 16) };
+            let expected = crate::gameplay::turn_flow::world_position_for_piece(
+                old_owner,
+                old_progress,
+                state.status,
+                &board,
+                &roster,
+            )
+            .unwrap();
+            assert_eq!(state.progress, expected_progress);
+            assert_eq!(transform.translation.truncate(), expected);
+        }
+        assert_eq!(player_skill_state(&skills, 1).unwrap().swap_charges, 0);
+    }
+
+    #[test]
+    fn ai_swap_does_not_spend_charge_or_turn_opportunity_while_either_piece_moves() {
+        use crate::plugins::animation_plugin::PieceMoveAnimation;
+        for moving_id in [1, 2] {
+            let (players, _) = build_match_rosters(&setup(GameMode::TwoVsTwo));
+            let roster = PlayerRoster::from_players(players);
+            let board = BoardLayout::default();
+            let mut skills = build_skill_roster(&roster);
+            sync_turn_skill_usage(&mut skills, 1);
+            set_ai_skill_charges(&mut skills, 1, 0, 0, 1, 0, 0);
+            let mut world = World::new();
+            spawn_test_piece(&mut world, 1, 1, 1, 3, 0);
+            spawn_test_piece(&mut world, 2, 3, 1, 18, 0);
+            let entity = world
+                .query::<(Entity, &PieceId)>()
+                .iter(&world)
+                .find(|(_, id)| id.0 == moving_id)
+                .unwrap()
+                .0;
+            world
+                .entity_mut(entity)
+                .insert(PieceMoveAnimation::test_pending());
+            let mut system: SystemState<(TurnPieceQuery, MovingPieceQuery)> =
+                SystemState::new(&mut world);
+            {
+                let (mut pieces, moving) = system.get_mut(&mut world).unwrap();
+                let before = pieces
+                    .iter()
+                    .map(|(id, _, state, transform)| (id.0, *state, transform.translation))
+                    .collect::<Vec<_>>();
+                assert!(!try_ai_swap(
+                    1,
+                    1,
+                    GameMode::TwoVsTwo,
+                    &board,
+                    &roster,
+                    &mut skills,
+                    &mut pieces,
+                    &moving
+                ));
+                assert_eq!(
+                    before,
+                    pieces
+                        .iter()
+                        .map(|(id, _, state, transform)| (id.0, *state, transform.translation))
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(player_skill_state(&skills, 1).unwrap().swap_charges, 1);
+                assert!(!skills.skill_used_this_turn);
+            }
+            world.entity_mut(entity).remove::<PieceMoveAnimation>();
+            let (mut pieces, moving) = system.get_mut(&mut world).unwrap();
+            assert!(try_ai_swap(
+                1,
+                1,
+                GameMode::TwoVsTwo,
+                &board,
+                &roster,
+                &mut skills,
+                &mut pieces,
+                &moving
+            ));
+            assert_eq!(player_skill_state(&skills, 1).unwrap().swap_charges, 0);
+            assert!(skills.skill_used_this_turn);
+        }
+    }
+
+    #[test]
     fn completed_player_is_skipped_only_in_two_vs_two_waiting_turns() {
         let mut turn_state = TurnState::opening_turn();
         let mut world = World::new();
@@ -1613,10 +1820,11 @@ mod tests {
 
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 1, 0);
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1625,11 +1833,14 @@ mod tests {
             2,
             1,
             &match_config,
+            &BoardLayout::default(),
+            &player_roster,
             &mut skill_roster,
             &mut effect_queue,
             &mut reveal_delays,
             &mut motion_effects,
             &mut query,
+            &moving_query,
         );
         let state = player_skill_state(&skill_roster, 2).unwrap();
         assert!(!state.dash_armed);
@@ -1650,10 +1861,11 @@ mod tests {
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 1, 0);
         spawn_test_piece(&mut world, 2, 1, 1, HARD_AI_SNIPE_MIN_PROGRESS, 0);
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1662,11 +1874,14 @@ mod tests {
             2,
             1,
             &match_config,
+            &BoardLayout::default(),
+            &player_roster,
             &mut skill_roster,
             &mut effect_queue,
             &mut reveal_delays,
             &mut motion_effects,
             &mut query,
+            &moving_query,
         );
 
         let state = player_skill_state(&skill_roster, 2).unwrap();
@@ -1748,10 +1963,11 @@ mod tests {
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
         spawn_test_piece(&mut world, 2, 1, 1, 12, 0);
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1760,11 +1976,14 @@ mod tests {
             2,
             1,
             &match_config,
+            &BoardLayout::default(),
+            &player_roster,
             &mut skill_roster,
             &mut effect_queue,
             &mut reveal_delays,
             &mut motion_effects,
             &mut query,
+            &moving_query,
         );
 
         let state = player_skill_state(&skill_roster, 2).unwrap();
@@ -1786,10 +2005,11 @@ mod tests {
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
         spawn_test_piece(&mut world, 2, 1, 1, 12, 0);
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1798,11 +2018,14 @@ mod tests {
             2,
             1,
             &match_config,
+            &BoardLayout::default(),
+            &player_roster,
             &mut skill_roster,
             &mut effect_queue,
             &mut reveal_delays,
             &mut motion_effects,
             &mut query,
+            &moving_query,
         );
 
         let state = player_skill_state(&skill_roster, 2).unwrap();
@@ -1829,10 +2052,11 @@ mod tests {
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
         spawn_test_piece(&mut world, 2, 1, 1, HARD_AI_SNIPE_MIN_PROGRESS - 1, 0);
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1841,11 +2065,14 @@ mod tests {
             2,
             1,
             &match_config,
+            &BoardLayout::default(),
+            &player_roster,
             &mut skill_roster,
             &mut effect_queue,
             &mut reveal_delays,
             &mut motion_effects,
             &mut query,
+            &moving_query,
         );
 
         let state = player_skill_state(&skill_roster, 2).unwrap();
@@ -1866,10 +2093,11 @@ mod tests {
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
         spawn_test_piece(&mut world, 2, 1, 1, HARD_AI_SNIPE_MIN_PROGRESS, 1);
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1878,11 +2106,14 @@ mod tests {
             2,
             1,
             &match_config,
+            &BoardLayout::default(),
+            &player_roster,
             &mut skill_roster,
             &mut effect_queue,
             &mut reveal_delays,
             &mut motion_effects,
             &mut query,
+            &moving_query,
         );
 
         let state = player_skill_state(&skill_roster, 2).unwrap();
@@ -1908,10 +2139,11 @@ mod tests {
         let mut world = World::new();
         spawn_test_piece(&mut world, 1, 2, 2, 4, 0);
         spawn_test_piece(&mut world, 2, 1, 1, HARD_AI_SNIPE_MIN_PROGRESS, 0);
-        let mut system_state: SystemState<
+        let mut system_state: SystemState<(
             Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-        > = SystemState::new(&mut world);
-        let mut query = system_state.get_mut(&mut world).unwrap();
+            MovingPieceQuery,
+        )> = SystemState::new(&mut world);
+        let (mut query, moving_query) = system_state.get_mut(&mut world).unwrap();
         let mut effect_queue = VisualEffectQueue::default();
         let mut reveal_delays = EffectRevealDelays::default();
         let mut motion_effects = PieceMotionEffects::default();
@@ -1920,11 +2152,14 @@ mod tests {
             2,
             1,
             &match_config,
+            &BoardLayout::default(),
+            &player_roster,
             &mut skill_roster,
             &mut effect_queue,
             &mut reveal_delays,
             &mut motion_effects,
             &mut query,
+            &moving_query,
         );
 
         let effect = motion_effects.take_for_piece(2);

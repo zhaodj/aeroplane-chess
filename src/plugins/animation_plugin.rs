@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 
-use crate::domain::piece::{PieceState, PieceStatus, SWAP_MOTION_SERIAL_DELTA};
+#[cfg(test)]
+mod swap_tests;
+
+use crate::domain::piece::{PieceProgress, PieceState, PieceStatus, SWAP_MOTION_SERIAL_DELTA};
 use crate::gameplay::match_flow::{BoardLayout, MatchConfig, PlayerRoster};
 use crate::gameplay::turn_flow::{
     FINISH_DISTANCE, TurnState, movement_steps_between_progresses, world_position_for_piece,
@@ -24,6 +27,16 @@ const SWAP_ARC_Z_LIFT: f32 = 14.0;
 /// 动画插件入口：把规则层的瞬时位置变化转成短视觉插值。
 pub struct AnimationPlugin;
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PieceAnimationSystems;
+
+pub(crate) type MovingPieceQuery<'w, 's> =
+    Query<'w, 's, &'static PieceId, With<PieceMoveAnimation>>;
+
+pub(crate) fn swap_pair_is_moving(pair: (u8, u8), moving: &MovingPieceQuery) -> bool {
+    moving.iter().any(|id| id.0 == pair.0 || id.0 == pair.1)
+}
+
 impl Plugin for AnimationPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
@@ -34,6 +47,7 @@ impl Plugin for AnimationPlugin {
                 animate_piece_motion,
             )
                 .chain()
+                .in_set(PieceAnimationSystems)
                 .run_if(in_state(AppState::InGame)),
         );
     }
@@ -55,6 +69,20 @@ pub(crate) struct PieceMoveAnimation {
     pause_cue: Option<PieceMovePauseCue>,
 }
 
+#[cfg(test)]
+impl PieceMoveAnimation {
+    pub(crate) fn test_pending() -> Self {
+        Self {
+            waypoints: vec![Vec3::ZERO, Vec3::X],
+            segment_index: 0,
+            segment_elapsed: 0.0,
+            segment_duration: 1.0,
+            start_delay: 10.0,
+            pause_cue: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PieceMovePauseCue {
     waypoint_index: usize,
@@ -74,7 +102,7 @@ struct CollisionArrival {
 struct PieceAnimationSnapshot {
     owner_player_id: u8,
     status: PieceStatus,
-    progress: u8,
+    progress: PieceProgress,
     motion_serial: u32,
 }
 
@@ -93,12 +121,9 @@ type ChangedPieceAnimationQuery<'w, 's> = Query<
         &'static PieceState,
         &'static mut Transform,
         &'static mut PieceAnimationState,
+        Option<&'static PieceMoveAnimation>,
     ),
-    (
-        With<PieceId>,
-        Changed<Transform>,
-        Without<PieceMoveAnimation>,
-    ),
+    (With<PieceId>, Or<(Changed<Transform>, Changed<PieceState>)>),
 >;
 
 fn initialize_piece_animation_state(mut commands: Commands, query: NewPieceAnimationQuery) {
@@ -126,14 +151,35 @@ fn capture_piece_motion(
         &mut query,
     );
 
-    for (entity, piece_id, piece_state, mut transform, mut animation_state) in &mut query {
-        let from = animation_state.logical_translation;
-        let to = transform.translation;
+    for (entity, piece_id, piece_state, mut transform, mut animation_state, motion) in &mut query {
         let previous_piece = animation_state.logical_piece;
         let current_piece = PieceAnimationSnapshot::from_piece_state(*piece_state);
+        if motion.is_some() && previous_piece == current_piece {
+            continue;
+        }
+        let from = motion.map_or_else(
+            || {
+                logical_motion_position(
+                    previous_piece,
+                    animation_state.logical_translation,
+                    &board_layout,
+                    &player_roster,
+                )
+            },
+            current_motion_position,
+        );
+        let to = logical_motion_position(
+            current_piece,
+            transform
+                .translation
+                .with_z(animation_state.logical_translation.z),
+            &board_layout,
+            &player_roster,
+        );
         if is_stale_transform_change(previous_piece, current_piece, from, to) {
             animation_state.logical_translation = to;
             animation_state.logical_piece = current_piece;
+            transform.translation = to;
             continue;
         }
 
@@ -148,6 +194,8 @@ fn capture_piece_motion(
         if waypoints.len() < 2 {
             animation_state.logical_translation = to;
             animation_state.logical_piece = current_piece;
+            transform.translation = to;
+            commands.entity(entity).remove::<PieceMoveAnimation>();
             continue;
         }
 
@@ -197,11 +245,31 @@ fn collect_collision_arrivals(
     query: &mut ChangedPieceAnimationQuery<'_, '_>,
 ) -> Vec<CollisionArrival> {
     let mut arrivals = Vec::new();
-    for (_, piece_id, piece_state, transform, animation_state) in query.iter_mut() {
-        let from = animation_state.logical_translation;
-        let to = transform.translation;
+    for (_, piece_id, piece_state, transform, animation_state, motion) in query.iter_mut() {
         let previous_piece = animation_state.logical_piece;
         let current_piece = PieceAnimationSnapshot::from_piece_state(*piece_state);
+        if motion.is_some() && previous_piece == current_piece {
+            continue;
+        }
+        let from = motion.map_or_else(
+            || {
+                logical_motion_position(
+                    previous_piece,
+                    animation_state.logical_translation,
+                    board_layout,
+                    player_roster,
+                )
+            },
+            current_motion_position,
+        );
+        let to = logical_motion_position(
+            current_piece,
+            transform
+                .translation
+                .with_z(animation_state.logical_translation.z),
+            board_layout,
+            player_roster,
+        );
         if is_stale_transform_change(previous_piece, current_piece, from, to)
             || is_returning_to_hangar(previous_piece, current_piece)
             || previous_piece.owner_player_id != current_piece.owner_player_id
@@ -430,6 +498,42 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// Rule writes can replace Transform while an older animation is still running.
+/// Sample the old trajectory, not that newly written destination, when interrupting it.
+fn current_motion_position(motion: &PieceMoveAnimation) -> Vec3 {
+    let Some(&from) = motion
+        .waypoints
+        .get(motion.segment_index)
+        .or_else(|| motion.waypoints.last())
+    else {
+        return Vec3::ZERO;
+    };
+    let Some(to) = motion.waypoints.get(motion.segment_index + 1) else {
+        return from;
+    };
+    let fraction = (motion.segment_elapsed / motion.segment_duration).clamp(0.0, 1.0);
+    from.lerp(*to, ease_out_cubic(fraction))
+}
+
+/// On-board endpoints always come from the owner's rebased progress. Hangar
+/// coordinates have no route mapping and keep their explicit transform instead.
+fn logical_motion_position(
+    piece: PieceAnimationSnapshot,
+    fallback: Vec3,
+    board: &BoardLayout,
+    roster: &PlayerRoster,
+) -> Vec3 {
+    world_position_for_piece(
+        piece.owner_player_id,
+        piece.progress,
+        piece.status,
+        board,
+        roster,
+    )
+    .map(|position| position.extend(fallback.z))
+    .unwrap_or(fallback)
+}
+
 fn movement_segment_duration(fast_mode: bool) -> f32 {
     if fast_mode {
         FAST_MOVE_SEGMENT_DURATION
@@ -558,7 +662,6 @@ fn is_swap_arc_motion(
     previous_piece.owner_player_id == current_piece.owner_player_id
         && previous_piece.status == PieceStatus::Active
         && current_piece.status == PieceStatus::Active
-        && previous_piece.progress != current_piece.progress
         && current_piece.motion_serial
             == previous_piece
                 .motion_serial
@@ -1143,6 +1246,37 @@ mod tests {
         };
 
         assert!(!is_swap_arc_motion(previous_piece, current_piece));
+    }
+
+    #[test]
+    fn move_after_swap_before_launch_follows_adjacent_nodes_across_zero() {
+        let (board, roster) = test_roster();
+        let previous = PieceAnimationSnapshot {
+            owner_player_id: 1,
+            status: PieceStatus::Active,
+            progress: -2,
+            motion_serial: 2,
+        };
+        let current = PieceAnimationSnapshot {
+            progress: 1,
+            motion_serial: 3,
+            ..previous
+        };
+        let position = |progress| {
+            world_position_for_piece(1, progress, PieceStatus::Active, &board, &roster)
+                .unwrap()
+                .extend(1.0)
+        };
+        assert!(!is_swap_arc_motion(previous, current));
+        let waypoints = build_motion_waypoints(
+            previous,
+            current,
+            position(-2),
+            position(1),
+            &board,
+            &roster,
+        );
+        assert_eq!(waypoints, (-2..=1).map(position).collect::<Vec<_>>());
     }
 
     #[test]

@@ -3,14 +3,13 @@ use bevy::{
 };
 use std::f32::consts::PI;
 
-use crate::constants::BOARD_Z_LAYER;
-use crate::domain::player::PlayerControl;
+use crate::constants::{BOARD_Z_LAYER, CENTER_DICE_HALO_OUTER_RADIUS};
 use crate::domain::tile::TileKind;
 use crate::gameplay::match_flow::{
     BoardLayout, HANGAR_SLOT_OFFSETS, MatchConfig, MatchResult, PlayerProfile, PlayerRoster,
     PlayerSeat, hangar_center_for_seat, player_for_seat,
 };
-use crate::gameplay::turn_flow::{TurnState, commit_pending_roll_display};
+use crate::gameplay::turn_flow::{TurnState, commit_pending_roll_display, human_roll_is_ready};
 use crate::plugins::animation_plugin::PieceMoveAnimation;
 use crate::states::{AppState, GamePhase};
 
@@ -119,7 +118,7 @@ const CENTER_DICE_PROMPT_BOB: f32 = 4.0;
 const CENTER_DICE_PROMPT_SCALE_PULSE: f32 = 0.035;
 const CENTER_DICE_TURN_HALO_SEGMENTS: usize = 64;
 const CENTER_DICE_TURN_HALO_GLOW_INNER_RADIUS: f32 = 42.0;
-const CENTER_DICE_TURN_HALO_GLOW_OUTER_RADIUS: f32 = 55.0;
+const CENTER_DICE_TURN_HALO_GLOW_OUTER_RADIUS: f32 = CENTER_DICE_HALO_OUTER_RADIUS;
 const CENTER_DICE_TURN_HALO_RING_INNER_RADIUS: f32 = 49.0;
 const CENTER_DICE_TURN_HALO_RING_OUTER_RADIUS: f32 = 52.0;
 const DICE_ROLL_ANIMATION_DURATION: f32 = 1.8;
@@ -1144,14 +1143,7 @@ fn center_dice_prompt_visible(
     player_roster: &PlayerRoster,
     match_result: &MatchResult,
 ) -> bool {
-    !match_result.finished
-        && matches!(game_phase, GamePhase::AwaitDice)
-        && turn_state.current_roll.is_none()
-        && turn_state.pending_roll_display.is_none()
-        && player_roster.players.iter().any(|player| {
-            player.state.player_id == turn_state.current_player
-                && player.state.control == PlayerControl::Human
-        })
+    human_roll_is_ready(turn_state, game_phase, player_roster, match_result)
 }
 
 fn center_dice_prompt_transform(elapsed_secs: f32) -> DiceRollVisualTransform {
@@ -3735,6 +3727,44 @@ mod tests {
         );
         assert_ne!(start, later);
         assert!(start.rotation.abs() > 0.1);
+    }
+
+    #[test]
+    fn center_roll_target_contains_visible_animated_die_and_halo() {
+        use crate::constants::BOARD_WORLD_SIZE;
+        use crate::platform::DeviceProfile;
+        use crate::ui::game_layout::GameLayout;
+        for (w, h) in [(360., 640.), (640., 360.), (1280., 720.), (1920., 1080.)] {
+            let layout = GameLayout::new(w, h, DeviceProfile::from_window_size(w, h));
+            let target = layout.center_dice_roll().expanded(0.001);
+            let project = |world: Vec2| {
+                layout.board.center()
+                    + Vec2::new(world.x, -world.y) * layout.board.w / BOARD_WORLD_SIZE
+            };
+            for frame in 0..600 {
+                let time = frame as f32 / 60.0;
+                let transform = center_dice_prompt_transform(time);
+                let rotation = Mat2::from_angle(transform.rotation);
+                for x in [-1.0, 1.0] {
+                    for y in [-1.0, 1.0] {
+                        let corner = Vec2::new(x, y) * CENTER_DICE_PROMPT_SIZE * 0.5;
+                        let world = rotation * (corner * transform.scale) + transform.offset;
+                        assert!(
+                            target.contains(project(world)),
+                            "die {w}x{h}, frame {frame}"
+                        );
+                    }
+                }
+                let scale = center_dice_turn_halo_scale([1, 0], current_turn_guide_pulse(time));
+                for axis in [Vec2::X, Vec2::Y, Vec2::NEG_X, Vec2::NEG_Y] {
+                    let edge = axis * CENTER_DICE_TURN_HALO_GLOW_OUTER_RADIUS * scale.truncate();
+                    assert!(
+                        target.contains(project(edge)),
+                        "halo {w}x{h}, frame {frame}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

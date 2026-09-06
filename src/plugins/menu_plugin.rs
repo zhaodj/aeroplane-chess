@@ -12,12 +12,15 @@ use crate::i18n::{
     Language, LanguageSettings, LocalizedText, TextKey, ai_difficulty_label as i18n_ai_label,
     launch_rule_label, mode_label, rule_set_label, text,
 };
-use crate::platform::{DeviceProfile, PointerInputState};
+use crate::platform::{PointerInputState, PointerSource};
 use crate::plugins::audio_plugin::AudioSettings;
 use crate::plugins::performance_plugin::{
     PerformanceSettings, fps_toggle_label, fps_toggle_label_for_language,
 };
 use crate::states::AppState;
+use crate::ui::game_layout::{
+    GLOBAL_SETTINGS_MARGIN, GLOBAL_SETTINGS_RADIUS, GLOBAL_SETTINGS_SIZE, global_settings_rect,
+};
 
 /// 菜单插件：主菜单与开局配置页的渲染和交互。
 pub struct MenuPlugin;
@@ -25,12 +28,17 @@ pub struct MenuPlugin;
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SoundSettingsOverlayState>()
+            .init_resource::<SettingsEntryState>()
             .init_resource::<ModeSelectRenderState>()
             .add_systems(Startup, spawn_global_sound_overlay)
-            .add_systems(PreUpdate, update_sound_overlay_input_capture)
+            .add_systems(
+                PreUpdate,
+                update_sound_overlay_input_capture.after(crate::platform::PlatformInputSet),
+            )
             .add_systems(
                 Update,
                 (
+                    update_settings_entry,
                     update_global_sound_overlay,
                     update_global_settings_scroll,
                     handle_global_sound_overlay_input,
@@ -91,6 +99,81 @@ struct MenuEntity;
 #[derive(Component)]
 /// 常驻声音入口实体。
 struct GlobalSoundEntry;
+
+#[derive(Component)]
+struct GlobalSettingsHint;
+
+#[derive(Resource, Default)]
+struct SettingsEntryState {
+    hover_started_at: Option<f32>,
+    press_started_at: Option<f32>,
+    press_position: Option<Vec2>,
+    press_cancelled: bool,
+    long_pressed: bool,
+    hint_until: f32,
+    hint_visible: bool,
+}
+
+impl SettingsEntryState {
+    fn update(
+        &mut self,
+        pointer: PointerInputState,
+        cursor: Option<Vec2>,
+        rect: ClickRect,
+        now: f32,
+    ) {
+        let touch = pointer.current_source() == Some(PointerSource::Touch);
+        let position = if touch {
+            pointer.current_position()
+        } else {
+            cursor
+        };
+        let inside = position.is_some_and(|p| rect.contains(p));
+        if pointer.just_pressed() {
+            *self = Self::default();
+            self.press_position = pointer.just_pressed_position();
+            self.press_started_at =
+                (touch && self.press_position.is_some_and(|p| rect.contains(p))).then_some(now);
+            self.press_cancelled = self.press_started_at.is_none();
+        }
+        if touch {
+            self.hover_started_at = None;
+            if self.press_started_at.is_some()
+                && (!inside
+                    || self
+                        .press_position
+                        .zip(position)
+                        .is_some_and(|(a, b)| a.distance(b) >= 12.0))
+            {
+                self.press_cancelled = true;
+                self.hint_until = 0.0;
+            }
+            if !self.press_cancelled
+                && self
+                    .press_started_at
+                    .is_some_and(|start| now - start >= SETTINGS_HINT_DELAY)
+                && (pointer.is_pressed() || pointer.just_released())
+            {
+                self.long_pressed = true;
+                self.hint_until = now + SETTINGS_HINT_HOLD;
+            }
+            self.hint_visible = inside && !self.press_cancelled && now < self.hint_until;
+        } else {
+            self.hover_started_at = if inside && !pointer.is_pressed() {
+                Some(self.hover_started_at.unwrap_or(now))
+            } else {
+                None
+            };
+            self.hint_visible = self
+                .hover_started_at
+                .is_some_and(|start| now - start >= SETTINGS_HINT_DELAY);
+        }
+    }
+
+    fn allows_touch_tap(&self) -> bool {
+        self.press_started_at.is_some() && !self.press_cancelled && !self.long_pressed
+    }
+}
 
 #[derive(Component)]
 /// 全局声音弹窗实体。
@@ -247,10 +330,13 @@ const MAIN_START_WIDTH: f32 = 360.0;
 const MAIN_START_HEIGHT: f32 = 62.0;
 const MAIN_BUTTON_GAP: f32 = 22.0;
 
-const GLOBAL_SOUND_ENTRY_LEFT: f32 = 16.0;
-const GLOBAL_SOUND_ENTRY_TOP: f32 = 16.0;
-const GLOBAL_SOUND_ENTRY_W: f32 = 128.0;
-const GLOBAL_SOUND_ENTRY_H: f32 = 48.0;
+const SETTINGS_ICON_SIZE: f32 = 24.0;
+const SETTINGS_ICON_COLOR: Color = Color::srgb(0.26, 0.33, 0.43);
+const SETTINGS_ENTRY_FILL: Color = Color::srgb(0.96, 0.975, 0.99);
+const SETTINGS_ENTRY_HOVER_FILL: Color = Color::srgb(0.87, 0.91, 0.96);
+const SETTINGS_ENTRY_PRESSED_FILL: Color = Color::srgb(0.78, 0.85, 0.93);
+const SETTINGS_HINT_DELAY: f32 = 0.52;
+const SETTINGS_HINT_HOLD: f32 = 1.2;
 const GLOBAL_SOUND_PANEL_W: f32 = 320.0;
 const GLOBAL_SOUND_PANEL_H: f32 = 506.0;
 const GLOBAL_SOUND_ROW_LEFT: f32 = 16.0;
@@ -321,45 +407,170 @@ const MODE_SELECT_BLACK: Color = Color::BLACK;
 const MODE_SELECT_UNSELECTED_TEXT: Color = Color::srgb(0.18, 0.24, 0.34);
 const MODE_SELECT_DISABLED_TEXT: Color = Color::srgba(0.18, 0.24, 0.34, 0.42);
 
+/// Code-native gear: crisp at any DPI, without a platform-dependent Unicode glyph.
+fn spawn_settings_gear(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn((
+            Node {
+                width: Val::Px(SETTINGS_ICON_SIZE),
+                height: Val::Px(SETTINGS_ICON_SIZE),
+                ..default()
+            },
+            Name::new("GlobalSettingsGear"),
+        ))
+        .with_children(|gear| {
+            for i in 0..8 {
+                let angle = i as f32 * std::f32::consts::FRAC_PI_4;
+                let center = Vec2::splat(12.0) + Vec2::new(angle.cos(), angle.sin()) * 9.0;
+                gear.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(center.x - 2.5),
+                        top: Val::Px(center.y - 2.0),
+                        width: Val::Px(5.0),
+                        height: Val::Px(4.0),
+                        border_radius: BorderRadius::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    UiTransform::from_rotation(Rot2::radians(angle)),
+                    BackgroundColor(SETTINGS_ICON_COLOR),
+                ));
+            }
+            gear.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(3.0),
+                    top: Val::Px(3.0),
+                    width: Val::Px(18.0),
+                    height: Val::Px(18.0),
+                    border: UiRect::all(Val::Px(5.0)),
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BorderColor::all(SETTINGS_ICON_COLOR),
+            ));
+        });
+}
+
+fn settings_hint_rect(width: f32) -> ClickRect {
+    let entry = global_settings_rect(width);
+    ClickRect {
+        x: entry.x - 8.0 - 88.0,
+        y: entry.y + 8.0,
+        w: 88.0,
+        h: 32.0,
+    }
+}
+
+fn update_settings_entry(
+    windows: Query<&Window>,
+    pointer: Res<PointerInputState>,
+    time: Res<Time>,
+    app_state: Res<State<AppState>>,
+    overlay: Res<SoundSettingsOverlayState>,
+    mut state: ResMut<SettingsEntryState>,
+    mut last_page: Local<Option<AppState>>,
+    mut entry: Query<&mut BackgroundColor, With<GlobalSoundEntry>>,
+    mut hints: Query<(&mut Node, &mut Visibility), With<GlobalSettingsHint>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    if *last_page != Some(*app_state.get()) {
+        *state = SettingsEntryState::default();
+        *last_page = Some(*app_state.get());
+    }
+    let rect = global_sound_entry_rect(window);
+    if overlay.open || matches!(app_state.get(), AppState::Boot) {
+        *state = SettingsEntryState::default();
+    } else {
+        state.update(
+            *pointer,
+            window.cursor_position(),
+            rect,
+            time.elapsed_secs(),
+        );
+    }
+    let point = if pointer.current_source() == Some(PointerSource::Touch) {
+        pointer.current_position().filter(|_| pointer.is_pressed())
+    } else {
+        window.cursor_position()
+    };
+    let hovered = point.is_some_and(|p| rect.contains(p));
+    for mut fill in &mut entry {
+        fill.0 = if overlay.open || (hovered && pointer.is_pressed()) {
+            SETTINGS_ENTRY_PRESSED_FILL
+        } else if hovered {
+            SETTINGS_ENTRY_HOVER_FILL
+        } else {
+            SETTINGS_ENTRY_FILL
+        };
+    }
+    for (mut node, mut visibility) in &mut hints {
+        let hint = settings_hint_rect(window.width());
+        node.left = Val::Px(hint.x);
+        node.top = Val::Px(hint.y);
+        *visibility = if state.hint_visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
 fn spawn_global_sound_overlay(mut commands: Commands, language_settings: Res<LanguageSettings>) {
     let language = language_settings.language;
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                right: Val::Px(GLOBAL_SOUND_ENTRY_LEFT),
-                top: Val::Px(GLOBAL_SOUND_ENTRY_TOP),
-                width: Val::Px(GLOBAL_SOUND_ENTRY_W),
-                height: Val::Px(GLOBAL_SOUND_ENTRY_H),
-                border: UiRect::all(Val::Px(1.0)),
+                right: Val::Px(GLOBAL_SETTINGS_MARGIN),
+                top: Val::Px(GLOBAL_SETTINGS_MARGIN),
+                width: Val::Px(GLOBAL_SETTINGS_SIZE),
+                height: Val::Px(GLOBAL_SETTINGS_SIZE),
+                border_radius: BorderRadius::all(Val::Px(GLOBAL_SETTINGS_RADIUS)),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 padding: UiRect::horizontal(Val::Px(8.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.97, 0.99, 1.0, 0.94)),
-            BorderColor::all(Color::srgba(0.22, 0.30, 0.42, 0.30)),
+            BackgroundColor(SETTINGS_ENTRY_FILL),
             ZIndex(80),
             Visibility::Hidden,
             Name::new("GlobalSoundEntry"),
             GlobalSoundEntry,
             GlobalSoundEntity,
         ))
-        .with_children(|parent| {
-            parent.spawn((
-                Text::new(text(language, TextKey::Settings)),
-                TextFont {
-                    font_size: FontSize::Px(16.0),
-                    ..default()
-                },
-                TextColor(Color::srgb(0.10, 0.16, 0.24)),
-                TextLayout::justify(Justify::Center),
-                LocalizedText {
-                    key: TextKey::Settings,
-                },
-                Name::new("GlobalSoundEntryLabel"),
-            ));
-        });
+        .with_children(spawn_settings_gear);
+
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Px(88.0),
+            height: Val::Px(32.0),
+            padding: UiRect::top(Val::Px(6.0)),
+            border_radius: BorderRadius::all(Val::Px(8.0)),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Text::new(text(language, TextKey::Settings)),
+        TextFont {
+            font_size: FontSize::Px(14.0),
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        TextLayout::justify(Justify::Center),
+        BackgroundColor(Color::srgb(0.19, 0.24, 0.32)),
+        LocalizedText {
+            key: TextKey::Settings,
+        },
+        Visibility::Hidden,
+        ZIndex(90),
+        GlobalSettingsHint,
+        GlobalSoundEntity,
+        Name::new("GlobalSettingsHint"),
+    ));
 
     commands
         .spawn((
@@ -768,6 +979,7 @@ fn update_sound_overlay_input_capture(
 
     if overlay_state.open
         && (pointer.just_pressed()
+            || pointer.just_released()
             || keyboard.just_pressed(KeyCode::Escape)
             || keyboard.just_pressed(KeyCode::Backspace))
     {
@@ -775,7 +987,10 @@ fn update_sound_overlay_input_capture(
         return;
     }
 
-    let Some(cursor) = pointer.just_pressed_position() else {
+    let Some(cursor) = pointer
+        .just_pressed_position()
+        .or(pointer.just_released_position())
+    else {
         return;
     };
     let Ok(window) = windows.single() else {
@@ -907,6 +1122,7 @@ fn handle_global_sound_overlay_click(
     mut app_exit: MessageWriter<AppExit>,
     scroll: Query<&ScrollPosition, With<GlobalSettingsViewport>>,
     mut touch_start: Local<Option<Vec2>>,
+    entry_state: Res<SettingsEntryState>,
 ) {
     let position = if pointer.current_source() == Some(crate::platform::PointerSource::Touch) {
         if pointer.just_pressed() {
@@ -954,6 +1170,11 @@ fn handle_global_sound_overlay_click(
     }
 
     if global_sound_entry_rect(window).contains(cursor) {
+        // A long press only explains the icon. A later short tap opens settings.
+        if pointer.current_source() == Some(PointerSource::Touch) && !entry_state.allows_touch_tap()
+        {
+            return;
+        }
         overlay_state.open = true;
         overlay_state.input_captured = true;
     }
@@ -998,14 +1219,9 @@ fn global_sound_entry_rect(window: &Window) -> ClickRect {
 
 pub fn global_settings_entry_screen_rect(
     window_width: f32,
-    window_height: f32,
+    _window_height: f32,
 ) -> (f32, f32, f32, f32) {
-    let rect = crate::ui::game_layout::GameLayout::new(
-        window_width,
-        window_height,
-        DeviceProfile::from_window_size(window_width, window_height),
-    )
-    .settings;
+    let rect = global_settings_rect(window_width);
     (rect.x, rect.y, rect.w, rect.h)
 }
 
@@ -1265,7 +1481,7 @@ fn main_menu_block_top(window_height: f32) -> f32 {
     centered_axis(
         window_height,
         MAIN_MENU_BLOCK_HEIGHT,
-        GLOBAL_SOUND_ENTRY_TOP + GLOBAL_SOUND_ENTRY_H + 24.0,
+        GLOBAL_SETTINGS_MARGIN + GLOBAL_SETTINGS_SIZE + 24.0,
     )
 }
 
@@ -3306,8 +3522,220 @@ mod tests {
 
         assert!(entry.x > window.width() * 0.5);
         assert!(entry.x + entry.w <= window.width() - 16.0);
-        assert_eq!(entry.y, 8.0);
+        assert_eq!(entry.y, 16.0);
         assert!(entry.h >= 48.0);
+    }
+
+    fn settings_test_app(width: u32, height: u32) -> (App, Entity) {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_message::<bevy::input::touch::TouchInput>()
+            .add_message::<AppExit>()
+            .add_plugins(crate::platform::PlatformPlugin)
+            .insert_resource(State::new(AppState::MainMenu))
+            .init_resource::<NextState<AppState>>()
+            .init_resource::<AudioSettings>()
+            .init_resource::<PerformanceSettings>()
+            .init_resource::<LanguageSettings>()
+            .init_resource::<SoundSettingsOverlayState>()
+            .init_resource::<SettingsEntryState>()
+            .add_systems(Startup, spawn_global_sound_overlay)
+            .add_systems(
+                PreUpdate,
+                update_sound_overlay_input_capture.after(crate::platform::PlatformInputSet),
+            )
+            .add_systems(
+                Update,
+                (
+                    update_settings_entry,
+                    update_global_sound_overlay,
+                    handle_global_sound_overlay_input,
+                    handle_global_sound_overlay_click,
+                )
+                    .chain(),
+            );
+        let window = app
+            .world_mut()
+            .spawn(Window {
+                resolution: (width, height).into(),
+                ..default()
+            })
+            .id();
+        app.update();
+        (app, window)
+    }
+
+    fn settings_frame(app: &mut App, seconds: f32) {
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(seconds));
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+    }
+
+    fn settings_touch(
+        app: &mut App,
+        window: Entity,
+        phase: bevy::input::touch::TouchPhase,
+        position: Vec2,
+    ) {
+        app.world_mut()
+            .write_message(bevy::input::touch::TouchInput {
+                window,
+                phase,
+                position,
+                id: 1,
+                force: None,
+            });
+        settings_frame(app, 0.0);
+    }
+
+    #[test]
+    fn rendered_settings_button_keeps_window_anchor_shape_and_icon_on_all_pages() {
+        for (w, h) in [(360, 640), (640, 360), (1280, 720), (2560, 1600)] {
+            let (mut app, _) = settings_test_app(w, h);
+            for page in [
+                AppState::MainMenu,
+                AppState::ModeSelect,
+                AppState::InGame,
+                AppState::Result,
+            ] {
+                app.insert_resource(State::new(page));
+                app.update();
+                let mut query = app.world_mut().query_filtered::<(&Node, &Visibility, &BackgroundColor), With<GlobalSoundEntry>>();
+                let (node, visibility, fill) = query.single(app.world()).unwrap();
+                assert_eq!(node.left, Val::Px(w as f32 - 64.0));
+                assert_eq!(node.top, Val::Px(16.0));
+                assert_eq!(node.width, Val::Px(48.0));
+                assert_eq!(node.height, Val::Px(48.0));
+                assert_eq!(node.border_radius, BorderRadius::all(Val::Px(12.0)));
+                assert_eq!(node.border, UiRect::ZERO);
+                assert_eq!(*visibility, Visibility::Visible);
+                assert_eq!(fill.0, SETTINGS_ENTRY_FILL);
+            }
+        }
+    }
+
+    #[test]
+    fn gear_visible_geometry_fits_24_pixels_without_font_or_bitmap_dependencies() {
+        let (mut app, _) = settings_test_app(1280, 720);
+        let mut query = app.world_mut().query::<(&Name, &Node, &Children)>();
+        let (_, icon, children) = query
+            .iter(app.world())
+            .find(|(name, _, _)| name.as_str() == "GlobalSettingsGear")
+            .unwrap();
+        assert_eq!(icon.width, Val::Px(24.0));
+        assert_eq!(icon.height, Val::Px(24.0));
+        assert_eq!(children.len(), 9);
+        let pixels = |val| match val {
+            Val::Px(value) => value,
+            _ => panic!("icon must use logical pixels"),
+        };
+        for entity in children.iter() {
+            let node = app.world().get::<Node>(entity).unwrap();
+            let size = Vec2::new(pixels(node.width), pixels(node.height));
+            let center = Vec2::new(pixels(node.left), pixels(node.top)) + size * 0.5;
+            let rotation = app.world().get::<UiTransform>(entity).unwrap().rotation;
+            for x in [-1.0, 1.0] {
+                for y in [-1.0, 1.0] {
+                    let corner = center + rotation * (Vec2::new(x, y) * size * 0.5);
+                    assert!(
+                        corner.cmpge(Vec2::ZERO).all() && corner.cmple(Vec2::splat(24.0)).all()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settings_mouse_hover_hint_and_click_work_without_click_through() {
+        let (mut app, window) = settings_test_app(1280, 720);
+        let position = global_settings_rect(1280.0).center();
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(Some(position));
+        settings_frame(&mut app, 0.0);
+        assert!(!app.world().resource::<SettingsEntryState>().hint_visible);
+        settings_frame(&mut app, 0.6);
+        assert!(app.world().resource::<SettingsEntryState>().hint_visible);
+        assert!(!app.world().resource::<SoundSettingsOverlayState>().open);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        settings_frame(&mut app, 0.0);
+        assert!(app.world().resource::<SoundSettingsOverlayState>().open);
+        assert!(
+            app.world()
+                .resource::<SoundSettingsOverlayState>()
+                .input_captured
+        );
+        settings_frame(&mut app, 0.0);
+        assert!(!app.world().resource::<SettingsEntryState>().hint_visible);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        settings_frame(&mut app, 0.0);
+        assert!(!app.world().resource::<SoundSettingsOverlayState>().open);
+        assert!(
+            app.world()
+                .resource::<SoundSettingsOverlayState>()
+                .input_captured
+        );
+    }
+
+    #[test]
+    fn settings_long_press_explains_icon_without_opening_on_release_then_short_tap_opens() {
+        use bevy::input::touch::TouchPhase;
+        let (mut app, window) = settings_test_app(640, 360);
+        let position = global_settings_rect(640.0).center();
+        settings_touch(&mut app, window, TouchPhase::Started, position);
+        assert!(
+            app.world()
+                .resource::<SoundSettingsOverlayState>()
+                .input_captured
+        );
+        settings_frame(&mut app, 0.6);
+        assert!(app.world().resource::<SettingsEntryState>().hint_visible);
+        assert!(!app.world().resource::<SoundSettingsOverlayState>().open);
+        settings_touch(&mut app, window, TouchPhase::Ended, position);
+        assert!(!app.world().resource::<SoundSettingsOverlayState>().open);
+        assert!(
+            app.world()
+                .resource::<SoundSettingsOverlayState>()
+                .input_captured
+        );
+        settings_frame(&mut app, 1.3);
+        assert!(!app.world().resource::<SettingsEntryState>().hint_visible);
+        settings_touch(&mut app, window, TouchPhase::Started, position);
+        settings_touch(&mut app, window, TouchPhase::Ended, position);
+        assert!(app.world().resource::<SoundSettingsOverlayState>().open);
+    }
+
+    #[test]
+    fn settings_drag_out_and_back_does_not_activate_or_show_hint() {
+        use bevy::input::touch::TouchPhase;
+        let (mut app, window) = settings_test_app(360, 640);
+        let position = global_settings_rect(360.0).center();
+        settings_touch(&mut app, window, TouchPhase::Started, position);
+        settings_touch(
+            &mut app,
+            window,
+            TouchPhase::Moved,
+            position - Vec2::X * 40.0,
+        );
+        settings_touch(&mut app, window, TouchPhase::Moved, position);
+        settings_frame(&mut app, 0.7);
+        settings_touch(&mut app, window, TouchPhase::Ended, position);
+        assert!(!app.world().resource::<SoundSettingsOverlayState>().open);
+        assert!(!app.world().resource::<SettingsEntryState>().hint_visible);
     }
 
     #[test]

@@ -2,11 +2,14 @@ use bevy::{
     asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };
 
-use crate::gameplay::turn_flow::TurnState;
+use crate::domain::piece::{PieceProgress, PieceState, PieceStatus};
+use crate::gameplay::turn_flow::{EventNoticeDetail, TurnState};
 use crate::i18n::{Language, LanguageSettings};
 use crate::platform::DeviceProfile;
+use crate::plugins::animation_plugin::{PieceAnimationSystems, PieceMoveAnimation};
 use crate::plugins::piece_plugin::PieceId;
-use crate::plugins::skill_plugin::SkillUiAction;
+use crate::plugins::skill_plugin::{SkillSystems, SkillUiAction};
+use crate::plugins::turn_plugin::TurnSystems;
 use crate::plugins::ui_plugin::shared_skill_button_rect;
 use crate::states::AppState;
 
@@ -16,6 +19,9 @@ const MISSILE_DELAY: f32 = 0.22;
 const MISSILE_DURATION: f32 = 0.32;
 const SHIELD_FLASH_DURATION: f32 = 0.55;
 const FLOATING_TEXT_DURATION: f32 = 0.62;
+const SHIELD_GAIN_REVEAL_DURATION: f32 = 0.70;
+// 浮字起始下沿高于盾牌最大脉冲上沿，避免两个反馈互相遮挡。
+const SHIELD_GAIN_TEXT_OFFSET: Vec2 = Vec2::new(0.0, 32.0);
 const HUD_SKILL_FX_DURATION: f32 = 0.64;
 pub const TARGETED_MISSILE_REVEAL_DURATION: f32 = LOCK_DURATION + MISSILE_DELAY + MISSILE_DURATION;
 const HUD_SKILL_FX_ACTIONS: [SkillUiAction; 5] = [
@@ -28,16 +34,39 @@ const HUD_SKILL_FX_ACTIONS: [SkillUiAction; 5] = [
 
 pub struct EffectsPlugin;
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum EffectSystems {
+    Prepare,
+    Playback,
+}
+
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VisualEffectQueue>()
             .init_resource::<TurnEventEffectState>()
             .init_resource::<EffectRevealDelays>()
             .init_resource::<PieceMotionEffects>()
+            .configure_sets(
+                Update,
+                (
+                    SkillSystems,
+                    TurnSystems,
+                    EffectSystems::Prepare,
+                    PieceAnimationSystems,
+                    EffectSystems::Playback,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                Update,
+                enqueue_turn_event_effects
+                    .in_set(EffectSystems::Prepare)
+                    .run_if(in_state(AppState::InGame)),
+            )
             .add_systems(
                 Update,
                 (
-                    enqueue_turn_event_effects,
+                    play_landed_shield_gain_effects,
                     drain_visual_effect_queue,
                     animate_lock_effects,
                     animate_missile_effects,
@@ -47,6 +76,7 @@ impl Plugin for EffectsPlugin {
                     tick_effect_reveal_delays,
                 )
                     .chain()
+                    .in_set(EffectSystems::Playback)
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(OnExit(AppState::InGame), cleanup_visual_effects);
@@ -58,11 +88,18 @@ struct TurnEventEffectState {
     last_action_serial: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct ShieldRevealDelay {
     piece_id: u8,
     visible_delta: i8,
-    remaining_ms: u16,
+    remaining_secs: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LandingShieldGain {
+    entity: Entity,
+    piece_id: u8,
+    motion_serial: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,7 +118,7 @@ struct PieceStartDelay {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AdvanceTwoMotionCue {
     piece_id: u8,
-    event_progress: u8,
+    event_progress: PieceProgress,
     pause_ms: u16,
 }
 
@@ -93,24 +130,30 @@ pub(crate) struct PieceMotionEffect {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct AdvanceTwoPause {
-    pub(crate) event_progress: u8,
+    pub(crate) event_progress: PieceProgress,
     pub(crate) pause_secs: f32,
 }
 
 #[derive(Resource, Default)]
 pub struct EffectRevealDelays {
     shield_delays: Vec<ShieldRevealDelay>,
+    landing_shield_gains: Vec<LandingShieldGain>,
     skill_charge_delays: Vec<SkillChargeRevealDelay>,
 }
 
 impl EffectRevealDelays {
     pub fn visible_shield(&self, piece_id: u8, actual_shield: u8) -> u8 {
+        let pending_gain = self
+            .landing_shield_gains
+            .iter()
+            .any(|gain| gain.piece_id == piece_id) as i8;
         let delta = self
             .shield_delays
             .iter()
             .filter(|delay| delay.piece_id == piece_id)
             .map(|delay| delay.visible_delta)
-            .sum::<i8>();
+            .sum::<i8>()
+            - pending_gain;
         if delta >= 0 {
             actual_shield.saturating_add(delta as u8)
         } else {
@@ -132,7 +175,7 @@ impl EffectRevealDelays {
         self.shield_delays.push(ShieldRevealDelay {
             piece_id,
             visible_delta: -1,
-            remaining_ms: seconds_to_millis(duration),
+            remaining_secs: duration,
         });
     }
 
@@ -140,7 +183,7 @@ impl EffectRevealDelays {
         self.shield_delays.push(ShieldRevealDelay {
             piece_id,
             visible_delta: 1,
-            remaining_ms: seconds_to_millis(duration),
+            remaining_secs: duration,
         });
     }
 
@@ -155,18 +198,21 @@ impl EffectRevealDelays {
     fn tick(&mut self, delta_secs: f32) {
         let elapsed_ms = seconds_to_millis(delta_secs);
         for delay in &mut self.shield_delays {
-            delay.remaining_ms = delay.remaining_ms.saturating_sub(elapsed_ms);
+            // 不逐帧取整毫秒，避免高刷新率下护盾先于浮字结束就显示。
+            delay.remaining_secs = (delay.remaining_secs - delta_secs).max(0.0);
         }
         for delay in &mut self.skill_charge_delays {
             delay.remaining_ms = delay.remaining_ms.saturating_sub(elapsed_ms);
         }
-        self.shield_delays.retain(|delay| delay.remaining_ms > 0);
+        self.shield_delays
+            .retain(|delay| delay.remaining_secs > 0.0);
         self.skill_charge_delays
             .retain(|delay| delay.remaining_ms > 0);
     }
 
     fn clear(&mut self) {
         self.shield_delays.clear();
+        self.landing_shield_gains.clear();
         self.skill_charge_delays.clear();
     }
 }
@@ -194,7 +240,7 @@ impl PieceMotionEffects {
         }
     }
 
-    fn cue_advance_two(&mut self, piece_id: u8, event_progress: u8, duration: f32) {
+    fn cue_advance_two(&mut self, piece_id: u8, event_progress: PieceProgress, duration: f32) {
         self.advance_two_cues.retain(|cue| cue.piece_id != piece_id);
         self.advance_two_cues.push(AdvanceTwoMotionCue {
             piece_id,
@@ -306,6 +352,9 @@ enum VisualEffectRequest {
     ShieldFlash {
         target_world: Vec2,
     },
+    ShieldGain {
+        target_world: Vec2,
+    },
     FloatingText {
         target_world: Vec2,
         text: String,
@@ -361,11 +410,34 @@ fn enqueue_turn_event_effects(
     mut reveal_delays: ResMut<EffectRevealDelays>,
     mut motion_effects: ResMut<PieceMotionEffects>,
     piece_query: Query<(&PieceId, &Transform)>,
+    shield_piece_query: Query<(Entity, &PieceId, &PieceState)>,
 ) {
     if effect_state.last_action_serial == turn_state.last_action_serial {
         return;
     }
     effect_state.last_action_serial = turn_state.last_action_serial;
+
+    // 使用结构化目标，不依赖日志字符串；同色跳跃补结算的事件也走这里。
+    if let Some(notice) = turn_state.last_event_notice
+        && matches!(notice.detail, EventNoticeDetail::GainShield { .. })
+    {
+        if let Some((entity, piece_id, piece_state)) = shield_piece_query
+            .iter()
+            .find(|(_, id, _)| Some(id.0) == notice.target_piece_id)
+            && piece_state.status == PieceStatus::Active
+            && piece_state.shield > 0
+        {
+            reveal_delays
+                .landing_shield_gains
+                .retain(|gain| gain.entity != entity);
+            reveal_delays.landing_shield_gains.push(LandingShieldGain {
+                entity,
+                piece_id: piece_id.0,
+                motion_serial: piece_state.motion_serial,
+            });
+        }
+        return;
+    }
 
     let Some(action) = turn_state.last_action.as_deref() else {
         return;
@@ -380,16 +452,6 @@ fn enqueue_turn_event_effects(
             && let Some(event_progress) = parse_event_trigger_progress(action, event_note)
         {
             motion_effects.cue_advance_two(piece_id, event_progress, FLOATING_TEXT_DURATION);
-        }
-        return;
-    }
-
-    if event_note.starts_with("event GainShield:") {
-        if let Some(piece_id) = moving_piece_id
-            && let Some(target_world) = piece_position(piece_id, &piece_query)
-        {
-            reveal_delays.delay_shield_gain(piece_id, SHIELD_FLASH_DURATION);
-            queue.shield_flash(target_world);
         }
         return;
     }
@@ -425,6 +487,35 @@ fn enqueue_turn_event_effects(
         };
         reveal_delays.delay_shield_loss(target_piece_id, TARGETED_MISSILE_REVEAL_DURATION);
         queue.world_missile(source_world, target_world);
+    }
+}
+
+fn play_landed_shield_gain_effects(
+    mut reveal_delays: ResMut<EffectRevealDelays>,
+    mut queue: ResMut<VisualEffectQueue>,
+    piece_query: Query<(&PieceState, &Transform, Has<PieceMoveAnimation>)>,
+) {
+    // 必须在移动捕获、插值以及延迟组件删除全部完成后检查，不按骰点估算时间。
+    let pending = std::mem::take(&mut reveal_delays.landing_shield_gains);
+    for gain in pending {
+        let Ok((piece, transform, moving)) = piece_query.get(gain.entity) else {
+            continue;
+        };
+        if piece.status != PieceStatus::Active
+            || piece.shield == 0
+            || piece.motion_serial != gain.motion_serial
+        {
+            continue;
+        }
+        if moving {
+            reveal_delays.landing_shield_gains.push(gain);
+            continue;
+        }
+
+        reveal_delays.delay_shield_gain(gain.piece_id, SHIELD_GAIN_REVEAL_DURATION);
+        queue.requests.push(VisualEffectRequest::ShieldGain {
+            target_world: transform.translation.truncate(),
+        });
     }
 }
 
@@ -477,6 +568,14 @@ fn drain_visual_effect_queue(
             VisualEffectRequest::ShieldFlash { target_world } => {
                 spawn_shield_flash_effect(&mut commands, &mut meshes, &mut materials, target_world);
             }
+            VisualEffectRequest::ShieldGain { target_world } => {
+                spawn_shield_flash_effect(&mut commands, &mut meshes, &mut materials, target_world);
+                spawn_floating_text_effect(
+                    &mut commands,
+                    target_world + SHIELD_GAIN_TEXT_OFFSET,
+                    shield_gain_label(language_settings.language).into(),
+                );
+            }
             VisualEffectRequest::FloatingText { target_world, text } => {
                 spawn_floating_text_effect(&mut commands, target_world, text);
             }
@@ -491,6 +590,13 @@ fn drain_visual_effect_queue(
                 );
             }
         }
+    }
+}
+
+fn shield_gain_label(language: Language) -> &'static str {
+    match language {
+        Language::SimplifiedChinese => "护盾 +1",
+        Language::English => "Shield +1",
     }
 }
 
@@ -899,10 +1005,12 @@ fn cleanup_visual_effects(
     mut queue: ResMut<VisualEffectQueue>,
     mut reveal_delays: ResMut<EffectRevealDelays>,
     mut motion_effects: ResMut<PieceMotionEffects>,
+    mut event_state: ResMut<TurnEventEffectState>,
 ) {
     queue.requests.clear();
     reveal_delays.clear();
     motion_effects.clear();
+    *event_state = TurnEventEffectState::default();
     for entity in &query {
         commands.entity(entity).despawn();
     }
@@ -927,7 +1035,7 @@ fn millis_to_seconds(milliseconds: u16) -> f32 {
     f32::from(milliseconds) / 1000.0
 }
 
-fn parse_event_trigger_progress(action: &str, event_note: &str) -> Option<u8> {
+fn parse_event_trigger_progress(action: &str, event_note: &str) -> Option<PieceProgress> {
     let event_index = action.find(event_note)?;
     let prefix = &action[..event_index];
     if prefix.contains("pre-jump event tile ") {
@@ -937,23 +1045,415 @@ fn parse_event_trigger_progress(action: &str, event_note: &str) -> Option<u8> {
     parse_last_tile_progress(prefix).or_else(|| parse_moved_piece_progress(action))
 }
 
-fn parse_moved_piece_progress(action: &str) -> Option<u8> {
+fn parse_moved_piece_progress(action: &str) -> Option<PieceProgress> {
     action
         .split("moved piece #")
         .nth(1)
         .and_then(|detail| detail.split(" to tile ").nth(1))
-        .and_then(parse_leading_u8)
+        .and_then(parse_leading_progress)
 }
 
-fn parse_last_tile_progress(text: &str) -> Option<u8> {
+fn parse_last_tile_progress(text: &str) -> Option<PieceProgress> {
     text.match_indices("tile ")
         .last()
-        .and_then(|(index, _)| parse_leading_u8(&text[index + "tile ".len()..]))
+        .and_then(|(index, _)| parse_leading_progress(&text[index + "tile ".len()..]))
+}
+
+fn parse_leading_progress(text: &str) -> Option<PieceProgress> {
+    let end = text
+        .char_indices()
+        .find(|&(i, c)| !(c.is_ascii_digit() || (i == 0 && c == '-')))
+        .map_or(text.len(), |(i, _)| i);
+    text[..end].parse().ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::{game_mode::GameMode, rule_set::RuleSet};
+    use crate::domain::{event::TileEventKind, player::PlayerControl, rules::LaunchRule};
+    use crate::gameplay::ai::AiDifficulty;
+    use crate::gameplay::match_flow::{MatchConfig, MatchSetup, PlayerSeat, build_match_resources};
+    use crate::gameplay::turn_flow::{EventNotice, FINISH_DISTANCE, world_position_for_piece};
+    use crate::plugins::animation_plugin::AnimationPlugin;
+    use bevy::state::app::StatesPlugin;
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
+
+    #[derive(Resource)]
+    struct TestShieldLanding(Option<(PieceProgress, Vec3)>);
+
+    fn settle_test_shield_gain(
+        mut landing: ResMut<TestShieldLanding>,
+        mut turn: ResMut<TurnState>,
+        mut pieces: Query<(&mut PieceState, &mut Transform), With<PieceId>>,
+    ) {
+        let Some((progress, target)) = landing.0.take() else {
+            return;
+        };
+        let (mut piece, mut transform) = pieces.single_mut().unwrap();
+        piece.progress = progress;
+        piece.motion_serial += 1;
+        piece.shield += 1;
+        transform.translation = target;
+        turn.last_action_serial += 1;
+        // 故意不提供英文日志，确认加盾反馈只依赖结构化事件。
+        turn.last_action = None;
+        turn.last_event_notice = Some(EventNotice {
+            actor_player_id: 1,
+            target_player_id: Some(1),
+            target_piece_id: Some(1),
+            kind: TileEventKind::GainShield,
+            detail: EventNoticeDetail::GainShield {
+                current_shield: piece.shield,
+            },
+        });
+    }
+
+    fn shield_landing_app(
+        fast_mode: bool,
+        same_color_jump: bool,
+        initial_shield: u8,
+    ) -> (App, Entity, Vec3) {
+        let setup = MatchSetup {
+            mode: GameMode::TwoVsTwo,
+            rule_set: RuleSet::Creative,
+            ai_difficulty: AiDifficulty::Normal,
+            fast_mode,
+            launch_rule: LaunchRule::SixOnly,
+            player_seats: PlayerSeat::ALL,
+            pieces_per_player: 2,
+            player_controls: [PlayerControl::Human; 4],
+        };
+        let config = MatchConfig {
+            mode: setup.mode,
+            rule_set: setup.rule_set,
+            ai_difficulty: setup.ai_difficulty,
+            fast_mode,
+            launch_rule: setup.launch_rule,
+            player_seats: setup.player_seats,
+            pieces_per_player: setup.pieces_per_player,
+            player_controls: setup.player_controls,
+        };
+        let (board, roster, _) = build_match_resources(&setup);
+        let progress_at = |tile| {
+            let position = board.world_pos_for_route_index(tile).unwrap();
+            (0..FINISH_DISTANCE)
+                .find(|&progress| {
+                    world_position_for_piece(1, progress, PieceStatus::Active, &board, &roster)
+                        == Some(position)
+                })
+                .unwrap()
+        };
+        let event_tile = if same_color_jump { 0 } else { 12 };
+        let destination_tile = if same_color_jump { 3 } else { event_tile };
+        assert_eq!(
+            board.tile_kind_for_route_index(event_tile),
+            Some(crate::domain::tile::TileKind::Event)
+        );
+        let start_progress = progress_at(event_tile) - 2;
+        let final_progress = progress_at(destination_tile);
+        let start =
+            world_position_for_piece(1, start_progress, PieceStatus::Active, &board, &roster)
+                .unwrap()
+                .extend(1.0);
+        let target = board
+            .world_pos_for_route_index(destination_tile)
+            .unwrap()
+            .extend(1.0);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin))
+            .insert_state(AppState::InGame)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                20,
+            )))
+            .insert_resource(config)
+            .insert_resource(board)
+            .insert_resource(roster)
+            .init_resource::<TurnState>()
+            .init_resource::<DeviceProfile>()
+            .init_resource::<LanguageSettings>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .insert_resource(TestShieldLanding(None))
+            .add_plugins((EffectsPlugin, AnimationPlugin))
+            .add_systems(Update, settle_test_shield_gain.in_set(TurnSystems));
+        app.world_mut().spawn(Window::default());
+        app.world_mut()
+            .spawn((Camera::default(), GlobalTransform::default()));
+        let entity = app
+            .world_mut()
+            .spawn((
+                PieceId(1),
+                PieceState {
+                    owner_player_id: 1,
+                    team_id: 1,
+                    status: PieceStatus::Active,
+                    progress: start_progress,
+                    shield: initial_shield,
+                    stack_shield: 0,
+                    motion_serial: 0,
+                },
+                Transform::from_translation(start),
+            ))
+            .id();
+        app.update();
+        app.world_mut().resource_mut::<TestShieldLanding>().0 = Some((final_progress, target));
+        (app, entity, target)
+    }
+
+    fn effect_count<T: Component>(app: &mut App) -> usize {
+        app.world_mut()
+            .query_filtered::<Entity, With<T>>()
+            .iter(app.world())
+            .count()
+    }
+
+    fn verify_shield_landing(fast_mode: bool, same_color_jump: bool, initial_shield: u8) {
+        let (mut app, piece, target) =
+            shield_landing_app(fast_mode, same_color_jump, initial_shield);
+        // 也覆盖技能/撞击导致的额外等待，不能靠固定移动时长猜测落地。
+        app.world_mut()
+            .resource_mut::<PieceMotionEffects>()
+            .delay_piece_motion(1, 0.6);
+        let mut arrived = false;
+        for _ in 0..200 {
+            app.update();
+            let moving = app.world().get::<PieceMoveAnimation>(piece).is_some();
+            let shield_fx = effect_count::<ShieldFlashEffect>(&mut app);
+            let text_fx = effect_count::<FloatingTextEffect>(&mut app);
+            assert_eq!(
+                app.world()
+                    .resource::<EffectRevealDelays>()
+                    .visible_shield(1, initial_shield + 1),
+                initial_shield
+            );
+            if moving {
+                assert_eq!(shield_fx, 0, "must not flash during movement/jump");
+                assert_eq!(text_fx, 0);
+            } else {
+                assert_eq!(
+                    app.world().get::<Transform>(piece).unwrap().translation,
+                    target
+                );
+                assert_eq!(shield_fx, 1);
+                assert_eq!(text_fx, 1);
+                let position = app
+                    .world_mut()
+                    .query_filtered::<&Transform, With<ShieldFlashEffect>>()
+                    .single(app.world())
+                    .unwrap()
+                    .translation;
+                assert_eq!(
+                    position.truncate(),
+                    target.truncate() + Vec2::new(0.0, 24.0)
+                );
+                let text = app
+                    .world_mut()
+                    .query_filtered::<&Text2d, With<FloatingTextEffect>>()
+                    .single(app.world())
+                    .unwrap();
+                assert_eq!(text.0, "护盾 +1");
+                arrived = true;
+                break;
+            }
+        }
+        assert!(arrived);
+        assert!(
+            app.world()
+                .resource::<EffectRevealDelays>()
+                .landing_shield_gains
+                .is_empty()
+        );
+        for _ in 0..45 {
+            app.update();
+            if effect_count::<FloatingTextEffect>(&mut app) > 0 {
+                assert_eq!(
+                    app.world()
+                        .resource::<EffectRevealDelays>()
+                        .visible_shield(1, initial_shield + 1),
+                    initial_shield
+                );
+            }
+        }
+        assert_eq!(effect_count::<ShieldFlashEffect>(&mut app), 0);
+        assert_eq!(effect_count::<FloatingTextEffect>(&mut app), 0);
+        assert_eq!(
+            app.world()
+                .resource::<EffectRevealDelays>()
+                .visible_shield(1, initial_shield + 1),
+            initial_shield + 1
+        );
+    }
+
+    #[test]
+    fn event_shield_gain_waits_for_normal_arrival_before_flash_text_and_badge() {
+        for fast_mode in [false, true] {
+            verify_shield_landing(fast_mode, false, 0);
+        }
+    }
+
+    #[test]
+    fn event_shield_gain_waits_for_same_color_jump_and_preserves_existing_shield() {
+        for fast_mode in [false, true] {
+            verify_shield_landing(fast_mode, true, 1);
+        }
+    }
+
+    #[test]
+    fn event_shield_gain_without_motion_plays_once_and_localizes_text() {
+        let (mut app, piece, _) = shield_landing_app(false, false, 0);
+        let progress = app.world().get::<PieceState>(piece).unwrap().progress;
+        let position = app.world().get::<Transform>(piece).unwrap().translation;
+        app.world_mut().resource_mut::<TestShieldLanding>().0 = Some((progress, position));
+        app.world_mut().resource_mut::<LanguageSettings>().language = Language::English;
+        app.update();
+        assert_eq!(effect_count::<ShieldFlashEffect>(&mut app), 1);
+        let text = app
+            .world_mut()
+            .query_filtered::<&Text2d, With<FloatingTextEffect>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(text.0, "Shield +1");
+        for _ in 0..50 {
+            app.update();
+        }
+        assert_eq!(effect_count::<ShieldFlashEffect>(&mut app), 0);
+        assert_eq!(effect_count::<FloatingTextEffect>(&mut app), 0);
+        assert_eq!(
+            app.world()
+                .resource::<EffectRevealDelays>()
+                .visible_shield(1, 1),
+            1
+        );
+    }
+
+    #[test]
+    fn event_shield_gain_discards_missing_returned_or_superseded_piece() {
+        for invalidation in 0..3 {
+            let (mut app, piece, _) = shield_landing_app(false, true, 0);
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<EffectRevealDelays>()
+                    .landing_shield_gains
+                    .len(),
+                1
+            );
+            match invalidation {
+                0 => {
+                    app.world_mut().despawn(piece);
+                }
+                1 => {
+                    app.world_mut().get_mut::<PieceState>(piece).unwrap().status =
+                        PieceStatus::InHangar;
+                }
+                _ => {
+                    app.world_mut()
+                        .get_mut::<PieceState>(piece)
+                        .unwrap()
+                        .motion_serial += 1;
+                }
+            }
+            app.update();
+            assert!(
+                app.world()
+                    .resource::<EffectRevealDelays>()
+                    .landing_shield_gains
+                    .is_empty()
+            );
+            assert_eq!(effect_count::<ShieldFlashEffect>(&mut app), 0);
+            assert_eq!(
+                app.world()
+                    .resource::<EffectRevealDelays>()
+                    .visible_shield(1, 1),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn event_shield_gain_cleanup_clears_pending_feedback_and_serial() {
+        let (mut app, _, _) = shield_landing_app(false, true, 0);
+        app.update();
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::MainMenu);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<EffectRevealDelays>()
+                .landing_shield_gains
+                .is_empty()
+        );
+        assert_eq!(
+            app.world()
+                .resource::<TurnEventEffectState>()
+                .last_action_serial,
+            0
+        );
+        assert_eq!(effect_count::<ShieldFlashEffect>(&mut app), 0);
+        assert_eq!(
+            app.world()
+                .resource::<EffectRevealDelays>()
+                .visible_shield(1, 1),
+            1
+        );
+    }
+
+    #[test]
+    fn shield_gain_floating_text_clears_actual_shield_mesh_throughout_pulse() {
+        use bevy::mesh::VertexAttributeValues;
+        let (mut app, piece, _) = shield_landing_app(false, false, 0);
+        let progress = app.world().get::<PieceState>(piece).unwrap().progress;
+        let position = app.world().get::<Transform>(piece).unwrap().translation;
+        app.world_mut().resource_mut::<TestShieldLanding>().0 = Some((progress, position));
+        for _ in 0..27 {
+            app.update();
+            let (root, shield) = app
+                .world_mut()
+                .query_filtered::<(Entity, &Transform), With<ShieldFlashEffect>>()
+                .single(app.world())
+                .unwrap();
+            let shield = *shield;
+            let mut top = f32::NEG_INFINITY;
+            let mut mesh_query = app.world_mut().query::<(&Mesh2d, &Transform, &ChildOf)>();
+            let meshes = app.world().resource::<Assets<Mesh>>();
+            for (mesh, transform, parent) in mesh_query.iter(app.world()) {
+                if parent.parent() != root {
+                    continue;
+                }
+                let Some(VertexAttributeValues::Float32x3(vertices)) = meshes
+                    .get(&mesh.0)
+                    .unwrap()
+                    .attribute(Mesh::ATTRIBUTE_POSITION)
+                else {
+                    panic!("shield vertices");
+                };
+                for vertex in vertices {
+                    top = top.max(
+                        shield
+                            .transform_point(transform.transform_point(Vec3::from_array(*vertex)))
+                            .y,
+                    );
+                }
+            }
+            let (text, font) = app
+                .world_mut()
+                .query_filtered::<(&Transform, &TextFont), With<FloatingTextEffect>>()
+                .single(app.world())
+                .unwrap();
+            let FontSize::Px(font_size) = font.font_size else {
+                panic!("fixed world-space font size");
+            };
+            // 以 1.5em 的保守可见行框校验，涵盖中英文及缩放脉冲。
+            let text_bottom = text.translation.y - font_size * 1.5 * text.scale.y * 0.5;
+            assert!(
+                text_bottom > top + 2.0,
+                "text {text_bottom} overlaps shield {top}"
+            );
+        }
+    }
 
     #[test]
     fn visual_effect_queue_preserves_request_order() {
@@ -1011,6 +1511,14 @@ mod tests {
     #[test]
     fn event_trigger_progress_parser_uses_last_tile_before_event() {
         assert_eq!(
+            parse_moved_piece_progress("rolled 1, moved piece #1 to tile -1"),
+            Some(-1)
+        );
+        assert_eq!(
+            parse_first_piece_id("rolled 1, moved piece #1 to tile -1"),
+            Some(1)
+        );
+        assert_eq!(
             parse_event_trigger_progress(
                 "rolled 2, moved piece #1 to tile 3; jumped to next same-color tile 6, event advance +2",
                 "event advance +2",
@@ -1063,6 +1571,21 @@ mod tests {
         assert_eq!(delays.visible_shield(3, 1), 1);
         assert_eq!(delays.visible_shield(4, 0), 0);
         assert_eq!(delays.visible_skill_charge(SkillUiAction::Snipe, 1), 1);
+    }
+
+    #[test]
+    fn shield_gain_reveal_does_not_round_away_high_refresh_frames() {
+        for fps in [50, 120, 144, 240, 400] {
+            let mut delays = EffectRevealDelays::default();
+            delays.delay_shield_gain(1, SHIELD_GAIN_REVEAL_DURATION);
+            let delta = 1.0 / fps as f32;
+            for _ in 0..(FLOATING_TEXT_DURATION * fps as f32).ceil() as usize {
+                delays.tick(delta);
+                assert_eq!(delays.visible_shield(1, 1), 0, "fps={fps}");
+            }
+            delays.tick(0.1);
+            assert_eq!(delays.visible_shield(1, 1), 1);
+        }
     }
 
     #[test]

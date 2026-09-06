@@ -2,7 +2,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::{prelude::*, sprite::Anchor};
 
 use crate::constants::BOARD_Z_LAYER;
-use crate::domain::piece::{PieceState, PieceStatus};
+use crate::domain::piece::{PieceProgress, PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::{BoardLayout, PlayerRoster};
 use crate::gameplay::skill_flow::{SkillRoster, dash_bonus};
@@ -11,7 +11,8 @@ use crate::gameplay::turn_flow::{
     world_position_for_piece,
 };
 use crate::i18n::{Language, LanguageSettings};
-use crate::plugins::effects_plugin::EffectRevealDelays;
+use crate::plugins::animation_plugin::PieceAnimationSystems;
+use crate::plugins::effects_plugin::{EffectRevealDelays, EffectSystems};
 use crate::plugins::skill_plugin::SkillTargetState;
 use crate::states::AppState;
 use crate::states::GamePhase;
@@ -27,9 +28,9 @@ impl Plugin for PiecePlugin {
                 (
                     update_piece_highlight,
                     update_piece_stack_visuals,
-                    update_move_target_guides,
+                    update_move_target_guides.after(PieceAnimationSystems),
                     update_piece_stack_count_badges,
-                    update_piece_shield_badges,
+                    update_piece_shield_badges.after(EffectSystems::Playback),
                     update_piece_effect_badges,
                 )
                     .chain()
@@ -60,7 +61,7 @@ struct PieceBaseColor(pub Color);
 struct PieceFacingState {
     owner_player_id: u8,
     status: PieceStatus,
-    progress: u8,
+    progress: PieceProgress,
     initialized: bool,
 }
 
@@ -1107,6 +1108,7 @@ fn update_move_target_guides(
     time: Res<Time>,
     input_state: Res<TurnInputState>,
     game_phase: Res<State<GamePhase>>,
+    skill_target: Res<SkillTargetState>,
     board_layout: Res<BoardLayout>,
     player_roster: Res<PlayerRoster>,
     piece_query: PieceTransformQuery,
@@ -1124,14 +1126,26 @@ fn update_move_target_guides(
             &board_layout,
             &player_roster,
         )
+    } else if matches!(game_phase.get(), GamePhase::ResolveSkillEffect) {
+        swap_preview_guide_infos(&skill_target, &piece_query, &board_layout, &player_roster)
     } else {
         Vec::new()
     };
 
     let pulse = move_target_guide_pulse(time.elapsed_secs());
+    let swap_preview = matches!(game_phase.get(), GamePhase::ResolveSkillEffect)
+        && skill_target.swap_pair().is_some();
     let target_alpha = 0.38 + pulse * 0.34;
-    let connector_alpha = 0.16 + pulse * 0.16;
-    let target_scale = 0.92 + pulse * 0.10;
+    let connector_alpha = if swap_preview {
+        0.50 + pulse * 0.18
+    } else {
+        0.16 + pulse * 0.16
+    };
+    let target_scale = if swap_preview {
+        1.50 + pulse * 0.10
+    } else {
+        0.92 + pulse * 0.10
+    };
 
     for (target, mut transform, mut visibility) in &mut target_query {
         let Some(info) = guide_infos
@@ -1142,7 +1156,11 @@ fn update_move_target_guides(
             continue;
         };
 
-        transform.translation = info.display_target.extend(MOVE_TARGET_GUIDE_Z);
+        transform.translation = info.display_target.extend(if swap_preview {
+            BOARD_Z_LAYER + 2.3
+        } else {
+            MOVE_TARGET_GUIDE_Z
+        });
         transform.rotation =
             rotation_for_direction(info.display_target - info.origin).unwrap_or(Quat::IDENTITY);
         transform.scale = Vec3::splat(target_scale);
@@ -1191,6 +1209,43 @@ fn update_move_target_guides(
         transform.rotation = segment.rotation;
         *visibility = Visibility::Visible;
     }
+}
+
+fn swap_preview_guide_infos(
+    target: &SkillTargetState,
+    pieces: &PieceTransformQuery,
+    board: &BoardLayout,
+    roster: &PlayerRoster,
+) -> Vec<MoveTargetGuideInfo> {
+    let Some((source, other)) = target.swap_pair() else {
+        return Vec::new();
+    };
+    let position = |id| {
+        pieces
+            .iter()
+            .find(|(piece_id, _, _)| piece_id.0 == id)
+            .and_then(|(_, p, _)| {
+                world_position_for_piece(p.owner_player_id, p.progress, p.status, board, roster)
+            })
+    };
+    let (Some(a), Some(b)) = (position(source), position(other)) else {
+        return Vec::new();
+    };
+    [(source, a, b), (other, b, a)]
+        .into_iter()
+        .map(|(piece_id, origin, target)| {
+            let direction = (target - origin).normalize_or_zero();
+            let lane = Vec2::new(-direction.y, direction.x) * 5.0;
+            MoveTargetGuideInfo {
+                piece_id,
+                origin,
+                connector_origin: origin + lane,
+                target,
+                display_target: target,
+                connector_target: Some(target + lane),
+            }
+        })
+        .collect()
 }
 
 fn move_target_guide_pieces(
@@ -1763,7 +1818,7 @@ fn update_piece_highlight(
             };
         }
 
-        let visual_state = piece_interaction_visual_state(
+        let mut visual_state = piece_interaction_visual_state(
             piece_id.0,
             piece_state,
             turn_state.current_player,
@@ -1774,6 +1829,16 @@ fn update_piece_highlight(
             skill_candidates,
             skill_target_state.is_active(),
         );
+        if skill_selectable && skill_target_state.swap_source() == Some(piece_id.0) {
+            visual_state = PieceInteractionVisualState::Selectable;
+        }
+        if skill_selectable && let Some(pair) = skill_target_state.swap_pair() {
+            visual_state = if piece_id.0 == pair.0 || piece_id.0 == pair.1 {
+                PieceInteractionVisualState::Selectable
+            } else {
+                PieceInteractionVisualState::Disabled
+            };
+        }
         visual_states.push((piece_id.0, visual_state));
 
         if visual_state == PieceInteractionVisualState::Selectable {
@@ -1909,7 +1974,11 @@ mod tests {
         (BoardLayout::default(), PlayerRoster::from_players(players))
     }
 
-    fn piece_state(owner_player_id: u8, status: PieceStatus, progress: u8) -> PieceState {
+    fn piece_state(
+        owner_player_id: u8,
+        status: PieceStatus,
+        progress: PieceProgress,
+    ) -> PieceState {
         PieceState {
             owner_player_id,
             team_id: owner_player_id,
@@ -2008,6 +2077,65 @@ mod tests {
     }
 
     #[test]
+    fn swap_preview_renders_only_selected_pair_at_real_destinations_without_mutating_pieces() {
+        use crate::gameplay::swap_flow::SwapSelection;
+        let (board, roster) = test_roster();
+        let mut app = App::new();
+        let mut selection = SwapSelection::new(1, 1, vec![1, 2], vec![5, 6]);
+        selection.select(2);
+        selection.select(6);
+        app.insert_resource(State::new(GamePhase::ResolveSkillEffect))
+            .insert_resource(board.clone())
+            .insert_resource(roster.clone())
+            .insert_resource(SkillTargetState::with_swap(selection))
+            .init_resource::<TurnInputState>()
+            .init_resource::<Time>()
+            .add_systems(Startup, |mut commands: Commands| {
+                for id in [1, 2, 5, 6] {
+                    spawn_move_target_guide(&mut commands, Color::WHITE, id);
+                }
+            })
+            .add_systems(Update, update_move_target_guides);
+        let mut expected = Vec::new();
+        for (id, owner, progress) in [(1, 1, 3), (2, 1, 9), (5, 3, 18), (6, 3, 27)] {
+            let piece = piece_state(owner, PieceStatus::Active, progress);
+            let pos =
+                world_position_for_piece(owner, progress, piece.status, &board, &roster).unwrap();
+            expected.push((id, pos));
+            app.world_mut()
+                .spawn((PieceId(id), piece, Transform::from_xyz(999.0, 999.0, 1.0)));
+        }
+        app.update();
+        let mut query = app
+            .world_mut()
+            .query::<(&MoveTargetGuideTarget, &Transform, &Visibility)>();
+        for (guide, transform, visibility) in query.iter(app.world()) {
+            if guide.piece_id == 2 || guide.piece_id == 6 {
+                assert_eq!(*visibility, Visibility::Visible);
+                let other = if guide.piece_id == 2 { 6 } else { 2 };
+                assert_eq!(
+                    transform.translation.truncate(),
+                    expected.iter().find(|(id, _)| *id == other).unwrap().1
+                );
+                assert!(transform.scale.x >= 1.5);
+            } else {
+                assert_eq!(*visibility, Visibility::Hidden);
+            }
+        }
+        let mut pieces = app
+            .world_mut()
+            .query_filtered::<&Transform, With<PieceId>>();
+        assert!(pieces.iter(app.world()).all(|t| t.translation.x == 999.0));
+        app.world_mut().insert_resource(SkillTargetState::default());
+        app.update();
+        assert!(
+            query
+                .iter(app.world())
+                .all(|(_, _, v)| *v == Visibility::Hidden)
+        );
+    }
+
+    #[test]
     fn move_target_guide_system_initializes_without_query_conflicts() {
         let (board_layout, player_roster) = test_roster();
         let mut app = App::new();
@@ -2017,6 +2145,7 @@ mod tests {
             .insert_resource(board_layout)
             .insert_resource(player_roster)
             .insert_resource(TurnInputState::default())
+            .init_resource::<SkillTargetState>()
             .add_systems(Update, update_move_target_guides);
 
         app.update();
@@ -2121,7 +2250,7 @@ mod tests {
         piece_id: u8,
         owner_player_id: u8,
         status: PieceStatus,
-        progress: u8,
+        progress: PieceProgress,
         origin: Vec2,
     ) -> MoveTargetGuidePiece {
         guide_piece_with_connector_origin(
@@ -2138,7 +2267,7 @@ mod tests {
         piece_id: u8,
         owner_player_id: u8,
         status: PieceStatus,
-        progress: u8,
+        progress: PieceProgress,
         origin: Vec2,
         connector_origin: Vec2,
     ) -> MoveTargetGuidePiece {
@@ -2208,6 +2337,170 @@ mod tests {
                 &player_roster,
             )
         );
+    }
+
+    #[test]
+    fn swap_then_roll_guide_render_pick_and_actual_move_share_the_new_position() {
+        use crate::domain::dice::DiceRoll;
+        use crate::gameplay::match_flow::{MatchConfig, MatchResult, TeamRoster};
+        use crate::gameplay::skill_flow::build_skill_roster;
+        use crate::gameplay::swap_flow::execute_swap;
+        use crate::gameplay::turn_flow::{
+            ActionResources, ActionState, collect_actions, execute_action, set_pending_actions,
+        };
+
+        // 普通换位，以及换到本方起点前两格后仅掷出 1 的边界。
+        for (teammate_progress, roll, expected_progress) in [(18, 5, 10), (11, 1, -1)] {
+            let (board, roster) = test_roster();
+            let expected = world_position_for_piece(
+                1,
+                expected_progress,
+                PieceStatus::Active,
+                &board,
+                &roster,
+            )
+            .unwrap();
+            let mut app = App::new();
+            app.add_plugins((bevy::state::app::StatesPlugin, bevy::time::TimePlugin))
+                .insert_state(GamePhase::AwaitPieceSelect)
+                .insert_resource(board.clone())
+                .insert_resource(roster.clone())
+                .init_resource::<TurnInputState>()
+                .init_resource::<SkillTargetState>()
+                .add_systems(Startup, |mut commands: Commands| {
+                    spawn_move_target_guide(&mut commands, Color::WHITE, 1)
+                })
+                .add_systems(Update, update_move_target_guides);
+            for (id, owner, progress) in [(1, 1, 3), (2, 3, teammate_progress)] {
+                let state = PieceState {
+                    team_id: 1,
+                    ..piece_state(owner, PieceStatus::Active, progress)
+                };
+                // 模拟动画尚未落稳，换位目标必须由逻辑棋盘坐标确定。
+                app.world_mut().spawn((
+                    PieceId(id),
+                    HangarSlot(Vec2::ZERO),
+                    state,
+                    Transform::from_xyz(900.0, 900.0, 1.0),
+                ));
+            }
+            let mut piece_system: SystemState<(
+                Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
+                crate::plugins::animation_plugin::MovingPieceQuery,
+            )> = SystemState::new(app.world_mut());
+            let actions = {
+                let (mut pieces, moving) = piece_system.get_mut(app.world_mut()).unwrap();
+                assert!(
+                    execute_swap(
+                        1,
+                        GameMode::TwoVsTwo,
+                        2,
+                        &board,
+                        &roster,
+                        &mut pieces,
+                        &moving
+                    )
+                    .contains("exchanged")
+                );
+                collect_actions(
+                    1,
+                    DiceRoll(roll),
+                    0,
+                    LaunchRule::SixOnly,
+                    &board,
+                    &roster,
+                    &pieces,
+                )
+            };
+            assert_eq!(
+                actions,
+                vec![PlannedAction::Move {
+                    piece_id: 1,
+                    target_progress: expected_progress
+                }]
+            );
+            let mut input_system: SystemState<(
+                ResMut<TurnInputState>,
+                ResMut<NextState<GamePhase>>,
+            )> = SystemState::new(app.world_mut());
+            let (mut input, mut phase) = input_system.get_mut(app.world_mut()).unwrap();
+            set_pending_actions(&mut input, roll, actions.clone(), &mut phase);
+            app.update();
+
+            let mut guide_query = app
+                .world_mut()
+                .query::<(&MoveTargetGuideTarget, &Transform, &Visibility)>();
+            let (guide, transform, visibility) = guide_query.single(app.world()).unwrap();
+            assert_eq!(guide.piece_id, 1);
+            assert_eq!(*visibility, Visibility::Visible);
+            assert_eq!(transform.translation.truncate(), expected);
+            let mut read_system: SystemState<PieceTransformQuery> =
+                SystemState::new(app.world_mut());
+            let pieces = read_system.get(app.world()).unwrap();
+            let visual_infos = piece_visual_infos(&pieces, &board, &roster);
+            let inputs = move_target_guide_pieces(&pieces, &visual_infos, &board, &roster);
+            let infos = move_target_guide_infos(&actions, &inputs, &board, &roster);
+            assert_eq!(pick_move_target_guide(&infos, expected, 12.0), Some(1));
+            let source = pieces
+                .iter()
+                .find(|(id, _, _)| id.0 == 1)
+                .unwrap()
+                .2
+                .translation
+                .truncate();
+            assert_eq!(infos[0].connector_origin, source);
+            assert_eq!(infos[0].connector_target, Some(expected));
+            // 可见连线的每段中心也必须来自同一条“换位后起点 → 落点”路径。
+            let mut connectors =
+                app.world_mut()
+                    .query::<(&MoveTargetGuideConnectorDash, &Transform, &Visibility)>();
+            for (dash, transform, visible) in connectors.iter(app.world()) {
+                if *visible == Visibility::Visible {
+                    let segment =
+                        move_target_connector_segment(source, expected, dash.dash_index).unwrap();
+                    assert_eq!(transform.translation.truncate(), segment.center);
+                }
+            }
+
+            let config = MatchConfig {
+                mode: GameMode::TwoVsTwo,
+                rule_set: crate::data::rule_set::RuleSet::Creative,
+                ai_difficulty: AiDifficulty::Normal,
+                fast_mode: false,
+                launch_rule: LaunchRule::SixOnly,
+                player_seats: PlayerSeat::ALL,
+                pieces_per_player: 2,
+                player_controls: [PlayerControl::Human; 4],
+            };
+            let mut skills = build_skill_roster(&roster);
+            let mut result = MatchResult::default();
+            let mut turn = TurnState::opening_turn();
+            let mut input = TurnInputState::default();
+            let mut phase = NextState::<GamePhase>::Unchanged;
+            let (mut pieces, _) = piece_system.get_mut(app.world_mut()).unwrap();
+            execute_action(
+                actions[0],
+                roll,
+                roll,
+                ActionResources {
+                    player_roster: &roster,
+                    team_roster: &TeamRoster { teams: vec![] },
+                    match_config: &config,
+                    board_layout: &board,
+                },
+                ActionState {
+                    skill_roster: &mut skills,
+                    match_result: &mut result,
+                    turn_state: &mut turn,
+                    input_state: &mut input,
+                    next_phase: &mut phase,
+                },
+                &mut pieces,
+            );
+            let (_, _, state, transform) = pieces.iter().find(|(id, _, _, _)| id.0 == 1).unwrap();
+            assert_eq!(state.progress, expected_progress);
+            assert_eq!(transform.translation.truncate(), expected);
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::data::game_mode::GameMode;
 use crate::domain::piece::{PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
 use crate::gameplay::match_flow::PlayerRoster;
-use crate::gameplay::turn_flow::HOME_ENTRY_PROGRESS;
+use crate::gameplay::turn_flow::{HOME_ENTRY_PROGRESS, MIN_ROUTE_PROGRESS};
 use crate::plugins::piece_plugin::PieceId;
 
 pub const MAX_PIECE_SHIELD: u8 = 2;
@@ -290,7 +290,8 @@ pub fn is_legal_snipe_target(
 
 /// 判断棋子是否在主环道上，可参与 Swap。
 pub fn is_swap_main_route_piece(piece_state: &PieceState) -> bool {
-    piece_state.status == PieceStatus::Active && piece_state.progress <= HOME_ENTRY_PROGRESS
+    piece_state.status == PieceStatus::Active
+        && (MIN_ROUTE_PROGRESS..=HOME_ENTRY_PROGRESS).contains(&piece_state.progress)
 }
 
 /// 判断棋子是否为当前玩家可作为 Swap 发起方的棋子。

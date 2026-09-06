@@ -192,9 +192,12 @@ struct PieceId(u8);
 struct OwnerPlayerId(u8);
 struct TeamId(u8);
 
+// 相对本方起点的进度；换位到起点前两格时可为 -2/-1。
+type PieceProgress = i16;
+
 struct PieceState {
     status: PieceStatus,
-    progress: u8,
+    progress: PieceProgress,
     lap: u8,
     shield: u8,
     stacked_with: Option<Entity>,
@@ -336,10 +339,12 @@ struct SkillDefinition {
 - `Dash`：掷骰后、移动前
 - `Shield`：主动释放或受击前触发
 - `Snipe`：回合行动阶段主动使用
-- `Swap`：己方行动阶段使用
+- `Swap`：己方投骰前选择双方；任一方的 `PieceMoveAnimation` 尚存在（含延迟/停顿）时保留预览并禁用确认。UI 恢复可确认后也必须经共享执行入口复核，阻塞时不扣费、不消耗技能机会；AI 使用同一检查。
 - `DoubleDice`：投骰前声明
 
 ### 8.3 技能执行流程
+
+换位动画与后续移动共用本方重算进度对应的棋盘坐标；普通移动的起点/终点不从旧插值 Transform 推断。动画途中发生新的逻辑状态变化时，采样旧轨迹的当前可见位置接续新动画，替换旧动画组件，并将缓存终点同步到新逻辑落点，避免旧轨迹回写覆盖新状态；升空的临时 Z 偏移不写入逻辑落点。
 
 1. 校验时机是否合法
 2. 校验目标是否合法

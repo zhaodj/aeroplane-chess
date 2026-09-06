@@ -6,6 +6,9 @@ use bevy::prelude::*;
 pub use device::{DeviceProfile, HudLayoutMode, primary_window};
 pub use input::{PointerInputState, PointerSource};
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlatformInputSet;
+
 pub struct PlatformPlugin;
 
 impl Plugin for PlatformPlugin {
@@ -14,7 +17,9 @@ impl Plugin for PlatformPlugin {
             .init_resource::<PointerInputState>()
             .add_systems(
                 PreUpdate,
-                (device::update_device_profile, input::update_pointer_input).chain(),
+                (device::update_device_profile, input::update_pointer_input)
+                    .chain()
+                    .in_set(PlatformInputSet),
             );
     }
 }

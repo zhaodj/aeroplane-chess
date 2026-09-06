@@ -4,7 +4,7 @@ use rand::random_range;
 use crate::data::game_mode::GameMode;
 use crate::domain::dice::DiceRoll;
 use crate::domain::event::TileEventKind;
-use crate::domain::piece::{PieceState, PieceStatus};
+use crate::domain::piece::{PieceProgress, PieceState, PieceStatus};
 use crate::domain::player::PlayerControl;
 use crate::domain::rules::{LaunchRule, can_launch};
 use crate::domain::tile::TileKind;
@@ -22,8 +22,10 @@ use crate::states::GamePhase;
 pub const BOARD_ROUTE_TILES: u8 = 48;
 pub const MAIN_ROUTE_STEPS: u8 = 52;
 pub const HOME_LANE_STEPS: u8 = 6;
-pub const HOME_ENTRY_PROGRESS: u8 = MAIN_ROUTE_STEPS - 3;
-pub const FINISH_DISTANCE: u8 = HOME_ENTRY_PROGRESS + HOME_LANE_STEPS;
+pub const HOME_ENTRY_PROGRESS: PieceProgress = MAIN_ROUTE_STEPS as PieceProgress - 3;
+pub const FINISH_DISTANCE: PieceProgress = HOME_ENTRY_PROGRESS + HOME_LANE_STEPS as PieceProgress;
+pub const MIN_ROUTE_PROGRESS: PieceProgress =
+    HOME_ENTRY_PROGRESS + 1 - MAIN_ROUTE_STEPS as PieceProgress;
 pub const MAX_CHAIN_EXTRA_ROLLS: u8 = 3;
 pub const MAX_PIECE_SHIELD: u8 = 2;
 
@@ -136,6 +138,22 @@ impl TurnState {
     }
 }
 
+/// Shared eligibility for the center prompt, pointer entry points and keyboard rolls.
+/// AwaitDice also covers animation / double-dice choice, which cannot start a new roll.
+pub fn human_roll_is_ready(
+    turn: &TurnState,
+    phase: &GamePhase,
+    roster: &PlayerRoster,
+    result: &MatchResult,
+) -> bool {
+    !result.finished
+        && matches!(phase, GamePhase::AwaitDice)
+        && turn.current_roll.is_none()
+        && turn.pending_roll_display.is_none()
+        && turn.pending_double_dice_choice.is_none()
+        && current_player_control(turn.current_player, roster) == Some(PlayerControl::Human)
+}
+
 /// 记录一次行动日志事件，并保留其发生时的回合号。
 pub fn record_turn_action(turn_state: &mut TurnState, action: impl Into<String>) {
     turn_state.last_event_notice = None;
@@ -180,8 +198,14 @@ impl TurnInputState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// 执行动作描述：起飞或移动。
 pub enum PlannedAction {
-    Launch { piece_id: u8, target_progress: u8 },
-    Move { piece_id: u8, target_progress: u8 },
+    Launch {
+        piece_id: u8,
+        target_progress: PieceProgress,
+    },
+    Move {
+        piece_id: u8,
+        target_progress: PieceProgress,
+    },
 }
 
 impl PlannedAction {
@@ -215,7 +239,7 @@ struct PieceSnapshot {
     owner_player_id: u8,
     team_id: u8,
     status: PieceStatus,
-    distance: u8,
+    distance: PieceProgress,
     shield: u8,
     board_position: Option<BoardPosition>,
 }
@@ -225,9 +249,9 @@ struct PieceSnapshot {
 struct ActionOrigin {
     owner_player_id: u8,
     status: PieceStatus,
-    progress: u8,
+    progress: PieceProgress,
     translation: Vec3,
-    new_progress: u8,
+    new_progress: PieceProgress,
 }
 
 /// Immutable resources needed to resolve one player action.
@@ -270,7 +294,7 @@ struct TileEventOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct JumpResolution {
-    target_progress: u8,
+    target_progress: PieceProgress,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,7 +305,7 @@ pub enum MovementStepKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MovementStep {
-    pub progress: u8,
+    pub progress: PieceProgress,
     pub kind: MovementStepKind,
 }
 
@@ -950,7 +974,13 @@ pub fn clear_pending_input(input_state: &mut TurnInputState) {
 }
 
 /// 计算移动后的目标进度；若超终点则返回 None（精确到达规则）。
-pub fn compute_target_distance(current_distance: u8, roll_value: u8) -> Option<u8> {
+pub fn compute_target_distance(
+    current_distance: PieceProgress,
+    roll_value: u8,
+) -> Option<PieceProgress> {
+    if !(MIN_ROUTE_PROGRESS..=FINISH_DISTANCE).contains(&current_distance) {
+        return None;
+    }
     let mut current_progress = current_distance;
     let mut direction = 1;
     for _ in 0..roll_value {
@@ -962,11 +992,11 @@ pub fn compute_target_distance(current_distance: u8, roll_value: u8) -> Option<u
 /// 计算棋子移动后的目标进度；起飞点视为主环道前一格。
 pub fn compute_move_target_distance(
     status: PieceStatus,
-    current_distance: u8,
+    current_distance: PieceProgress,
     roll_value: u8,
-) -> Option<u8> {
+) -> Option<PieceProgress> {
     match status {
-        PieceStatus::AtLaunch => roll_value.checked_sub(1),
+        PieceStatus::AtLaunch => roll_value.checked_sub(1).map(PieceProgress::from),
         PieceStatus::Active => compute_target_distance(current_distance, roll_value),
         _ => None,
     }
@@ -977,11 +1007,11 @@ pub fn compute_move_target_distance(
 pub fn compute_move_target_distance_on_board(
     owner_player_id: u8,
     status: PieceStatus,
-    current_distance: u8,
+    current_distance: PieceProgress,
     roll_value: u8,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
-) -> Option<u8> {
+) -> Option<PieceProgress> {
     movement_steps_for_roll(
         owner_player_id,
         status,
@@ -997,7 +1027,7 @@ pub fn compute_move_target_distance_on_board(
 pub fn movement_steps_for_roll(
     owner_player_id: u8,
     status: PieceStatus,
-    current_distance: u8,
+    current_distance: PieceProgress,
     roll_value: u8,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
@@ -1017,7 +1047,11 @@ pub fn movement_steps_for_roll(
             remaining_steps = remaining_steps.checked_sub(1)?;
             0
         }
-        PieceStatus::Active if current_distance <= FINISH_DISTANCE => current_distance,
+        PieceStatus::Active
+            if (MIN_ROUTE_PROGRESS..=FINISH_DISTANCE).contains(&current_distance) =>
+        {
+            current_distance
+        }
         _ => return None,
     };
     let mut shortcut_used = false;
@@ -1057,9 +1091,9 @@ pub fn movement_steps_for_roll(
 pub fn movement_steps_between_progresses(
     owner_player_id: u8,
     previous_status: PieceStatus,
-    previous_progress: u8,
+    previous_progress: PieceProgress,
     current_status: PieceStatus,
-    current_progress: u8,
+    current_progress: PieceProgress,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
 ) -> Option<Vec<MovementStep>> {
@@ -1122,8 +1156,8 @@ pub fn movement_steps_between_progresses(
 }
 
 fn movement_steps_between_home_lane_bounce(
-    previous_progress: u8,
-    target_progress: u8,
+    previous_progress: PieceProgress,
+    target_progress: PieceProgress,
 ) -> Option<Vec<MovementStep>> {
     let mut steps = Vec::new();
     let mut current_progress = previous_progress;
@@ -1147,7 +1181,10 @@ fn movement_steps_between_home_lane_bounce(
     None
 }
 
-fn next_progress_with_finish_bounce(current_progress: u8, direction: &mut i8) -> Option<u8> {
+fn next_progress_with_finish_bounce(
+    current_progress: PieceProgress,
+    direction: &mut i8,
+) -> Option<PieceProgress> {
     if current_progress == FINISH_DISTANCE && *direction > 0 {
         *direction = -1;
     } else if current_progress == HOME_ENTRY_PROGRESS && *direction < 0 {
@@ -1168,24 +1205,25 @@ fn next_progress_with_finish_bounce(current_progress: u8, direction: &mut i8) ->
 /// 将“逻辑进度”映射成棋盘位置（主环道/冲线道/终点）。
 pub fn board_position_for_distance(
     player_profile: &PlayerProfile,
-    distance: u8,
+    distance: PieceProgress,
     status: PieceStatus,
 ) -> Option<BoardPosition> {
     match status {
         PieceStatus::InHangar => None,
         PieceStatus::AtLaunch => Some(BoardPosition::Launch),
         PieceStatus::Finished => Some(BoardPosition::Goal),
-        PieceStatus::Active if distance < HOME_ENTRY_PROGRESS => {
-            let public_index = (public_index_for_route_index(player_profile.launch_tile_index)?
-                + distance)
-                % MAIN_ROUTE_STEPS;
-            board_position_for_public_index(public_index)
+        PieceStatus::Active if (MIN_ROUTE_PROGRESS..HOME_ENTRY_PROGRESS).contains(&distance) => {
+            let public_index = (PieceProgress::from(public_index_for_route_index(
+                player_profile.launch_tile_index,
+            )?) + distance)
+                .rem_euclid(PieceProgress::from(MAIN_ROUTE_STEPS));
+            board_position_for_public_index(public_index as u8)
         }
         PieceStatus::Active if distance == HOME_ENTRY_PROGRESS => {
             Some(BoardPosition::TurnMarker(player_profile.seat))
         }
-        PieceStatus::Active if distance < FINISH_DISTANCE => {
-            Some(BoardPosition::Home(distance - HOME_ENTRY_PROGRESS))
+        PieceStatus::Active if (HOME_ENTRY_PROGRESS + 1..FINISH_DISTANCE).contains(&distance) => {
+            Some(BoardPosition::Home((distance - HOME_ENTRY_PROGRESS) as u8))
         }
         PieceStatus::Active if distance == FINISH_DISTANCE => Some(BoardPosition::Goal),
         _ => None,
@@ -1195,7 +1233,7 @@ pub fn board_position_for_distance(
 /// 将棋子状态映射到世界坐标，供渲染层更新 Transform。
 pub fn world_position_for_piece(
     owner_player_id: u8,
-    distance: u8,
+    distance: PieceProgress,
     status: PieceStatus,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
@@ -1465,10 +1503,10 @@ fn jump_resolution_for_same_color_landing(
 
 fn shortcut_progress_after_landing(
     player_id: u8,
-    current_progress: u8,
+    current_progress: PieceProgress,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
-) -> Option<u8> {
+) -> Option<PieceProgress> {
     if current_progress >= HOME_ENTRY_PROGRESS {
         return None;
     }
@@ -1511,36 +1549,42 @@ fn progress_for_main_route_index(
     player_roster: &PlayerRoster,
     player_id: u8,
     route_index: u8,
-) -> Option<u8> {
+) -> Option<PieceProgress> {
     let player_profile = player_roster
         .players
         .iter()
         .find(|player| player.state.player_id == player_id)?;
     let launch_index = public_index_for_route_index(player_profile.launch_tile_index)?;
     let route_index = public_index_for_route_index(route_index)?;
-    let progress = if route_index >= launch_index {
+    let progress = PieceProgress::from(if route_index >= launch_index {
         route_index - launch_index
     } else {
         MAIN_ROUTE_STEPS - (launch_index - route_index)
-    };
-    (progress < HOME_ENTRY_PROGRESS).then_some(progress)
+    });
+    Some(if progress > HOME_ENTRY_PROGRESS {
+        progress - PieceProgress::from(MAIN_ROUTE_STEPS)
+    } else {
+        progress
+    })
 }
 
 fn route_index_for_progress(
     player_roster: &PlayerRoster,
     player_id: u8,
-    progress: u8,
+    progress: PieceProgress,
 ) -> Option<u8> {
     let player_profile = player_roster
         .players
         .iter()
         .find(|player| player.state.player_id == player_id)?;
-    if progress >= HOME_ENTRY_PROGRESS {
+    if !(MIN_ROUTE_PROGRESS..HOME_ENTRY_PROGRESS).contains(&progress) {
         return None;
     }
-    let public_index = (public_index_for_route_index(player_profile.launch_tile_index)? + progress)
-        % MAIN_ROUTE_STEPS;
-    route_index_for_public_index(public_index)
+    let public_index = (PieceProgress::from(public_index_for_route_index(
+        player_profile.launch_tile_index,
+    )?) + progress)
+        .rem_euclid(PieceProgress::from(MAIN_ROUTE_STEPS));
+    route_index_for_public_index(public_index as u8)
 }
 
 fn board_position_for_public_index(public_index: u8) -> Option<BoardPosition> {
@@ -1593,10 +1637,10 @@ fn route_index_for_public_index(public_index: u8) -> Option<u8> {
 /// 本方支路第 1 格是主环道后的同色拐点，也可以作为飞跃终点。
 fn next_same_color_jump_progress(
     player_id: u8,
-    current_progress: u8,
+    current_progress: PieceProgress,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
-) -> Option<u8> {
+) -> Option<PieceProgress> {
     for progress in current_progress.saturating_add(1)..HOME_ENTRY_PROGRESS {
         let Some(next_index) = route_index_for_progress(player_roster, player_id, progress) else {
             continue;
@@ -1996,7 +2040,7 @@ fn send_attacker_to_hangar(
 /// 更新棋子进度与状态，并同步刷新棋子坐标。
 fn update_piece_progress(
     action: &PlannedAction,
-    target_progress: u8,
+    target_progress: PieceProgress,
     board_layout: &BoardLayout,
     player_roster: &PlayerRoster,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
@@ -2174,7 +2218,7 @@ fn consume_stack_shield(
 /// 随机事件总入口：抽事件类型后交给具体效果函数执行。
 fn apply_event_effect(
     action: &PlannedAction,
-    final_progress: &mut u8,
+    final_progress: &mut PieceProgress,
     resources: LandingResources<'_>,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     skill_roster: &mut SkillRoster,
@@ -2206,7 +2250,7 @@ fn random_event_kind() -> TileEventKind {
 fn apply_event_kind_effect(
     event_kind: TileEventKind,
     action: &PlannedAction,
-    final_progress: &mut u8,
+    final_progress: &mut PieceProgress,
     resources: LandingResources<'_>,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
     skill_roster: &mut SkillRoster,
@@ -2467,7 +2511,7 @@ fn attacker_position(
 fn attacker_progress(
     action: &PlannedAction,
     piece_query: &mut Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-) -> Option<u8> {
+) -> Option<PieceProgress> {
     let attacker_piece_id = action.piece_id();
     for (piece_id, _, piece_state, _) in piece_query.iter_mut() {
         if piece_id.0 == attacker_piece_id {
@@ -2568,6 +2612,83 @@ mod tests {
                 PlayerControl::Ai,
             ],
         }
+    }
+
+    #[test]
+    fn human_roll_readiness_excludes_animation_choice_and_non_human_turns() {
+        let (players, _) = build_match_rosters(&setup(GameMode::TwoVsTwo));
+        let roster = PlayerRoster::from_players(players);
+        let mut result = MatchResult::default();
+        let mut turn = TurnState::opening_turn();
+        assert!(human_roll_is_ready(
+            &turn,
+            &GamePhase::AwaitDice,
+            &roster,
+            &result
+        ));
+        for phase in [
+            GamePhase::RoundStart,
+            GamePhase::DiceRolling,
+            GamePhase::AwaitPieceSelect,
+            GamePhase::PieceMoving,
+            GamePhase::ResolveTileEffect,
+            GamePhase::ResolveSkillEffect,
+            GamePhase::ResolveCombat,
+            GamePhase::CheckVictory,
+            GamePhase::RoundEnd,
+        ] {
+            assert!(
+                !human_roll_is_ready(&turn, &phase, &roster, &result),
+                "{phase:?}"
+            );
+        }
+        for player in [2, 99] {
+            turn.current_player = player;
+            assert!(!human_roll_is_ready(
+                &turn,
+                &GamePhase::AwaitDice,
+                &roster,
+                &result
+            ));
+        }
+        turn = TurnState::opening_turn();
+        result.finished = true;
+        assert!(!human_roll_is_ready(
+            &turn,
+            &GamePhase::AwaitDice,
+            &roster,
+            &result
+        ));
+        result.finished = false;
+        set_roll_with_faces(&mut turn, 4, [4, 0]);
+        assert!(!human_roll_is_ready(
+            &turn,
+            &GamePhase::AwaitDice,
+            &roster,
+            &result
+        ));
+        commit_pending_roll_display(&mut turn, 1);
+        assert!(!human_roll_is_ready(
+            &turn,
+            &GamePhase::AwaitDice,
+            &roster,
+            &result
+        ));
+        turn = TurnState::opening_turn();
+        set_pending_double_dice_choice(&mut turn, [2, 6]);
+        assert!(!human_roll_is_ready(
+            &turn,
+            &GamePhase::AwaitDice,
+            &roster,
+            &result
+        ));
+        commit_pending_roll_display(&mut turn, 1);
+        assert!(!human_roll_is_ready(
+            &turn,
+            &GamePhase::AwaitDice,
+            &roster,
+            &result
+        ));
     }
 
     #[test]
@@ -2795,7 +2916,7 @@ mod tests {
 
     fn snapshot_pieces(
         piece_query: &Query<(&PieceId, &HangarSlot, &mut PieceState, &mut Transform)>,
-    ) -> Vec<(u8, u8, PieceStatus, u8)> {
+    ) -> Vec<(u8, u8, PieceStatus, PieceProgress)> {
         let mut pieces = piece_query
             .iter()
             .map(|(piece_id, _, piece_state, _)| {
@@ -2884,7 +3005,11 @@ mod tests {
         match_result
     }
 
-    fn progress_for_main_tile(player_roster: &PlayerRoster, player_id: u8, route_index: u8) -> u8 {
+    fn progress_for_main_tile(
+        player_roster: &PlayerRoster,
+        player_id: u8,
+        route_index: u8,
+    ) -> PieceProgress {
         progress_for_main_route_index(player_roster, player_id, route_index)
             .expect("route tile is reachable before this player's home lane")
     }
